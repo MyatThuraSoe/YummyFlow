@@ -1,0 +1,467 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// 1. User MODELS
+// ==========================================
+enum Role {
+  ADMIN
+  MANAGER
+  STAFF     // Waiters, POS operators
+  KITCHEN   // Chefs
+  CUSTOMER
+}
+
+model User {
+  id               String   @id @map("_id")
+  name             String
+  email            String   @unique
+  emailVerified    Boolean  @default(false)
+  image            String?
+  twoFactorEnabled Boolean? @default(false)
+  displayUsername  String?
+  role             Role     @default(CUSTOMER)
+  status           String   @default("active") // active, suspended, deleted
+  age              Int?
+  gender           String?
+  phone            String?
+  banned           Boolean  @default(false)
+  banReason        String?
+  banExpires       DateTime?
+
+  // Relations
+  sessions   Session[]
+  accounts   Account[]
+  twoFactors TwoFactor[]
+  activitiesLog activitiesLog[]
+  feedbacks    Feedback[] // 👈 NEW: Relation to feedbacks
+  reservations Reservation[] // 👈 NEW: Relation to reservations
+  orders       Order[]       // 👈 NEW: Relation to orders
+  pushSubscriptions PushSubscription[] // 👈 PRO: browser push endpoints
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id @map("_id") 
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  impersonatedBy String?
+
+  // Relations
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id @map("_id")
+  accountId             String
+  providerId            String
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  // Relations
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id @map("_id")
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+// Optional: Two Factor Authentication plugin
+
+model TwoFactor {
+  id          String   @id @map("_id")
+  secret      String
+  backupCodes String
+  verified    Boolean? @default(true)
+
+  // Relations
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([secret])
+  @@index([userId])
+  @@map("twoFactor")
+}
+
+// ==========================================
+// 2. RESTAURANT BUSINESS MODELS
+// ==========================================
+model Category {
+   id     String   @id @default(auto()) @map("_id") @db.ObjectId
+   name   String   @unique
+   // optional
+   slug   String   @unique
+
+   items menuItem[]
+}
+
+model activitiesLog {
+   id     String   @id @default(auto()) @map("_id") @db.ObjectId
+   userId String
+   user        User       @relation(fields: [userId], references: [id])
+
+   action String
+   details String?
+
+   createdAt DateTime @default(now())
+}
+
+model menuItem {
+  id          String      @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  description Json?
+  price       Float
+  discount    Float?      @default(0)
+  image       String?
+  isAvailable Boolean     @default(true)
+  recipe      String?
+  categoryId  String      @db.ObjectId
+  category    Category    @relation(fields: [categoryId], references: [id])
+  aiSuggestion String?    // 👈 NEW: Stores Gemini's advice for bad reviews
+
+  feedbacks    Feedback[] // 👈 NEW: Relation to feedbacks
+  orderItems   OrderItem[]   // 👈 NEW: Relation to order items
+  // What this dish consumes from the store. A dish with no rows here has no
+  // recipe, so placing it never touches stock — which is what keeps the
+  // existing menu fully working on a fresh install.
+  recipeItems  RecipeItem[]
+}
+
+model Feedback {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  rating     Int      // 1 to 5 stars
+  comment    String?
+  menuItemId String   @db.ObjectId
+  menuItem   menuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  userId     String? 
+  user       User?   @relation(fields:[userId], references: [id], onDelete: SetNull)
+  createdAt  DateTime @default(now())
+
+  // The menu list reads every dish's average rating on each request, so the
+  // per-dish lookups and the "newest first" review feed both need the index.
+  @@index([menuItemId])
+  @@index([createdAt])
+}
+
+enum TableStatus {
+  AVAILABLE
+  OCCUPIED
+  RESERVED
+  // Between a party leaving and the table being usable again. Without this,
+  // SERVED flipped a table straight back to AVAILABLE while the guests were
+  // still eating, so the host desk would seat a new party at an occupied table.
+  CLEANING
+}
+
+enum TableType {
+ square
+ circle
+ rectangle
+}
+
+model Table {
+  id           String        @id @default(auto()) @map("_id") @db.ObjectId
+  name         String        @unique // e.g., "05", "06", "VIP 1"
+  seats        Int
+  section      String        @default("Main Dining Room") // Main Dining Room, Outdoor, Terrace
+  shape        TableType     @default(square) // square, circle, rectangle
+  status       TableStatus   @default(AVAILABLE)
+
+  reservations Reservation[]
+  orders       Order[]       // 👈 NEW: Relation to orders
+  // Parties that joined the queue and were eventually seated here.
+  waitlistEntries Waitlist[]
+}
+
+enum WaitlistStatus {
+  WAITING
+  // A table was assigned and the party is on the floor.
+  SEATED
+  // The party never arrived. Kept as a record so the no-show rate is
+  // measurable instead of being a gap in the day's history.
+  NO_SHOW
+  CANCELLED
+}
+
+model Waitlist {
+  id           String         @id @default(auto()) @map("_id") @db.ObjectId
+  customerName String
+  phone        String?
+  email        String?
+  guests       Int
+  notes        String?
+  status       WaitlistStatus @default(WAITING)
+
+  tableId      String?        @db.ObjectId
+  table        Table?         @relation(fields: [tableId], references: [id])
+  seatedAt     DateTime?
+
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  // The host desk always reads the open queue in arrival order, and the wait
+  // estimate is an average over the parties that were actually seated.
+  @@index([status])
+  @@index([createdAt])
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+model Reservation {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  customerName    String? // Useful if guest booking
+  email           String? // PRO: lets guest bookings receive confirmations too
+  userId          String? 
+  user            User?    @relation(fields: [userId], references: [id])
+  tableId         String   @db.ObjectId
+  table           Table    @relation(fields:[tableId], references: [id])
+  date            DateTime
+  guests          Int
+  status          BookingStatus @default(PENDING)
+}
+
+enum OrderType {
+  DINE_IN
+  TAKEAWAY
+  DELIVERY
+}
+
+enum OrderStatus {
+  PENDING
+  PREPARING
+  READY
+  SERVED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+}
+
+
+model Order {
+  id          String      @id @default(auto()) @map("_id") @db.ObjectId
+  orderType   OrderType   // DINE_IN, TAKEAWAY, DELIVERY
+  status      OrderStatus @default(PENDING)
+  paymentStatus PaymentStatus @default(PENDING)
+  paymentMethod PaymentMethod @default(CASH)
+  totalAmount Float
+
+  // Relations
+  userId      String?    
+  user        User?       @relation(fields: [userId], references: [id])
+  tableId     String?     @db.ObjectId // Only for DINE_IN
+  table       Table?      @relation(fields: [tableId], references:[id])
+
+  items       OrderItem[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  // Dashboard rollups filter on a createdAt window and exclude CANCELLED.
+  // The Kitchen Display and Active Orders board filter on status.
+  @@index([createdAt])
+  @@index([status])
+  @@index([paymentStatus])
+}
+
+model OrderItem {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  orderId    String   @db.ObjectId
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  menuItemId String   @db.ObjectId
+  menuItem   menuItem @relation(fields: [menuItemId], references:[id])
+  quantity   Int
+  price      Float    // Snapshot of price at time of order
+  notes      String?  // e.g., "No onions"
+
+  // Every dashboard pipeline starts from OrderItem and $lookup's the order.
+  @@index([orderId])
+  @@index([menuItemId])
+}
+
+// ==========================================
+// 3. PRO FEATURES — NOTIFICATIONS & AI BRIEFINGS
+// ==========================================
+
+/// One row per browser/device that has granted notification permission.
+/// `endpoint` is unique per browser install, so re-subscribing upserts.
+/// NOTE: `userId` is a plain String, NOT @db.ObjectId — Better Auth generates
+/// 32-char hex ids (crypto.randomBytes(16).toString("hex")), which are not
+/// valid 24-char Mongo ObjectIds and would throw P2023 on every query.
+model PushSubscription {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+enum NotificationChannel {
+  EMAIL
+  PUSH
+}
+
+enum NotificationStatus {
+  SENT
+  FAILED
+  SKIPPED
+}
+
+/// Audit trail for every email/push attempt. Powers the "Delivery log"
+/// panel and makes notification debugging possible without server logs.
+model NotificationLog {
+  id        String             @id @default(auto()) @map("_id") @db.ObjectId
+  channel   NotificationChannel
+  status    NotificationStatus
+  template  String
+  recipient String
+  subject   String?
+  error     String?
+  userId    String?
+  meta      Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([channel])
+  @@index([status])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+enum BriefingKind {
+  EXECUTIVE
+  FORECAST
+}
+
+/// Cached Gemini-generated briefings so the dashboard never waits on the AI.
+model Briefing {
+  id          String       @id @default(auto()) @map("_id") @db.ObjectId
+  kind        BriefingKind
+  headline    String
+  summary     String
+  payload     Json // structured insights / forecast points
+  model       String?
+  periodStart DateTime
+  periodEnd   DateTime
+  createdAt   DateTime     @default(now())
+
+  @@index([kind])
+  @@index([createdAt])
+}
+
+// ==========================================
+// 3. INVENTORY / STOCK
+// ==========================================
+
+/// A raw good the kitchen buys and consumes: "Tomato", "Olive oil", "Rice".
+model Ingredient {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  name      String   @unique
+  /// Unit the quantity is counted in — "g", "ml", "pcs", "bunch".
+  /// Kept free text because kitchens do not agree on a units system.
+  unit      String   @default("unit")
+  /// On-hand amount. Never negative: the write paths clamp at zero.
+  quantity  Float    @default(0)
+  /// Low-stock threshold. The admin page flags anything at or below this.
+  reorderAt Float    @default(0)
+  costPerUnit Float?
+
+  recipeItems RecipeItem[]
+  movements   StockMovement[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// How much of one ingredient a single serving of a dish consumes.
+model RecipeItem {
+  id           String     @id @default(auto()) @map("_id") @db.ObjectId
+  menuItemId   String     @db.ObjectId
+  menuItem     menuItem   @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  ingredientId String     @db.ObjectId
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+  /// Amount used per one unit of the dish, in the ingredient's own unit.
+  quantity     Float
+
+  // The same ingredient cannot appear twice on one dish; upsert on this pair.
+  @@unique([menuItemId, ingredientId])
+  @@index([ingredientId])
+}
+
+/// Append-only audit of every stock change.
+///
+/// The balance on `Ingredient.quantity` is the fast read, but without this a
+/// shrinkage discrepancy has no explanation and the count is untrustworthy.
+model StockMovement {
+  id           String     @id @default(auto()) @map("_id") @db.ObjectId
+  ingredientId String     @db.ObjectId
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+  /// Signed change. Negative for a sale or waste, positive for a delivery.
+  delta        Float
+  reason       String // ORDER | RESTOCK | WASTE | ADJUSTMENT
+  /// Set when the movement was caused by an order, so a void can be traced back.
+  orderId      String?    @db.ObjectId
+  note         String?
+  createdAt    DateTime   @default(now())
+
+  @@index([ingredientId])
+  @@index([createdAt])
+}

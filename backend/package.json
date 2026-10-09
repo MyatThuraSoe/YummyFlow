@@ -1,0 +1,58 @@
+{
+  "name": "backend",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "watch": "bun --watch src/server.ts",
+    "start:server": "INNGEST_DEV=1 nodemon --exec bun run src/server.ts",
+    "start:ngrok": "ngrok http 5000",
+    "start:inngest": "npx inngest-cli@latest dev -u http://localhost:5000/api/inngest",
+    "verify:notifications": "tsx scripts/verify-notifications.ts",
+    "verify:reservations": "tsx scripts/verify-reservations.ts",
+    "verify:order-flow": "tsx scripts/verify-order-flow.ts",
+    "verify:day-close": "tsx scripts/verify-day-close.ts",
+    "seed": "tsx scripts/seed.ts",
+    "verify:seed": "tsx scripts/verify-seed.ts",
+    "verify:api": "tsx scripts/verify-api.ts",
+    "measure:payloads": "tsx scripts/measure-payloads.ts",
+    "verify:cleanup": "tsx scripts/cleanup-probe-data.ts"
+  },
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/morgan": "^1.9.10",
+    "@types/node": "^25.6.0",
+    "@types/nodemailer": "^7.0.4",
+    "@types/web-push": "^3.6.4",
+    "nodemon": "^3.1.14",
+    "prisma": "6.19",
+    "tsx": "^4.21.0"
+  },
+  "peerDependencies": {
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@better-auth/prisma-adapter": "^1.6.9",
+    "@edgestore/server": "^0.7.0",
+    "@google/genai": "^2.8.0",
+    "@google/generative-ai": "^0.24.1",
+    "@prisma/client": "6.19",
+    "better-auth": "^1.6.9",
+    "body-parser": "^2.2.2",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "helmet": "^8.1.0",
+    "inngest": "^4.21.0",
+    "jose": "^6.2.12",
+    "morgan": "^1.10.1",
+    "nodemailer": "^7.0.9",
+    "socket.io": "^4.8.3",
+    "web-push": "^3.6.7",
+    "zod": "^4.4.3"
+  }
+}

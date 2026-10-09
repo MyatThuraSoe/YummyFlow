@@ -1,0 +1,640 @@
+========================================================================
+DineFlow — Restaurant Management System
+Project Detail Document
+========================================================================
+
+1. PROJECT OVERVIEW
+========================================================================
+DineFlow is a full-stack, AI-powered, real-time Restaurant Management
+System built on the MERN stack (MongoDB, Express, React, Node) with
+TypeScript from end to end.
+
+It ships the complete day-to-day operations of a restaurant:
+
+  - Point of Sale (POS) with a floor plan / table management UI
+  - Kitchen Display System (KDS) with live ticket status
+  - Reservations with live status updates
+  - Walk-in waitlist queue with seating
+  - Menu management with rich-text descriptions and image uploads
+  - Customer reviews/feedback on dishes
+  - Inventory with recipes (bill of materials) and stock movements
+  - Day-close / Z-type sales report
+  - Admin dashboard with analytics, charts and activity log
+  - User management (roles, ban/unban, impersonate)
+  - Role-based access control (ADMIN / MANAGER / STAFF / KITCHEN / CUSTOMER)
+  - AI Menu generation and Smart-Menu advice from review feedback
+  - AI Briefings (executive digest + 7-day demand forecast) on the dashboard
+  - Transactional email system (6 branded HTML templates)
+  - Browser push notifications (Web Push / VAPID) with per-device subscriptions
+  - Notification delivery log (every email/push attempt is audited)
+  - Real-time updates across devices via Socket.io
+
+One restaurant-wide currency is configured per deployment (backed by a
+single environment variable). Amounts are stored as unlabelled numbers and
+formatted at the UI layer only.
+
+
+2. TECH STACK
+========================================================================
+Layer            Technology
+--------------   -----------------------------------------------------
+Frontend         React 19, React Router 7.14, TanStack Query,
+                 Tailwind CSS 4, shadcn/radix UI, Recharts 3.8,
+                 react-day-picker 10, socket.io-client, react-hook-form,
+                 zod, PortableText editor, Lucide icons, next-themes,
+                 Sonner/react-hot-toast, valtio
+Backend          Node.js, Express 5, TypeScript (tsx watch dev runner),
+                 helmet, cors, cookie-parser, body-parser, morgan, zod
+Database         MongoDB via Prisma ORM 6.19 (single-node replica set)
+Auth             Better Auth (+ prisma adapter, admin plugin,
+                 custom access control)
+Background jobs  Inngest (cron + on-demand functions)
+AI               Google Gemini (@google/genai, @google/generative-ai)
+Real-time        Socket.io
+Email            Nodemailer (SMTP mode or zero-credential "outbox" mode)
+Push             web-push (VAPID) + service worker
+File uploads     EdgeStore (@edgestore/server + react)
+Rich text        PortableText
+Language         TypeScript full stack
+
+Runtime notes:
+  - Runs on Node >= 20 (22 LTS recommended). Runs on Bun too.
+  - MongoDB must be a replica set: Prisma wraps writes in transactions,
+    which standalone mongod rejects. For local dev a single-node replica
+    set is used.
+
+
+3. PROJECT STRUCTURE
+========================================================================
+dineflow/
+  frontend/
+    app/
+      routes.ts                 Route config (React Router 7.14 flat routes)
+      root.tsx                  Providers (QueryClient, Theme, Toast,
+                                EdgeStore, Socket.io)
+      routes/                   home, auth, customer, protected (admin/pos/
+                                kitchen) pages
+      components/               UI + feature components (dashboard,
+                                AiBriefing, ui components, POS, etc.)
+      hooks/                    Shared hooks
+      lib/                      push.ts, auth-client.ts, currency.ts, types
+      type/                     Shared types
+    public/sw.js                Push service worker
+    scripts/ssr-smoke.tsx       SSR render verification (no browser needed)
+  backend/
+    src/
+      server.ts                 App wiring + mount points
+      routes/                   waitlist, table, reservation, reports, order,
+                                notifications, menu, inventory, dashboard,
+                                category, briefing, activities-log
+      controllers/              Per-feature request handlers (incl. feedback,
+                                analytics, notification, briefing)
+      middleware/               requireAuth, requirePermission, checkRole,
+                                rateLimit
+      lib/                      auth, prisma, permissions, socket, notify,
+                                push, mailer, currency, bson, edgestore,
+                                briefing, inventory, activities-log
+      emails/                   layout.ts + templates.ts (6 email templates)
+      inngest/                  index.ts, function.ts, briefing.ts (AI jobs)
+    prisma/schema.prisma        Canonical database design
+    scripts/                    seed, verify-* and measure-payloads suites
+    generated/prisma/           Prisma client output
+  readme.md, PRO-FEATURES.md, project detail document.txt
+
+
+4. FEATURE LIST (detail)
+========================================================================
+4.1 Authentication & user management
+  - Email/password sign-in and sign-up (auto sign-in after signup)
+  - Google OAuth social sign-in
+  - Better Auth admin plugin: role management, ban/unban (+ optional
+    expiry and reason), user impersonation, set-role / set-password /
+    set-email (ADMIN only)
+  - Additional user profile fields: age, gender, phone, status
+  - Database hooks fire welcome email on signup and account-suspended /
+    account-restored emails on ban/unban
+  - Custom permission statements per resource (see section 6)
+
+4.2 Point of Sale (POS) & Kitchen Display (KDS)
+  - Floor plan with tables of different shapes (square/circle/rectangle),
+    sections, seat counts and live status
+  - Table status lifecycle: AVAILABLE -> OCCUPIED -> CLEANING -> AVAILABLE.
+    Adding CLEANING stopped a SERVED order flipping a table back to
+    AVAILABLE while guests were still seated.
+  - Order creation (DINE_IN / TAKEAWAY / DELIVERY), item quantities,
+    notes, price snapshot at order time
+  - Payment: method CASH | CARD, status PENDING | PAID | FAILED
+  - Order lifecycle: PENDING -> PREPARING -> READY -> SERVED (CANCELLABLE)
+  - Kitchen Display reads active tickets in real time; chefs advance status
+  - Receipt printing via react-to-print
+  - Order history page
+
+4.3 Reservations
+  - Book a table with date, guests, table, optional guest contact
+  - Status flow: PENDING -> CONFIRMED -> COMPLETED / CANCELLED
+  - Works for signed-in customers and walk-in guests (name + email)
+  - Email confirmation on creation and on status change. Recipient
+    precedence: an explicitly typed guest email wins over the account email
+    (booking on someone else's behalf).
+  - Live status updates pushed over Socket.io ("new-reservation" /
+    "status-reservation" events).
+
+4.4 Waitlist
+  - Anonymous walk-ins join a queue from a public page (rate-limited)
+  - Fields: name, phone, email, party size, notes
+  - Status flow: WAITING -> SEATED | NO_SHOW | CANCELLED
+  - Host desk reads queue arrival-order, gets an average wait estimate from
+    parties actually seated, assigns a table when seating
+  - Staff/admin actions: seat, cancel, delete
+
+4.5 Menu & categories
+  - Categories (name, slug) CRUD; menu items (name, price, discount,
+    image, availability, rich-text description via PortableText)
+  - Price snapshot on order; discount is display-side
+  - AI Menu generation: Inngest job uses Gemini to generate new item ideas
+  - Smart Menu AI: on poor reviews the dish gets aiSuggestion text from
+    Gemini — Spinoff / Improve / Ignore per dish
+
+4.6 Customer reviews / feedback
+  - 1-5 star rating + optional comment, not login-gated (guests can review)
+  - Average rating per dish; newest-first review feed
+  - Admin can delete feedback; AI feedback analyzer job informs the
+    aiSuggestion on low-rated items
+
+4.7 Inventory
+  - Ingredients (name, unit in free text like g/ml/pcs, on-hand quantity,
+    reorderAt threshold, costPerUnit)
+  - Recipes: per-dish bill of materials (ingredient + amount per serving),
+    unique on (menuItemId, ingredientId)
+  - Order creation consumes stock per recipe items (missing recipe means a
+    dish never touches stock — keeps a fresh menu fully working)
+  - Voiding/restoring returns stock
+  - Stock movements are an append-only audit (delta signed, reason
+    ORDER | RESTOCK | WASTE | ADJUSTMENT, optional orderId for traceback)
+  - Low-stock flagging at reorderAt; restock; quantity is clamped at zero
+
+4.8 Reports & analytics
+  - Day-close (Z-type) report with per-period revenue, orders, covers,
+    payment splits, and more
+  - Dashboard: KPI stats, time-series charts (Recharts), sales analytics,
+    aggregated lists; powered by MongoDB aggregation pipelines
+  - Activity log (audit trail) of staff actions
+  - Notification delivery log with per-channel totals
+
+4.9 AI Briefings (dashboard)
+  - EXECUTIVE digest: revenue, orders, AOV, occupancy, top items,
+    category mix, peak hours, reservations, menu health
+  - FORECAST: next 7 days using weekday seasonality (28-day history) times
+    a damped trend factor clamped to +/-25%, with a confidence band that
+    widens with horizon
+  - Deterministic analytics engine is the source of truth; Gemini only adds
+    narrative. If Gemini is unavailable, heuristic narrative is used and
+    `generatedBy` is set to "heuristic" (UI shows "analytics engine").
+  - Scheduled daily (06:00) executive + weekly (Monday 06:30) forecast via
+    Inngest; on-demand regenerate button on the dashboard calls the REST
+    endpoint directly (works without an Inngest server)
+  - Briefings are cached in the DB so the dashboard never waits on the AI
+
+4.10 Email (Nodemailer) — PRO
+  - 6 branded, table-based, inline-styled, Outlook-safe HTML templates:
+    welcome, order receipt, reservation confirmation, reservation status,
+    account suspended/restored, test
+  - Two modes: SMTP when SMTP_HOST/PORT set, otherwise "outbox mode"
+    (jsonTransport) renders each message to backend/.mail-outbox/ and
+    records the preview path — the whole pipeline is testable with zero
+    credentials
+
+4.11 Browser push (Web Push / VAPID) — PRO
+  - Service worker + per-device subscription; re-subscribing upserts on
+    the unique endpoint
+  - Role-targeted fan-out: new order -> ADMIN/MANAGER/STAFF/KITCHEN,
+    new reservation -> staff, order status change -> the customer,
+    briefing ready -> ADMIN/MANAGER
+  - Stale subscriptions pruned automatically on HTTP 404/410
+  - Requires a secure context (https or localhost); the settings page
+    reports this explicitly
+
+4.12 Notification delivery log
+  - Every email and push attempt writes a NotificationLog row: channel
+    (EMAIL|PUSH), status (SENT|FAILED|SKIPPED), template, recipient,
+    subject, error, userId, meta
+  - Rendered on /admin/notifications with per-channel totals
+
+4.13 Design principle
+  Every pro feature degrades gracefully: no SMTP -> emails to disk; no
+  VAPID -> push logged SKIPPED; no Gemini key -> briefings still generate.
+
+
+5. USER FLOWS
+========================================================================
+5.1 CUSTOMER (guest, no account)
+  - Browse the public home/menu, read dishes and average ratings, leave a
+    rating/comment on a dish
+  - Join the waitlist from the public /waitlist page (phone, party size)
+  - Reserve a table from /reservation (name + email suffice); receives a
+    confirmation email and later a status-change email
+
+5.2 CUSTOMER (signed in)
+  - Sign up/sign in (email+password or Google), auto sign-in after signup,
+    welcome email delivered
+  - Profile page with details and own orders
+  - Browse menu, add items to a cart, create an order (checkout success /
+    cancelled landing pages), pay by cash or card, track own order status
+    via push notifications
+  - Make/manage own reservations; receives confirmation and status emails
+
+5.3 STAFF (waiter / POS operator)
+  - POS: open the floor plan, seat a party at a table, create DINE_IN
+    orders, add items with notes, print receipts, advance payment
+  - Move tickets through the pass (view KDS, update status)
+  - Handle the waitlist queue (seat/cancel), create reservations, update
+    their status
+
+5.4 KITCHEN (chef)
+  - Kitchen Display: see active orders with status columns in real time,
+    claim/advance tickets from PENDING -> PREPARING -> READY
+  - Reads category/menu; no POS or reports access
+
+5.5 MANAGER
+  - Dashboard with KPIs, charts and AI briefing panel
+  - Full menu + category management, inventory + recipes + restock,
+    reservations, orders, reports (day-close), activity log
+  - User management: create/list/set-role/ban/unban (no impersonate or
+    account-credential mutation)
+
+5.6 ADMIN
+  - Everything MANAGER can do, plus: user impersonation, set password,
+    set email, delete users, notification administration (test email,
+    test push, view delivery log), full configuration
+
+5.7 General event flows
+  - New order -> email receipt to customer + push to staff roles +
+    Socket.io broadcast so POS/KDS update instantly
+  - New reservation -> push to staff + socket events
+  - Order status change -> push/email to the owning customer + socket
+  - Stock consumption on order, restoration on void
+  - Activity log entry on key admin/staff mutations
+
+
+6. ROLES & PERMISSIONS
+========================================================================
+Permission model: Better Auth access-control statements per resource,
+evaluated by the requirePermission(`action`, `resource`) middleware.
+
+Resources: order, category, menu, table, reservation, kds, report
+(+ Better Auth defaults: user, session, team, org, invite, apiKey and
+others that ship with defaultStatements).
+
+Role matrix (business part only):
+
+  Resource      ADMIN        MANAGER      STAFF        KITCHEN     CUSTOMER
+  ------------  -----------  -----------  -----------  ----------  --------
+  order         full(crud+c) full(crud+c) create/read/ read       create/
+                                          update                 read/cancel
+  category      full         full         read         read       read
+  menu          full(+gen)   full(+gen)   read         read       read
+  table         full         full         read/update  -          read
+  reservation   full         full         full         -          create/read/
+                                                                  update
+  kds           view+set     view+set     view+set     view+set   -
+  report        view         view         -            -          -
+  user          create/list/set-role/ban/impersonate/delete/set-password/
+                set-email/get/update     create/ban/update/delete/get/
+                                        list/set-role (MANAGER subset)
+
+CUSTOMER default role on signup; staff roles are assigned by an admin on
+the Users management page.
+
+APPLICATION middleware stack:
+  - requireAuth: resolves the Better Auth session, attaches user + session
+  - requirePermission(action, resource): session lookup then
+    userHasPermission check (authorization is per-request, not cached)
+  - checkRole(...allowed): simple role allow-list for non-statement routes
+  - rateLimit: hand-written fixed-window limiter (a Map of window start +
+    hit count with a sweeper). Exposes Retry-After and X-RateLimit-* on
+    429. Applied to expensive/sensitive endpoints (booking creation,
+    waitlist join, review submission).
+
+
+7. ARCHITECTURE
+========================================================================
+7.1 High-level
+  Browser (React Router SPA)
+    |  HTTPS (auth cookies)                 Socket.io (realtime)
+    v                                        v
+  Express 5 API   <->  Better Auth  <->  Prisma  <->  MongoDB (replica set)
+    |                  |  plugins (admin)
+    |                  +-- Inngest SDK (cron + on-demand AI jobs) -> Gemini
+    |-- EdgeStore handler (file uploads)
+    |-- Socket.io server
+    |-- Nodemailer (SMTP / outbox) + web-push (VAPID) via lib/notify + lib/push
+    +-- NotificationLog audit writes on every send
+
+7.2 Backend
+  - server.ts mounts: helmet, cors (trusted origin from CLIENT_URL),
+    cookie-parser, morgan, body-parser, the Better Auth toNodeHandler on
+    /api/auth/*, the EdgeStore handler, the Inngest express `serve`
+    handler on /api/inngest, every /api/<resource> router, and attaches
+    the Socket.io server
+  - Routes delegate to controllers; controllers use the Prisma client,
+    MongoDB raw aggregation pipelines ($runCommandRaw via lib/bson for
+    $date handling), lib/notify, lib/inventory and lib/briefing
+  - Static resource config (rate limiters, permission checks, role gates)
+    is declared at mount time so each router is self-describing
+
+7.3 Frontend
+  - React Router 7 route config (app/routes.ts):
+      Public:  /  /signin  /signup  /waitlist
+      Customer: /checkout/success  /checkout/cancelled  /reservation
+                /profile/:id
+      Protected (auth layout):
+        Admin:    /dashboard  /admin/menu  /admin/menu/items-categories/:id
+                  /admin/users  /admin/notifications  /admin/reservations
+                  /admin/activities-log  /admin/inventory
+        Reports:  /reports/day-close
+        POS:      /pos/tables  /pos/new-order  /pos/orders
+                  /pos/waitlist  /orders/history
+        Kitchen:  /kitchen
+  - Providers in root.tsx: QueryClientProvider, TooltipProvider,
+    ThemeProvider (next-themes), ToastProvider, EdgeStoreProvider,
+    SocketProvider (socket.io-client)
+  - Server-rendered smoke test (scripts/ssr-smoke.tsx) renders key pages
+    to HTML to prove they render real content without a browser
+
+7.4 Real-time (Socket.io)
+  Events include: "ai-action-updated", "briefing-ready",
+  "new-reservation", "status-reservation" (plus order/table/status
+  broadcasts so the POS floor plan, KDS and order boards stay live).
+
+7.5 Background jobs (Inngest)
+  Function                      Schedule          Purpose
+  ----------------------------  ----------------  ------------------------
+  ai-daily-executive-briefing   0 6 * * *         morning executive digest
+  ai-weekly-demand-forecast     30 6 * * 1        Monday demand forecast
+  ai-menu-item-generator        event-driven      AI menu item suggestions
+  ai-menu-feedback-analyzer     event-driven      review feedback analysis
+  ai-on-demand-briefing         event-driven      regenerate from dashboard
+
+  Local dev server:  npx inngest-cli@latest dev -u http://localhost:5000/api/inngest  (UI on :8288)
+  Production guard: the app refuses to run AI jobs in production unless
+  INNGEST_EVENT_KEY / INNGEST_SIGNING_KEY are real (not "local").
+
+7.6 AI pipelines
+  - Briefings: collectMetrics() (pure Prisma, deterministic) generates the
+    figures; Gemini writes narrative on top; heuristic fallback keeps the
+    feature alive without a key
+  - Menu generation & feedback analysis: Gemini calls run as isolated
+    Inngest functions; results written back to the menuItem (aiSuggestion)
+  - No AI path can break the core flows
+
+
+8. DATABASE DESIGN
+========================================================================
+8.1 Conventions
+  - MongoDB provider via Prisma; every write is transactional (replica set)
+  - Two id systems coexist:
+      * Better Auth models (User, Account, Session, Verification,
+        TwoFactor, and the userId field on push/feedback/orders etc.) use
+        32-char hex String ids from crypto.randomBytes(16).toString("hex")
+      * Business models use 24-hex Mongo ObjectIds (@id @default(auto())
+        @map("_id") @db.ObjectId)
+    Mixing them up throws Prisma P2023, so join fields are declared with
+    the correct type (@db.ObjectId vs plain String).
+
+8.2 Models
+  Identity / auth:
+    User          id(String), name, email(unique), emailVerified, image,
+                  twoFactorEnabled, displayUsername, role(enum),
+                  status(active/suspended/deleted), age, gender, phone,
+                  banned, banReason, banExpires, createdAt, updatedAt
+    Session       id, expiresAt, token(unique), ipAddress, userAgent,
+                  impersonatedBy, userId -> User
+    Account       id, accountId, providerId, accessToken, refreshToken,
+                  idToken, expires/s, scope, password, userId -> User
+    Verification  id, identifier, value, expiresAt
+    TwoFactor     id, secret, backupCodes, verified, userId -> User
+
+  Menu / content:
+    Category      id(ObjectId), name(unique), slug(unique), items[]
+    menuItem      id(ObjectId), name, description(Json PortableText),
+                  price(Float), discount, image, isAvailable, recipe,
+                  categoryId -> Category, aiSuggestion, feedbacks[],
+                  orderItems[], recipeItems[]
+    Feedback      id(ObjectId), rating(1-5), comment, menuItemId ->
+                  menuItem (cascade delete), userId? -> User (set null),
+                  createdAt; indexed [menuItemId] and [createdAt]
+
+  Floor / bookings:
+    Table         id(ObjectId), name(unique), seats, section, shape(enum:
+                  square/circle/rectangle), status(enum: AVAILABLE/
+                  OCCUPIED/RESERVED/CLEANING), reservations[], orders[],
+                  waitlistEntries[]
+    TableStatus   enum AVAILABLE OCCUPIED RESERVED CLEANING
+    Waitlist      id(ObjectId), customerName, phone?, email?, guests,
+                  notes?, status(enum WAITING/SEATED/NO_SHOW/CANCELLED),
+                  tableId?, seatedAt?, createdAt, updatedAt;
+                  indexed [status],[createdAt]
+    Reservation   id(ObjectId), customerName?, email?, userId?, tableId ->
+                  Table, date, guests, status(enum PENDING/CONFIRMED/
+                  CANCELLED/COMPLETED)
+
+  Orders:
+    Order         id(ObjectId), orderType(enum DINE_IN/TAKEAWAY/DELIVERY),
+                  status(enum PENDING/PREPARING/READY/SERVED/CANCELLED),
+                  paymentStatus(enum PENDING/PAID/FAILED),
+                  paymentMethod(enum CASH/CARD), totalAmount(Float),
+                  userId?, tableId? (DINE_IN only), items[], createdAt,
+                  updatedAt; indexed [createdAt],[status],[paymentStatus]
+    OrderItem     id(ObjectId), orderId -> Order (cascade), menuItemId ->
+                  menuItem, quantity, price (snapshot at order time),
+                  notes; indexed [orderId],[menuItemId]
+
+  PRO — notifications:
+    PushSubscription  id(ObjectId), endpoint(unique), p256dh, auth,
+                      userAgent, userId (plain String!), createdAt/updatedAt
+    NotificationLog   id(ObjectId), channel(EMAIL|PUSH), status(SENT|
+                      FAILED|SKIPPED), template, recipient, subject?, error?,
+                      userId?, meta(Json), createdAt; indexed [channel],
+                      [status],[userId],[createdAt]
+    Briefing          id(ObjectId), kind(EXECUTIVE|FORECAST), headline,
+                      summary, payload(Json), model?, periodStart,
+                      periodEnd, createdAt; indexed [kind],[createdAt]
+
+  PRO — inventory:
+    Ingredient    id(ObjectId), name(unique), unit(free text), quantity
+                  (never negative, clamped), reorderAt, costPerUnit?,
+                  createdAt, updatedAt
+    RecipeItem    id(ObjectId), menuItemId -> menuItem (cascade),
+                  ingredientId -> Ingredient (cascade), quantity (per
+                  serving); unique [menuItemId, ingredientId]
+    StockMovement id(ObjectId), ingredientId -> Ingredient, delta(signed),
+                  reason(ORDER/RESTOCK/WASTE/ADJUSTMENT), orderId?, note?,
+                  createdAt; indexed [ingredientId],[createdAt]
+
+8.3 Referential behavior
+  - User deletions cascade to sessions/accounts/push subscriptions and
+    set-null feedback; business rows are deleted children-first in the
+    seed wipe because Mongo has no foreign keys.
+
+
+9. API REFERENCE (route map + auth gates)
+========================================================================
+All under /api. Auth handlers:
+  - Better Auth: /api/auth/* (sign-in/up, session, google callback,
+    admin plugin: set-role, ban-user, unban-user, impersonate, etc.)
+
+Feature routers:
+  categories    POST /create         (admin/manager via permission)
+                GET /                (public read OK / staff+)
+                PATCH /update/:id    (admin/manager)
+                DELETE /delete/:id   (admin/manager)
+  menu          GET /                (public)
+                POST /create         (admin/manager)
+                POST /:menuItemId/feedback         (reviewLimiter, public)
+                GET  /:menuItemId/feedback         (public)
+                DELETE /feedback/:feedbackId       (admin/manager)
+                PATCH /update/:id  (+ smartMenu, generateMenuItem)
+  tables        GET /                (staff+)
+                POST /create         (admin/manager)
+                PATCH /:id/update    (staff+)
+                PATCH /:id/status    (staff+)
+                DELETE /:id/delete   (admin/manager)
+                GET /:id             (staff+)
+  reservations  GET /                (staff+)
+                POST /create         (expensiveOpLimiter; customer or guest)
+                PATCH /:id/status    (staff+)
+  waitlist      GET /public          (public)
+                POST /join           (waitlistJoinLimiter, public)
+                GET /                (staff+)
+                PATCH /:id/status    (staff+)
+                DELETE /:id/delete   (admin/manager)
+  orders        POST /               (staff+/customer create)
+                GET /active          (staff+ — KDS ticket board)
+                GET /                (staff+ history)
+                GET /:id             (owner or staff+)
+                PATCH /:id/update  / payment / status   (staff+;
+                            KDS status route uses update_status permission)
+  dashboard     GET /stats  /charts  /lists  /sales-analytics
+                                    (admin/manager via permission/category)
+  briefing      GET /latest  /metrics  GET /  POST /generate  GET /:id
+                                    DELETE /:id  (admin/manager role gate)
+  notifications GET /public-key      (public)
+                GET /status  POST /subscribe|unsubscribe|test|ping
+                                                          (any signed-in)
+                GET /log             (admin/manager)
+                POST /test-email     (admin/manager)
+  inventory     all endpoints mounted behind auth + admin/manager gate:
+                GET /movements  GET /recipes
+                POST /recipes/:menuItemId
+                GET /  POST /create  PATCH /update/:id
+                PATCH /restock/:id    DELETE /delete/:id
+  reports       GET /day-close   (report permission)
+  activities-log GET /            (admin/manager)
+                 POST /create     (internal/system writes)
+  EdgeStore     file upload handler (/api/edgestore) with beforeDelete
+                logging; bucket "publicFiles"
+  Inngest       /api/inngest (express serve handler)
+
+The middleware functions applied to each router are exact; any change to
+the matrix in lib/permissions.ts only takes effect when the corresponding
+requirePermission calls are updated to match.
+
+
+10. SECURITY & RELIABILITY NOTES
+========================================================================
+  - helmet + CORS restrict origins to CLIENT_URL
+  - Every protected route resolves the session server-side
+    (authorization on the API, never trusted from the client)
+  - Hand-written fixed-window rate limiting on expensive endpoints,
+    transactional writes (ban, set-role, impersonate) are admin-gated
+  - VAPID public key must match between backend/.env (VAPID_PUBLIC_KEY)
+    and frontend/.env (VITE_VAPID_PUBLIC_KEY) or push fails with 401/403
+  - Graceful degradation for every third-party service (email, push, AI)
+  - No secrets in the repo; env files (.env) hold real keys
+  - Currency is fixed per deployment (USD/THB/MMK/CNY registry) so
+    staff dashboards and receipts always agree; amounts are unlabelled
+
+  Known limitation: direct inngest dev-server/dev-mode production guard;
+  push requires a secure context and a real browser permission to
+  E2E-verify; with placeholder keys pushes are only tested structurally.
+
+
+11. ENVIRONMENT VARIABLES
+========================================================================
+Backend (.env)                       Frontend (.env)
+------------------                   ------------------
+PORT=5000 (default)                  VITE_BACKEND_URL (better-auth baseURL)
+CLIENT_URL (frontend origin)         VITE_VAPID_PUBLIC_KEY (must match backend)
+DATABASE_URL (mongodb + replicaSet)  VITE_EDGE_STORE_ACCESS_KEY
+BETTER_AUTH_SECRET
+BETTER_AUTH_URL
+GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (optional OAuth)
+GEMINI_API_KEY (optional — heuristics fallback)
+INNGEST_EVENT_KEY / INNGEST_SIGNING_KEY ("local" in dev, required real in prod)
+EDGE_STORE_ACCESS_KEY / EDGE_STORE_SECRET_KEY
+SMTP_HOST / SMTP_PORT / SMTP_SECURE / SMTP_USER / SMTP_PASS
+MAIL_FROM / MAIL_FROM_NAME  (empty SMTP -> outbox mode to .mail-outbox)
+VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY / VAPID_SUBJECT
+CURRENCY            (e.g. USD; the single source of truth)
+VITE_CURRENCY       (frontend; must equal CURRENCY)
+
+Important: CURRENCY and VITE_CURRENCY must match, and the app must not
+hardcode "$" anywhere (always formatMoney, frontend lib/currency.ts).
+
+
+12. SCRIPTS
+========================================================================
+Backend:
+  npm run dev                 tsx watch src/server.ts (dev server :5000)
+  npm run verify:api          41 HTTP assertions over the full API
+  npm run verify:notifications 27 (emails, push, briefing endpoints+safety)
+  npm run verify:reservations  8 (guest-email precedence flow)
+  npm run verify:order-flow    30 (POS order lifecycle + stock)
+  npm run verify:day-close     42 (report math)
+  npm run verify:seed          seeded-data verification
+  npm run measure:payloads     14 (API payload sanity)
+  npm run verify:cleanup       removes probe accounts
+  npm run seed                 seed demo data (needs a replica-set DB)
+                               npx tsx scripts/seed.ts --reset to wipe+seed
+  npm run watch / start:server (bun/nodemon variants)
+  npm run start:inngest        inngest-cli dev server (UI :8288)
+  npm run start:ngrok          expose :5000 for webhooks/push testing
+
+Frontend:
+  npm run dev                  react-router dev (HMR, :5173)
+  npm run build                react-router build (production)
+  npm run start                react-router-serve the built app
+  npm run typecheck            react-router typegen + tsc
+  npm run verify:components    vite-node SSR smoke test (15 assertions)
+
+Verification status (last full run against live stack):
+  - verify:api 41/41, verify:notifications 27/27,
+    verify:reservations 8/8, verify:order-flow 30/30,
+    verify:day-close 42/42, measure:payloads 14/14, verify:seed PASS
+  - Frontend verify:components 15/15, production build PASS
+  - Backend typecheck: 0 errors; Frontend typecheck: 0 errors
+
+Seeded demo logins (password for all: Password123!):
+  admin@dineflow.test (ADMIN)     manager@dineflow.test (MANAGER)
+  waiter@dineflow.test (STAFF)    chef@dineflow.test (KITCHEN)
+  diner@dineflow.test (CUSTOMER)
+
+
+13. LOCAL RUN TOPOLOGY (this machine)
+========================================================================
+  - MongoDB: single-node replica set "rs0" on 127.0.0.1:27018
+    DATABASE_URL=mongodb://127.0.0.1:27018/dineflow?replicaSet=rs0
+  - Backend: tsx watch on :5000 (BETTER_AUTH_URL=http://localhost:5000)
+  - Frontend: react-router dev on :5173 (VITE_BACKEND_URL=http://localhost:5000)
+  - Inngest dev UI: http://localhost:8288
+  - mongod 9.0 binary path:
+    C:\Program Files\MongoDB\Server\9.0\bin\mongod.exe
+    (no mongosh/mongodump/mongorestore shipped in that bin)
+
+  Operational notes:
+  - Stop the backend before `prisma generate` (engine DLL file lock).
+  - Run the typecheck from within the workspace, not the temp dir.
+  - If mongod data dir was ever repaired, replica-set mode refuses to open
+    it ("instance has been repaired"): dump the standalone, wipe, re-init
+    rs0, re-import (the dump/restore tool lives in the temp tooling dir
+    and converts Dates + 24-hex ObjectIds back on import).
