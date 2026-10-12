@@ -30,15 +30,25 @@ Then seed the database (roles, users, demo menu) once:
 docker compose exec backend npm run seed
 ```
 
-Default credentials (change immediately in **Admin → Staff**):
+Default credentials (change immediately in **Admin → Staff**, or rotate PINs from the CLI):
 
-| Role    | Login                     | PIN  |
-|---------|---------------------------|------|
+| Role    | Login                     | Default PIN |
+|---------|---------------------------|-------------|
 | Owner   | owner@megadine.local      | 0000 |
 | Admin   | admin@megadine.local      | 4444 |
 | Cashier | (terminal user)           | 1111 |
 | Waiter  | (terminal user)           | 2222 |
 | Kitchen | (terminal user)           | 3333 |
+
+Set `PIN_OWNER` / `PIN_ADMIN` / `PIN_CASHIER` / `PIN_WAITER` / `PIN_KITCHEN` in
+`backend/.env` to change them (they're applied on seed), then rotate the live
+database without losing data:
+
+```
+npm --prefix backend run rotate-pins
+```
+
+The login screen only shows the demo-PIN hint when built with `VITE_SHOW_DEMO_PINS=1`.
 
 ### Key `.env` values
 
@@ -51,12 +61,34 @@ Default credentials (change immediately in **Admin → Staff**):
 - `BACKUP_RETENTION_DAYS` — auto-prune backups older than N days
 - `SESSION_TTL_HOURS` / `MAX_PIN_ATTEMPTS` / `LOCKOUT_MINUTES` — auth hardening
 - `COOKIE_SECURE` — set `true` **only** behind HTTPS. Leave `false` (default) for plain-HTTP LAN installs, otherwise the browser drops the session cookie.
+- `LICENSE_KEY` / `MEGACODE_LICENSE_PUBLIC_KEY` / `MACHINE_ID` — hardware-bound licensing (see Licensing below)
 - `REDIS_URL` — enables multi-process socket fan-out (optional, single process otherwise)
 
 Access the app:
 
 - Staff terminals: `http://<server-ip>:5173`
 - API health: `http://<server-ip>:3001/api/v1/health`
+
+---
+
+## Licensing
+
+MegaDine ships as the **Basic** edition (2 terminals / 15 tables / 50 menu items).
+A license key raises the limits and unlocks the full feature set, and is bound to
+a single machine.
+
+1. Mint a key bound to this machine:
+   `npm --prefix backend run make-license -- --edition ENTERPRISE`
+   It prints `LICENSE_KEY` and `MEGACODE_LICENSE_PUBLIC_KEY`, and writes the
+   signing keypair to `backend/.license-keys/` (gitignored — keep `private.pem` secret).
+2. Put both values plus `MACHINE_ID=<printed id>` into `.env` (root, used by
+   Docker) **and** `backend/.env` (local dev). `MACHINE_ID` is required under
+   Docker so the container matches the host instead of regenerating an id.
+3. Restart: `docker compose up -d backend`, then confirm Admin → Settings (or
+   `GET /api/v1/admin/license`) shows the new edition.
+
+An invalid, expired, or foreign-machine key silently falls back to Basic so the
+POS keeps selling.
 
 ---
 

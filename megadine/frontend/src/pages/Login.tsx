@@ -82,9 +82,11 @@ export default function Login() {
                 {busy ? "…" : "Enter"}
               </button>
             </div>
-            <p className="muted small" style={{ marginTop: 14 }}>
-              Demo PINs: Owner 0000 · Admin 4444 · Cashier 1111 · Waiter 2222 · Kitchen 3333
-            </p>
+            {import.meta.env.VITE_SHOW_DEMO_PINS === "1" && (
+              <p className="muted small" style={{ marginTop: 14 }}>
+                Demo PINs: Owner 0000 · Admin 4444 · Cashier 1111 · Waiter 2222 · Kitchen 3333
+              </p>
+            )}
             <button className="btn ghost small" onClick={() => setMode("password")}>
               Sign in with email instead
             </button>

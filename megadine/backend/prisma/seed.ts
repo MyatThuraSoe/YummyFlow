@@ -62,12 +62,19 @@ async function main() {
     },
   });
 
-  // ── Staff (PINs documented in the README) ──────────────
-  const ownerPin = await hashPin("0000");
-  const adminPin = await hashPin("4444");
-  const cashierPin = await hashPin("1111");
-  const waiterPin = await hashPin("2222");
-  const kitchenPin = await hashPin("3333");
+  // ── Staff (PINs default to the demo values; override with PIN_<ROLE>) ──
+  const pins = {
+    OWNER: process.env.PIN_OWNER ?? "0000",
+    ADMIN: process.env.PIN_ADMIN ?? "4444",
+    CASHIER: process.env.PIN_CASHIER ?? "1111",
+    WAITER: process.env.PIN_WAITER ?? "2222",
+    KITCHEN: process.env.PIN_KITCHEN ?? "3333",
+  };
+  const ownerPin = await hashPin(pins.OWNER);
+  const adminPin = await hashPin(pins.ADMIN);
+  const cashierPin = await hashPin(pins.CASHIER);
+  const waiterPin = await hashPin(pins.WAITER);
+  const kitchenPin = await hashPin(pins.KITCHEN);
 
   await prisma.user.createMany({
     data: [
@@ -201,11 +208,11 @@ async function main() {
   void soup; void water; void icecream; void beer; void bacon;
 
   console.log("Seed complete.");
-  console.log("  Owner   PIN 0000 (password owner123)");
-  console.log("  Admin   PIN 4444 (password admin123)");
-  console.log("  Cashier PIN 1111");
-  console.log("  Waiter  PIN 2222");
-  console.log("  Kitchen PIN 3333");
+  console.log(`  Owner   PIN ${pins.OWNER} (password owner123)`);
+  console.log(`  Admin   PIN ${pins.ADMIN} (password admin123)`);
+  console.log(`  Cashier PIN ${pins.CASHIER}`);
+  console.log(`  Waiter  PIN ${pins.WAITER}`);
+  console.log(`  Kitchen PIN ${pins.KITCHEN}`);
   console.log(`  Menu items: ${[burger, pizza, steak, salad, soup, wings, coke, beer, water, lava, icecream].length}`);
 }
 

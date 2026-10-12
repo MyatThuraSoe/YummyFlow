@@ -1,3 +1,4 @@
+import "../scripts/_hermetic-env.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { applyRate, fromCents, round2, toCents } from "../src/lib/money.js";

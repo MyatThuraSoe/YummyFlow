@@ -37,6 +37,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org/}
     container_name: megadine_backend
     restart: always
     depends_on:
@@ -58,6 +60,11 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:-change-me-in-production}
       # false for plain-HTTP LAN installs; true only behind HTTPS.
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # Hardware-bound license. MACHINE_ID pins the binding inside the
+      # container (otherwise each rebuild generates a new machine id).
+      LICENSE_KEY: ${LICENSE_KEY:-}
+      MEGACODE_LICENSE_PUBLIC_KEY: ${MEGACODE_LICENSE_PUBLIC_KEY:-}
+      MACHINE_ID: ${MACHINE_ID:-}
     ports:
       - "3001:3001"
     volumes:
@@ -67,6 +74,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org/}
     container_name: megadine_frontend
     restart: always
     depends_on:

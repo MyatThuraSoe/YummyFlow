@@ -3,4 +3,5 @@ dist/
 .env
 .env.local
 backups/
+.license-keys/
 *.log

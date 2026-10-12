@@ -18,6 +18,8 @@
     "seed": "tsx prisma/seed.ts",
     "verify": "tsx scripts/verify-basic.ts",
     "verify:extended": "tsx scripts/verify-extended.ts",
+    "make-license": "tsx scripts/make-license.ts",
+    "rotate-pins": "tsx scripts/rotate-pins.ts",
     "test": "node --import tsx --test test/unit.test.ts"
   },
   "dependencies": {

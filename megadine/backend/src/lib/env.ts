@@ -34,6 +34,9 @@ export const env = {
   KITCHEN_PRINTER_IP: process.env.KITCHEN_PRINTER_IP ?? "",
   LICENSE_KEY: process.env.LICENSE_KEY ?? "",
   MEGACODE_LICENSE_PUBLIC_KEY: process.env.MEGACODE_LICENSE_PUBLIC_KEY ?? "",
+  // Pin the machine id explicitly (e.g. inside Docker) so the hardware-bound
+  // license stays valid across container rebuilds.
+  MACHINE_ID: process.env.MACHINE_ID ?? "",
   BACKUP_DIR: process.env.BACKUP_DIR ?? "./backups",
   BACKUP_RETENTION_DAYS: num(process.env.BACKUP_RETENTION_DAYS, 30),
   USB_EXPORT_DIR: process.env.USB_EXPORT_DIR ?? "",

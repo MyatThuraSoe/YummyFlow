@@ -10,6 +10,7 @@
  *
  * Run:  npm run verify:extended
  */
+import "./_hermetic-env.js";
 import http from "node:http";
 import assert from "node:assert/strict";
 import { createApp } from "../src/app.js";
@@ -19,6 +20,11 @@ import { businessDateFor } from "../src/lib/businessDay.js";
 
 const PORT = 4598;
 const BASE = `http://127.0.0.1:${PORT}/api/v1`;
+
+// Demo PINs by default; override via PIN_<ROLE> (must match the seeded users).
+const PIN_OWNER = process.env.PIN_OWNER ?? "0000";
+const PIN_ADMIN = process.env.PIN_ADMIN ?? "4444";
+const PIN_CASHIER = process.env.PIN_CASHIER ?? "1111";
 
 let passed = 0;
 function ok(name: string) {
@@ -69,8 +75,8 @@ async function main() {
   console.log(`\nMegaDine Basic extended verification against http://127.0.0.1:${PORT}\n`);
 
   try {
-    const cashier = await login("1111");
-    const admin = await login("4444");
+  const cashier = await login(PIN_CASHIER);
+  const admin = await login(PIN_ADMIN);
 
     // ── License + plan limits ────────────────────────────
     const lic = await api<{
@@ -251,9 +257,9 @@ async function main() {
     assert.ok(sent.data.tickets >= 1);
     const noPin = await api(`/orders/${v2.data.order.id}/void-line`, { method: "POST", token: cashier.token, body: { lineId: v2.data.order.lines[0]!.id, reason: "verify-void" } });
     assert.ok(noPin.status === 400 || noPin.status === 403, `expected 400/403, got ${noPin.status}`);
-    const withPin = await api(`/orders/${v2.data.order.id}/void-line`, { method: "POST", token: cashier.token, body: { lineId: v2.data.order.lines[0]!.id, reason: "verify-void", managerPin: "0000" } });
-    assert.equal(withPin.status, 200);
-    await api(`/orders/${v2.data.order.id}/cancel`, { method: "POST", token: cashier.token, body: { reason: "verify cleanup", managerPin: "0000" } });
+  const withPin = await api(`/orders/${v2.data.order.id}/void-line`, { method: "POST", token: cashier.token, body: { lineId: v2.data.order.lines[0]!.id, reason: "verify-void", managerPin: PIN_OWNER } });
+  assert.equal(withPin.status, 200);
+  await api(`/orders/${v2.data.order.id}/cancel`, { method: "POST", token: cashier.token, body: { reason: "verify cleanup", managerPin: PIN_OWNER } });
     ok("manager PIN required (and works) to void a kitchen-sent line");
 
     // Close the shift, reconciling exactly.

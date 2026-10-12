@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { env } from "./env.js";
+import { getMachineId } from "./machine.js";
 import { ApiError } from "./errors.js";
 import { prisma } from "./prisma.js";
 
@@ -44,22 +45,35 @@ export interface MegaDineLicense {
   signature?: string;
 }
 
+/** Accept the public key as a PEM string or a single-line base64 SPKI DER. */
+function publicKeyFromEnv(): crypto.KeyObject | null {
+  const v = env.MEGACODE_LICENSE_PUBLIC_KEY.trim();
+  if (!v) return null;
+  if (v.includes("BEGIN")) return crypto.createPublicKey(v);
+  return crypto.createPublicKey({ key: Buffer.from(v, "base64"), format: "der", type: "spki" });
+}
+
 /** Decode (and, if a public key is configured, verify) the license key. */
 export function decodeLicense(licenseKey: string): MegaDineLicense {
   const decoded = JSON.parse(Buffer.from(licenseKey, "base64").toString("utf-8")) as MegaDineLicense & { signature?: string };
   const { signature, ...payload } = decoded;
   if (!signature) throw new Error("LICENSE_INVALID");
-  if (env.MEGACODE_LICENSE_PUBLIC_KEY) {
+  const publicKey = publicKeyFromEnv();
+  if (publicKey) {
     const ok = crypto.verify(
       "RSA-SHA256",
       Buffer.from(JSON.stringify(payload)),
-      env.MEGACODE_LICENSE_PUBLIC_KEY,
+      publicKey,
       Buffer.from(signature, "base64"),
     );
     if (!ok) throw new Error("LICENSE_INVALID");
   }
   if (decoded.expiresAt && new Date(decoded.expiresAt) < new Date()) throw new Error("LICENSE_EXPIRED");
   if (!EDITION_LIMITS[decoded.edition]) throw new Error("LICENSE_INVALID");
+  // Hardware binding: the key only unlocks the machine it was issued for.
+  if (decoded.hardwareFingerprint && decoded.hardwareFingerprint !== getMachineId()) {
+    throw new Error("LICENSE_MACHINE_MISMATCH");
+  }
   return decoded;
 }
 

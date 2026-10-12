@@ -6,6 +6,7 @@
  * Run:  npm run seed   (once, seeds demo data)
  *       npm run verify
  */
+import "./_hermetic-env.js";
 import http from "node:http";
 import assert from "node:assert/strict";
 import { createApp } from "../src/app.js";
@@ -14,6 +15,12 @@ import { prisma } from "../src/lib/prisma.js";
 
 const PORT = 4599;
 const BASE = `http://127.0.0.1:${PORT}/api/v1`;
+
+// Demo PINs by default; override via PIN_<ROLE> (must match the seeded users).
+const PIN_OWNER = process.env.PIN_OWNER ?? "0000";
+const PIN_ADMIN = process.env.PIN_ADMIN ?? "4444";
+const PIN_CASHIER = process.env.PIN_CASHIER ?? "1111";
+const PIN_KITCHEN = process.env.PIN_KITCHEN ?? "3333";
 
 let passed = 0;
 function ok(name: string) {
@@ -66,15 +73,15 @@ async function main() {
 
   try {
     // ── MEGA-0: auth + RBAC ─────────────────────────────
-    const cashier = await login("1111");
+    const cashier = await login(PIN_CASHIER);
     assert.equal(cashier.role, "CASHIER");
     ok("PIN login resolves the CASHIER role");
 
-    const kitchen = await login("3333");
+    const kitchen = await login(PIN_KITCHEN);
     assert.equal(kitchen.role, "KITCHEN");
     ok("PIN login resolves the KITCHEN role");
 
-    const admin = await login("4444");
+    const admin = await login(PIN_ADMIN);
     assert.equal(admin.role, "ADMIN");
     ok("PIN login resolves the ADMIN role");
 
@@ -205,7 +212,7 @@ async function main() {
     const refund = await api<{ order: { paymentStatus: string } }>("/payments/refund", {
       method: "POST",
       token: admin.token,
-      body: { orderId, amount: 2, reason: "customer complaint", managerPin: "0000" },
+      body: { orderId, amount: 2, reason: "customer complaint", managerPin: PIN_OWNER },
     });
     assert.equal(refund.status, 200, JSON.stringify(refund.data));
     assert.equal(refund.data.order.paymentStatus, "PARTIALLY_REFUNDED");
