@@ -1,0 +1,80 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: megadine_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-megadine}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-megadine_secure_2026}
+      POSTGRES_DB: ${DB_NAME:-megadine_pos}
+    ports:
+      - "5432:5432"
+    volumes:
+      - megadine_pgdata:/var/lib/postgresql/data
+      - ./backend/backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U megadine"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: megadine_redis
+    restart: always
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - megadine_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: megadine_backend
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgresql://megadine:${DB_PASSWORD:-megadine_secure_2026}@postgres:5432/megadine_pos
+      REDIS_URL: redis://redis:6379
+      # Allow the LAN frontend origin; adjust to your host IP/domain.
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+      PRINTER_MODE: ${PRINTER_MODE:-simulate}
+      RECEIPT_PRINTER_IP: ${RECEIPT_PRINTER_IP:-}
+      KITCHEN_PRINTER_IP: ${KITCHEN_PRINTER_IP:-}
+      BACKUP_DIR: /app/backups
+      SESSION_SECRET: ${SESSION_SECRET:-change-me-in-production}
+      # false for plain-HTTP LAN installs; true only behind HTTPS.
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports:
+      - "3001:3001"
+    volumes:
+      - megadine_backups:/app/backups
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: megadine_frontend
+    restart: always
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+
+volumes:
+  megadine_pgdata:
+  megadine_redisdata:
+  megadine_backups:

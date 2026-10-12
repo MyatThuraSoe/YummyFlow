@@ -1,0 +1,80 @@
+name: MegaDine CI
+
+on:
+  push:
+    paths:
+      - "megadine/**"
+      - ".github/workflows/megadine-ci.yml"
+  pull_request:
+    paths:
+      - "megadine/**"
+      - ".github/workflows/megadine-ci.yml"
+
+jobs:
+  backend:
+    name: Backend (typecheck · lint · test · build · verify)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: megadine/backend
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: megadine
+          POSTGRES_PASSWORD: megadine_secure_2026
+          POSTGRES_DB: megadine_pos
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U megadine"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://megadine:megadine_secure_2026@localhost:5432/megadine_pos?schema=public
+      NODE_ENV: test
+      SESSION_SECRET: ci-test-secret
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: megadine/backend/package-lock.json
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - run: npx prisma migrate deploy
+      - run: npm run seed
+      - run: npm run verify
+      - run: npm run verify:extended
+
+  frontend:
+    name: Frontend (typecheck · lint · build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: megadine/frontend
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: megadine/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run build
+      - name: Playwright E2E smoke tests
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:e2e
