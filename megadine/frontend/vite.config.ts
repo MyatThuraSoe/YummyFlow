@@ -12,8 +12,8 @@ export default defineConfig({
         name: "MegaDine POS",
         short_name: "MegaDine",
         description: "Offline-first restaurant point of sale",
-        theme_color: "#0f172a",
-        background_color: "#0f172a",
+        theme_color: "#ffffff",
+        background_color: "#ffffff",
         display: "fullscreen",
         start_url: "/",
         icons: [

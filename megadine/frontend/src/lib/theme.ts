@@ -9,7 +9,7 @@ export const theme = createTheme({
     primary: { main: "#2B6E4F", light: "#4A8A6C", dark: "#1F5239" },
     secondary: { main: "#B8862E", light: "#CBA054", dark: "#96701F" },
     error: { main: "#B23A2E" },
-    background: { default: "#F3F5F1", paper: "#FFFFFF" },
+    background: { default: "#FFFFFF", paper: "#FFFFFF" },
     text: { primary: "#1C2620", secondary: "#5B655D" },
     divider: "#DEDFD6",
   },
