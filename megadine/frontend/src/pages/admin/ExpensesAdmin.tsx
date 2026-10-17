@@ -1,0 +1,80 @@
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiDel, apiGet, apiPost } from "../../lib/api";
+import { formatMoney, toCents } from "../../lib/format";
+import { Field, Modal, useToast } from "../../components/ui";
+
+interface Expense { id: string; date: string; category: string; amount: string; payee: string | null; paymentMethod: string | null; notes: string | null }
+interface Settings { restaurant: { currency: string } | null }
+
+export default function ExpensesAdmin() {
+  const qc = useQueryClient();
+  const { push } = useToast();
+  const { data } = useQuery({ queryKey: ["expenses"], queryFn: () => apiGet<{ expenses: Expense[]; total: number }>("/expenses") });
+  const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: () => apiGet<Settings>("/admin/settings") });
+  const currency = settings?.restaurant?.currency ?? "USD";
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ category: "Supplies", amount: "", payee: "", paymentMethod: "CASH", notes: "", fromDrawer: false });
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["expenses"] });
+
+  const create = useMutation({
+    mutationFn: () => apiPost("/expenses", { category: form.category, amount: Number(form.amount), payee: form.payee || undefined, paymentMethod: form.paymentMethod, notes: form.notes || undefined, fromDrawer: form.fromDrawer }),
+    onSuccess: () => { setOpen(false); setForm({ category: "Supplies", amount: "", payee: "", paymentMethod: "CASH", notes: "", fromDrawer: false }); invalidate(); push("Expense recorded", "ok"); },
+    onError: (e) => push(e instanceof Error ? e.message : "Failed", "error"),
+  });
+
+  const del = useMutation({ mutationFn: (id: string) => apiDel(`/expenses/${id}`), onSuccess: invalidate });
+
+  return (
+    <div>
+      <div className="row" style={{ marginBottom: 14 }}>
+        <button className="btn primary" onClick={() => setOpen(true)}>+ Expense</button>
+        <div className="spacer" />
+        <span className="badge muted">Today total: {formatMoney(data?.total ?? 0, currency)}</span>
+      </div>
+      <div className="card">
+        <table className="tbl">
+          <thead>
+            <tr><th>Date</th><th>Category</th><th>Payee</th><th>Method</th><th style={{ textAlign: "right" }}>Amount</th><th /></tr>
+          </thead>
+          <tbody>
+            {(data?.expenses ?? []).map((e) => (
+              <tr key={e.id}>
+                <td className="small muted">{new Date(e.date).toLocaleDateString()}</td>
+                <td>{e.category}</td>
+                <td className="small">{e.payee ?? "—"}</td>
+                <td className="small muted">{e.paymentMethod ?? "—"}</td>
+                <td className="mono" style={{ textAlign: "right" }}>{formatMoney(toCents(e.amount), currency)}</td>
+                <td><button className="btn ghost small" onClick={() => del.mutate(e.id)}>Delete</button></td>
+              </tr>
+            ))}
+            {(data?.expenses ?? []).length === 0 && <tr><td colSpan={6} className="muted">No expenses today.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {open && (
+        <Modal
+          title="Record expense"
+          onClose={() => setOpen(false)}
+          footer={<><button className="btn ghost" onClick={() => setOpen(false)}>Cancel</button><button className="btn primary" disabled={!form.amount} onClick={() => create.mutate()}>Save</button></>}
+        >
+          <Field label="Category"><input className="input" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} /></Field>
+          <Field label={`Amount (${currency})`}><input className="input" type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></Field>
+          <Field label="Payee"><input className="input" value={form.payee} onChange={(e) => setForm({ ...form, payee: e.target.value })} /></Field>
+          <Field label="Payment method">
+            <select className="input" value={form.paymentMethod} onChange={(e) => setForm({ ...form, paymentMethod: e.target.value })}>
+              <option>CASH</option><option>CARD</option><option>TRANSFER</option>
+            </select>
+          </Field>
+          <Field label="Notes"><input className="input" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
+          <label className="row small" style={{ gap: 6 }}>
+            <input type="checkbox" checked={form.fromDrawer} onChange={(e) => setForm({ ...form, fromDrawer: e.target.checked })} />
+            Paid from open cash drawer (records a drawer payout)
+          </label>
+        </Modal>
+      )}
+    </div>
+  );
+}
