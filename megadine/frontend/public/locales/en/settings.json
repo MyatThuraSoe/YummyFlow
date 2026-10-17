@@ -1,0 +1,21 @@
+{
+  "title": "Settings",
+  "shop_info": "Shop Info",
+  "system": "System",
+  "receipt": "Receipt",
+  "backup": "Backup",
+  "language": "Language",
+  "license": "License",
+  "cash_variance_tolerance": "Cash variance tolerance",
+  "address": "Address",
+  "phone": "Phone",
+  "tax_id": "Tax ID",
+  "currency": "Currency",
+  "business_day_cutoff": "Business day cutoff",
+  "tax_rate": "Tax rate (%)",
+  "service_charge": "Service charge (%)",
+  "tax_inclusive": "Prices include tax (tax-inclusive)",
+  "receipt_header": "Receipt header",
+  "receipt_footer": "Receipt footer",
+  "save_settings": "Save settings"
+}

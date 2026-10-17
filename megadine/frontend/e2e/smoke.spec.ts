@@ -1,41 +1,28 @@
 import { test, expect } from "@playwright/test";
 
-test("login screen renders with the PIN pad", async ({ page }) => {
+test("login screen renders with the password tab", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: /MegaDine/i })).toBeVisible();
-  await expect(page.getByText(/Offline-first restaurant POS/i)).toBeVisible();
-  await expect(page.getByRole("button", { name: "1", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Enter", exact: true })).toBeDisabled();
+  await expect(page.getByRole("heading", { name: /Sign in/i })).toBeVisible();
+  await expect(page.getByLabel(/Username or email/i)).toBeVisible();
+  await expect(page.getByLabel(/^Password$/i)).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Sign in$/ })).toBeDisabled();
 });
 
-test("PIN pad accepts digits and enables Enter at 4 digits", async ({ page }) => {
+test("sign-in button enables after filling credentials", async ({ page }) => {
   await page.goto("/");
-  for (const d of ["1", "2", "3", "4"]) {
-    await page.getByRole("button", { name: d, exact: true }).click();
-  }
-  await expect(page.getByRole("button", { name: "Enter", exact: true })).toBeEnabled();
+  await page.getByLabel(/Username or email/i).fill("owner");
+  await page.getByLabel(/^Password$/i).fill("owner123");
+  await expect(page.getByRole("button", { name: /^Sign in$/ })).toBeEnabled();
 });
 
-test("clear and backspace work", async ({ page }) => {
+test("PIN tab reveals the numeric input", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "1", exact: true }).click();
-  await page.getByRole("button", { name: "2", exact: true }).click();
-  await page.getByRole("button", { name: "⌫" }).click();
-  await expect(page.getByRole("button", { name: "Enter", exact: true })).toBeDisabled();
-  await page.getByRole("button", { name: "3", exact: true }).click();
-  await page.getByRole("button", { name: "4", exact: true }).click();
-  await page.getByRole("button", { name: "5", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Enter", exact: true })).toBeEnabled();
-  await page.getByRole("button", { name: "C", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Enter", exact: true })).toBeDisabled();
-});
-
-test("can switch to email sign-in", async ({ page }) => {
-  await page.goto("/");
-  await page.getByRole("button", { name: /email instead/i }).click();
-  await expect(page.getByLabel("Email")).toBeVisible();
-  await expect(page.getByLabel("Password")).toBeVisible();
-  await expect(page.getByRole("button", { name: /^Sign in$/ })).toBeVisible();
+  await page.getByRole("tab", { name: "PIN" }).click();
+  const pin = page.locator('input[inputmode="numeric"]');
+  await expect(pin).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Sign in$/ })).toBeDisabled();
+  await pin.fill("1234");
+  await expect(page.getByRole("button", { name: /^Sign in$/ })).toBeEnabled();
 });
 
 test("PWA manifest is linked", async ({ page }) => {

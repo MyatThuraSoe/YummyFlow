@@ -1,0 +1,499 @@
+import { useEffect, useState, type ReactNode } from "react";
+import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import {
+  Alert,
+  AppBar,
+  Avatar,
+  Box,
+  Button,
+  Chip,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
+  Drawer,
+  IconButton,
+  List,
+  ListItemButton,
+  ListItemIcon,
+  ListItemText,
+  Menu,
+  MenuItem,
+  Skeleton,
+  Stack,
+  TextField,
+  Toolbar,
+  Tooltip,
+  Typography,
+  useMediaQuery,
+} from "@mui/material";
+import {
+  Backup as BackupIcon,
+  BarChart as BarChartIcon,
+  ChevronLeft as ChevronLeftIcon,
+  ChevronRight as ChevronRightIcon,
+  Dashboard as DashboardIcon,
+  ExpandMore as ExpandMoreIcon,
+  Fullscreen as FullscreenIcon,
+  FullscreenExit as FullscreenExitIcon,
+  History as HistoryIcon,
+  Info as InfoIcon,
+  Inventory2 as Inventory2Icon,
+  Kitchen as KitchenIcon,
+  LockReset as LockResetIcon,
+  Logout as LogoutIcon,
+  Menu as MenuIcon,
+  Payments as PaymentsIcon,
+  People as PeopleIcon,
+  PointOfSale as PointOfSaleIcon,
+  ReceiptLong as ReceiptLongIcon,
+  RestaurantMenu as RestaurantMenuIcon,
+  Settings as SettingsIcon,
+  TableBar as TableBarIcon,
+  TableRestaurant as TableRestaurantIcon,
+  VpnKey as VpnKeyIcon,
+} from "@mui/icons-material";
+import { apiGet, apiPost } from "../lib/api";
+import { errorMessage } from "../lib/errors";
+import LanguageSwitcher from "./LanguageSwitcher";
+import { useAuth } from "../store/auth";
+import { useTranslation } from "react-i18next";
+
+const WIDTH_EXPANDED = 240;
+const WIDTH_COLLAPSED = 68;
+
+interface NavItem {
+  to: string;
+  labelKey: string;
+  cap: string | null;
+  icon: ReactNode;
+  exact?: boolean;
+}
+
+interface NavGroup {
+  labelKey: string;
+  items: NavItem[];
+}
+
+const GROUPS: NavGroup[] = [
+  {
+    labelKey: "group_overview",
+    items: [{ to: "/admin", labelKey: "dashboard", cap: "report.view", icon: <DashboardIcon />, exact: true }],
+  },
+  {
+    labelKey: "group_operations",
+    items: [
+      { to: "/pos", labelKey: "pos", cap: "pos.use", icon: <PointOfSaleIcon /> },
+      { to: "/floor", labelKey: "floor", cap: "table.manage", icon: <TableRestaurantIcon /> },
+      { to: "/kds", labelKey: "kitchen", cap: "kds.view", icon: <KitchenIcon /> },
+    ],
+  },
+  {
+    labelKey: "group_catalog",
+    items: [
+      { to: "/admin/menu", labelKey: "menu", cap: "menu.manage", icon: <RestaurantMenuIcon /> },
+      { to: "/admin/tables", labelKey: "tables", cap: "table.manage", icon: <TableBarIcon /> },
+      { to: "/admin/inventory", labelKey: "inventory", cap: "inventory.view", icon: <Inventory2Icon /> },
+    ],
+  },
+  {
+    labelKey: "group_sales",
+    items: [
+      { to: "/admin/shifts", labelKey: "shifts", cap: "report.view", icon: <ReceiptLongIcon /> },
+      { to: "/admin/reports", labelKey: "reports", cap: "report.view", icon: <BarChartIcon /> },
+      { to: "/admin/expenses", labelKey: "expenses", cap: "expense.manage", icon: <PaymentsIcon /> },
+    ],
+  },
+  {
+    labelKey: "group_administration",
+    items: [
+      { to: "/admin/users", labelKey: "users", cap: "staff.manage", icon: <PeopleIcon /> },
+      { to: "/admin/settings", labelKey: "settings", cap: "settings.manage", icon: <SettingsIcon /> },
+      { to: "/admin/backup", labelKey: "backup", cap: "backup.manage", icon: <BackupIcon /> },
+      { to: "/admin/audit", labelKey: "audit_logs", cap: "audit.view", icon: <HistoryIcon /> },
+      { to: "/admin/license", labelKey: "license", cap: "settings.manage", icon: <VpnKeyIcon /> },
+    ],
+  },
+  {
+    labelKey: "app_info",
+    items: [{ to: "/admin/about", labelKey: "about", cap: null, icon: <InfoIcon /> }],
+  },
+];
+
+const ALL_ITEMS = GROUPS.flatMap((g) => g.items);
+
+interface LicenseStatusData {
+  edition: string;
+  licensed: boolean;
+}
+
+interface Envelope<T> {
+  success: boolean;
+  message: string;
+  data: T;
+}
+
+interface ShiftCurrent {
+  shift: { id: string; openedAt: string } | null;
+}
+
+export default function DashboardLayout() {
+  const { t } = useTranslation(["nav", "common", "cash"]);
+  const { user, can, logout } = useAuth();
+  const nav = useNavigate();
+  const loc = useLocation();
+  const isMobile = useMediaQuery((th) => th.breakpoints.down("sm"));
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem("md_sidebar_collapsed") === "1");
+  const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
+  const [pwOpen, setPwOpen] = useState(false);
+  const [bannerDismissed, setBannerDismissed] = useState(() => localStorage.getItem("md_basic_banner_dismissed") === "1");
+  const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
+
+  const { data: settings } = useQuery({
+    queryKey: ["settings", "summary"],
+    queryFn: () => apiGet<{ restaurant: { name: string } }>("/admin/settings"),
+    staleTime: 5 * 60_000,
+  });
+
+  const { data: shiftData } = useQuery({
+    queryKey: ["shift", "current"],
+    queryFn: () => apiGet<ShiftCurrent>("/shifts/current"),
+    refetchInterval: 30_000,
+  });
+
+  const { data: license } = useQuery({
+    queryKey: ["license", "status"],
+    queryFn: () => apiGet<Envelope<LicenseStatusData>>("/license/status"),
+    staleTime: 60_000,
+  });
+
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  function toggleCollapsed() {
+    setCollapsed((c) => {
+      localStorage.setItem("md_sidebar_collapsed", c ? "0" : "1");
+      return !c;
+    });
+  }
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void document.documentElement.requestFullscreen();
+  }
+
+  function dismissBanner() {
+    localStorage.setItem("md_basic_banner_dismissed", "1");
+    setBannerDismissed(true);
+  }
+
+  const activeItem = [...ALL_ITEMS].sort((a, b) => b.to.length - a.to.length).find((item) => {
+    if (item.exact) return loc.pathname === item.to || loc.pathname === `${item.to}/`;
+    return loc.pathname.startsWith(item.to);
+  });
+  const title = activeItem ? t(`nav:${activeItem.labelKey}`) : t("nav:dashboard");
+  const width = collapsed && !isMobile ? WIDTH_COLLAPSED : WIDTH_EXPANDED;
+  const showBasicBanner = license?.data.licensed === false && !bannerDismissed;
+  const currentShift = shiftData?.shift ?? null;
+
+  const drawerContent = (
+    <Box sx={{ display: "flex", flexDirection: "column", height: "100%", overflowX: "hidden" }}>
+      <Toolbar sx={{ justifyContent: collapsed && !isMobile ? "center" : "space-between", px: collapsed ? 1 : 2 }}>
+        <Typography variant="h6" noWrap sx={{ color: "primary.main", letterSpacing: -0.5 }}>
+          {collapsed && !isMobile ? "MD" : "MegaDine"}
+        </Typography>
+        {!isMobile && (
+          <IconButton size="small" onClick={toggleCollapsed} aria-label="Toggle sidebar">
+            {collapsed ? <ChevronRightIcon /> : <ChevronLeftIcon />}
+          </IconButton>
+        )}
+      </Toolbar>
+      <Divider />
+      <List sx={{ flex: 1, px: 1, overflowY: "auto", overflowX: "hidden" }}>
+        {GROUPS.map((group) => {
+          const items = group.items.filter((item) => item.cap === null || can(item.cap));
+          if (items.length === 0) return null;
+          const groupCollapsed = collapsed && !isMobile;
+          return (
+            <Box key={group.labelKey} sx={{ mt: 1 }}>
+              {!groupCollapsed ? (
+                <Typography
+                  variant="caption"
+                  sx={{
+                    px: 2,
+                    textTransform: "uppercase",
+                    letterSpacing: 1,
+                    fontWeight: 600,
+                    color: "text.secondary",
+                  }}
+                >
+                  {t(`nav:${group.labelKey}`)}
+                </Typography>
+              ) : (
+                <Divider sx={{ mx: 1, my: 0.5 }} />
+              )}
+              {items.map((item) => {
+                const active = item.exact
+                  ? loc.pathname === item.to || loc.pathname === `${item.to}/`
+                  : loc.pathname.startsWith(item.to);
+                const button = (
+                  <ListItemButton
+                    key={item.to}
+                    selected={active}
+                    onClick={() => {
+                      nav(item.to);
+                      setDrawerOpen(false);
+                    }}
+                    sx={{
+                      borderRadius: 2,
+                      mb: 0.25,
+                      minHeight: 42,
+                      justifyContent: groupCollapsed ? "center" : "flex-start",
+                      px: groupCollapsed ? 0 : 2,
+                      "& .MuiListItemIcon-root": { minWidth: groupCollapsed ? 0 : 36, justifyContent: "center", color: active ? "primary.main" : "text.secondary" },
+                    }}
+                  >
+                    <ListItemIcon>{item.icon}</ListItemIcon>
+                    {!groupCollapsed && (
+                      <ListItemText
+                        primary={t(`nav:${item.labelKey}`)}
+                        slotProps={{ primary: { sx: { fontSize: 14, fontWeight: active ? 700 : 500 } } }}
+                      />
+                    )}
+                  </ListItemButton>
+                );
+                return groupCollapsed ? (
+                  <Tooltip key={item.to} title={t(`nav:${item.labelKey}`)} placement="right">
+                    {button}
+                  </Tooltip>
+                ) : (
+                  button
+                );
+              })}
+            </Box>
+          );
+        })}
+      </List>
+    </Box>
+  );
+
+  return (
+    <Box sx={{ display: "flex", minHeight: "100vh", bgcolor: "background.default" }}>
+      {isMobile ? (
+        <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} sx={{ "& .MuiDrawer-paper": { width: WIDTH_EXPANDED } }}>
+          {drawerContent}
+        </Drawer>
+      ) : (
+        <Drawer
+          variant="permanent"
+          sx={{
+            width,
+            flexShrink: 0,
+            "& .MuiDrawer-paper": {
+              width,
+              boxSizing: "border-box",
+              borderRight: "1px solid",
+              borderColor: "divider",
+              transition: "width .18s ease",
+              overflowX: "hidden",
+            },
+          }}
+        >
+          {drawerContent}
+        </Drawer>
+      )}
+
+      <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+        <AppBar
+          position="sticky"
+          elevation={0}
+          color="transparent"
+          sx={{ bgcolor: "background.paper", borderBottom: "1px solid", borderColor: "divider" }}
+        >
+          <Toolbar sx={{ gap: 1 }}>
+            {isMobile && (
+              <IconButton edge="start" onClick={() => setDrawerOpen(true)} aria-label="Open menu">
+                <MenuIcon />
+              </IconButton>
+            )}
+            <Typography variant="h6" noWrap sx={{ fontSize: 18 }}>
+              {title}
+            </Typography>
+            <Box sx={{ flex: 1 }} />
+            <Typography variant="body2" color="text.secondary" noWrap sx={{ display: { xs: "none", md: "block" }, maxWidth: 200 }}>
+              {settings?.restaurant.name ?? t("nav:shop_name_fallback")}
+            </Typography>
+            {currentShift && (
+              <Tooltip title={t("cash:opened_at", { time: new Date(currentShift.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) })}>
+                <Chip
+                  size="small"
+                  color="success"
+                  variant="outlined"
+                  label={`${t("cash:shift_open")} · ${new Date(currentShift.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
+                  onClick={() => nav("/admin/shifts")}
+                  sx={{ display: { xs: "none", sm: "flex" } }}
+                />
+              </Tooltip>
+            )}
+            <LanguageSwitcher compact />
+            <Tooltip title={isFullscreen ? t("nav:exit_fullscreen") : t("nav:fullscreen")}>
+              <IconButton onClick={toggleFullscreen} size="small">
+                {isFullscreen ? <FullscreenExitIcon /> : <FullscreenIcon />}
+              </IconButton>
+            </Tooltip>
+            <Button
+              onClick={(e) => setMenuAnchor(e.currentTarget)}
+              endIcon={<ExpandMoreIcon />}
+              sx={{ textTransform: "none", color: "text.primary", minWidth: 0 }}
+            >
+              <Avatar sx={{ width: 30, height: 30, bgcolor: "primary.main", fontSize: 14 }}>
+                {(user?.firstName?.[0] ?? user?.name?.[0] ?? "?").toUpperCase()}
+              </Avatar>
+            </Button>
+            <Menu anchorEl={menuAnchor} open={!!menuAnchor} onClose={() => setMenuAnchor(null)}>
+              <MenuItem disabled>
+                <ListItemText primary={user?.name} secondary={`@${user?.username ?? ""} · ${user?.role}`} />
+              </MenuItem>
+              <Divider />
+              <MenuItem
+                onClick={() => {
+                  setMenuAnchor(null);
+                  setPwOpen(true);
+                }}
+              >
+                <ListItemIcon>
+                  <LockResetIcon fontSize="small" />
+                </ListItemIcon>
+                {t("nav:change_password")}
+              </MenuItem>
+              <MenuItem
+                onClick={async () => {
+                  setMenuAnchor(null);
+                  await logout();
+                  nav("/login");
+                }}
+              >
+                <ListItemIcon>
+                  <LogoutIcon fontSize="small" />
+                </ListItemIcon>
+                {t("nav:logout")}
+              </MenuItem>
+            </Menu>
+          </Toolbar>
+        </AppBar>
+
+        <Box component="main" sx={{ flex: 1, p: { xs: 2, md: 3 }, minWidth: 0 }}>
+          {showBasicBanner && (
+            <Alert
+              severity="info"
+              onClose={dismissBanner}
+              action={
+                <Button color="inherit" size="small" onClick={() => nav("/admin/license")}>
+                  {t("nav:license")}
+                </Button>
+              }
+              sx={{ mb: 2 }}
+            >
+              {t("common:basic_plan_banner")}
+            </Alert>
+          )}
+          <Outlet />
+        </Box>
+      </Box>
+
+      <ChangePasswordDialog open={pwOpen} onClose={() => setPwOpen(false)} />
+    </Box>
+  );
+}
+
+export function ContentSkeleton() {
+  return (
+    <Stack spacing={2}>
+      <Skeleton variant="rounded" height={48} />
+      <Skeleton variant="rounded" height={220} />
+      <Skeleton variant="rounded" height={220} />
+    </Stack>
+  );
+}
+
+function ChangePasswordDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { t } = useTranslation(["nav", "common", "auth"]);
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  const save = useMutation({
+    mutationFn: () => apiPost("/auth/change-password", { currentPassword: current, newPassword: next }),
+    onSuccess: () => {
+      setSuccess(t("common:password_changed"));
+      setError("");
+      setCurrent("");
+      setNext("");
+      setConfirm("");
+    },
+    onError: (e) => {
+      setSuccess("");
+      setError(errorMessage(e, t));
+    },
+  });
+
+  function reset() {
+    setCurrent("");
+    setNext("");
+    setConfirm("");
+    setError("");
+    setSuccess("");
+    save.reset();
+  }
+
+  function submit() {
+    setError("");
+    setSuccess("");
+    if (next.length < 8) return setError(t("common:password_min"));
+    if (next !== confirm) return setError(t("common:passwords_not_match"));
+    save.mutate();
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onClose={() => {
+        onClose();
+        reset();
+      }}
+    >
+      <DialogTitle>{t("nav:change_password")}</DialogTitle>
+      <DialogContent>
+        <Stack spacing={2} sx={{ mt: 1 }}>
+          {error && <Alert severity="error">{error}</Alert>}
+          {success && <Alert severity="success">{success}</Alert>}
+          <TextField type="password" label={t("nav:current_password")} value={current} onChange={(e) => setCurrent(e.target.value)} autoFocus fullWidth />
+          <TextField type="password" label={t("nav:new_password")} value={next} onChange={(e) => setNext(e.target.value)} fullWidth helperText={t("common:password_min")} />
+          <TextField type="password" label={t("auth:confirm_password")} value={confirm} onChange={(e) => setConfirm(e.target.value)} fullWidth />
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button
+          onClick={() => {
+            onClose();
+            reset();
+          }}
+        >
+          {t("common:cancel")}
+        </Button>
+        <Button variant="contained" onClick={submit} disabled={save.isPending || !current || !next || !confirm}>
+          {save.isPending ? <CircularProgress size={18} /> : t("common:save")}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}

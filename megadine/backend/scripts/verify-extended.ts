@@ -340,6 +340,15 @@ async function main() {
     assert.equal(emailLogin.data.user.username, "owner");
     ok("credential login works by username and by case-insensitive email");
 
+    // Purge temp users left behind by a previously aborted run.
+    const staleUsers = await prisma.user.findMany({ where: { username: { startsWith: "verify_" } }, select: { id: true } });
+    if (staleUsers.length > 0) {
+      const staleIds = staleUsers.map((u) => u.id);
+      await prisma.auditLog.deleteMany({ where: { userId: { in: staleIds } } });
+      await prisma.session.deleteMany({ where: { userId: { in: staleIds } } });
+      await prisma.user.deleteMany({ where: { id: { in: staleIds } } });
+    }
+
     // Staff CRUD + duplicate handling.
     const tempUsername = `verify_w_${stamp}`;
     const tempEmail = `verify_w_${stamp}@example.com`;

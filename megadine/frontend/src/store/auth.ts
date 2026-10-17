@@ -1,21 +1,34 @@
 import { create } from "zustand";
 import { api, apiGet, setToken } from "../lib/api";
 import { connectSocket, disconnectSocket } from "../lib/socket";
+import i18n, { SUPPORTED_LANGS } from "../lib/i18n";
 
 export interface AuthUser {
   id: string;
   name: string;
+  username: string | null;
   email: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  phone: string | null;
   role: string;
   restaurantId: string;
+  preferredLanguage: string | null;
   capabilities: string[];
+}
+
+function applyUserLanguage(user: AuthUser) {
+  const lang = user.preferredLanguage;
+  if (lang && SUPPORTED_LANGS.includes(lang) && i18n.resolvedLanguage !== lang) {
+    void i18n.changeLanguage(lang);
+  }
 }
 
 interface AuthState {
   user: AuthUser | null;
   ready: boolean;
   loginPin: (pin: string) => Promise<AuthUser>;
-  loginPassword: (email: string, password: string) => Promise<AuthUser>;
+  loginCredentials: (handle: string, password: string) => Promise<AuthUser>;
   logout: () => Promise<void>;
   hydrate: () => Promise<void>;
   can: (capability: string) => boolean;
@@ -28,13 +41,16 @@ export const useAuth = create<AuthState>((set, get) => ({
     const data = await api<{ user: AuthUser; token: string }>("/auth/login", { method: "POST", body: { pin } });
     setToken(data.token);
     connectSocket();
+    applyUserLanguage(data.user);
     set({ user: data.user, ready: true });
     return data.user;
   },
-  async loginPassword(email, password) {
-    const data = await api<{ user: AuthUser; token: string }>("/auth/login", { method: "POST", body: { email, password } });
+  async loginCredentials(handle, password) {
+    const body = handle.includes("@") ? { email: handle, password } : { username: handle, password };
+    const data = await api<{ user: AuthUser; token: string }>("/auth/login", { method: "POST", body });
     setToken(data.token);
     connectSocket();
+    applyUserLanguage(data.user);
     set({ user: data.user, ready: true });
     return data.user;
   },
@@ -48,6 +64,7 @@ export const useAuth = create<AuthState>((set, get) => ({
     try {
       const data = await apiGet<{ user: AuthUser }>("/auth/me");
       connectSocket();
+      applyUserLanguage(data.user);
       set({ user: data.user, ready: true });
     } catch {
       setToken(null);

@@ -1,0 +1,14 @@
+{
+  "save": "Save",
+  "cancel": "Cancel",
+  "loading": "Loading…",
+  "error": "Something went wrong",
+  "success": "Success",
+  "passwords_not_match": "Passwords do not match",
+  "password_min": "Password must be at least 8 characters",
+  "password_changed": "Password changed",
+  "failed_to_change_password": "Failed to change password",
+  "copy": "Copy",
+  "copied": "Copied",
+  "basic_plan_banner": "You're on the Basic plan. Activate a license to raise limits."
+}

@@ -1,115 +1,183 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { useNavigate, Link as RouterLink } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { Alert, Box, Button, CircularProgress, Link, Paper, Stack, Tab, Tabs, TextField, Typography } from "@mui/material";
+import { useTranslation } from "react-i18next";
+import { apiGet } from "../lib/api";
+import { errorMessage } from "../lib/errors";
 import { useAuth } from "../store/auth";
-import { useToast } from "../components/ui";
 import { homeForRole } from "../components/ProtectedRoute";
+import LanguageSwitcher from "../components/LanguageSwitcher";
+
+interface Envelope<T> {
+  success: boolean;
+  message: string;
+  data: T;
+}
 
 export default function Login() {
-  const { loginPin, loginPassword } = useAuth();
+  const { loginPin, loginCredentials } = useAuth();
   const nav = useNavigate();
-  const { push } = useToast();
-  const [mode, setMode] = useState<"pin" | "password">("pin");
-  const [pin, setPin] = useState("");
-  const [email, setEmail] = useState("");
+  const { t } = useTranslation(["auth", "common", "errors"]);
+  const [tab, setTab] = useState<"password" | "pin">("password");
+  const [handle, setHandle] = useState("");
   const [password, setPassword] = useState("");
+  const [pin, setPin] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [expired] = useState(() => {
+    const flag = sessionStorage.getItem("md_session_expired_message");
+    if (flag) sessionStorage.removeItem("md_session_expired_message");
+    return !!flag;
+  });
 
-  async function submitPin(value: string) {
+  const { data: setup } = useQuery({
+    queryKey: ["setup-status"],
+    queryFn: () => apiGet<Envelope<{ needsSetup: boolean }>>("/auth/setup-status"),
+    staleTime: 30_000,
+    retry: 0,
+  });
+
+  useEffect(() => {
+    if (setup?.data.needsSetup) nav("/setup", { replace: true });
+  }, [setup, nav]);
+
+  async function submitPassword(e: React.FormEvent) {
+    e.preventDefault();
     setBusy(true);
+    setError("");
     try {
-      const user = await loginPin(value);
+      const user = await loginCredentials(handle.trim(), password);
       nav(homeForRole(user.role), { replace: true });
-    } catch (e) {
-      push(e instanceof Error ? e.message : "Login failed", "error");
+    } catch (err) {
+      setError(errorMessage(err, t));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitPin(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const user = await loginPin(pin);
+      nav(homeForRole(user.role), { replace: true });
+    } catch (err) {
+      setError(errorMessage(err, t));
       setPin("");
     } finally {
       setBusy(false);
     }
   }
 
-  function press(d: string) {
-    if (busy) return;
-    if (d === "clear") return setPin("");
-    if (d === "back") return setPin((p) => p.slice(0, -1));
-    const next = pin + d;
-    setPin(next);
-    if (next.length >= 4) {
-      // Auto-submit once at least 4 digits; 4-6 digit PINs supported via "Enter".
-      if (next.length === 6) submitPin(next);
-    }
-  }
-
-  async function submitPassword(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    try {
-      const user = await loginPassword(email, password);
-      nav(homeForRole(user.role), { replace: true });
-    } catch (err) {
-      push(err instanceof Error ? err.message : "Login failed", "error");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
-    <div className="login-wrap">
-      <div className="login-card">
-        <h1>
-          Mega<span style={{ color: "var(--brand)" }}>Dine</span>
-        </h1>
-        <p className="muted small">Offline-first restaurant POS</p>
+    <Box
+      sx={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        bgcolor: "background.default",
+        backgroundImage: "radial-gradient(rgba(43,110,79,.14) 1px, transparent 1px)",
+        backgroundSize: "18px 18px",
+        p: 2,
+      }}
+    >
+      <Box sx={{ position: "fixed", top: 16, right: 16 }}>
+        <LanguageSwitcher />
+      </Box>
+      <Paper elevation={3} sx={{ width: "100%", maxWidth: 430, p: { xs: 3, sm: 4 } }}>
+        <Stack spacing={2.5}>
+          <Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
+            <Box
+              sx={{
+                width: 46,
+                height: 46,
+                borderRadius: 2.5,
+                bgcolor: "primary.main",
+                color: "#fff",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontWeight: 800,
+                fontSize: 18,
+                letterSpacing: -0.5,
+              }}
+            >
+              MD
+            </Box>
+            <Box>
+              <Typography variant="h5" sx={{ lineHeight: 1.2 }}>
+                {t("auth:sign_in_title")}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                {t("auth:enter_credentials")}
+              </Typography>
+            </Box>
+          </Stack>
 
-        {mode === "pin" ? (
-          <>
-            <div className="pin-dots">
-              {Array.from({ length: Math.max(4, pin.length) }).map((_, i) => (
-                <div key={i} className={`pin-dot ${i < pin.length ? "filled" : ""}`} />
-              ))}
-            </div>
-            <div className="pin-pad">
-              {["1", "2", "3", "4", "5", "6", "7", "8", "9", "back", "0", "clear"].map((k) => (
-                <button key={k} className="pin-key" onClick={() => press(k)} disabled={busy}>
-                  {k === "back" ? "⌫" : k === "clear" ? "C" : k}
-                </button>
-              ))}
-              <button
-                className="pin-key wide primary"
-                style={{ background: "var(--brand)", borderColor: "var(--brand)", color: "#1a1200" }}
-                disabled={busy || pin.length < 4}
-                onClick={() => submitPin(pin)}
-              >
-                {busy ? "…" : "Enter"}
-              </button>
-            </div>
-            {import.meta.env.VITE_SHOW_DEMO_PINS === "1" && (
-              <p className="muted small" style={{ marginTop: 14 }}>
-                Demo PINs: Owner 0000 · Admin 4444 · Cashier 1111 · Waiter 2222 · Kitchen 3333
-              </p>
-            )}
-            <button className="btn ghost small" onClick={() => setMode("password")}>
-              Sign in with email instead
-            </button>
-          </>
-        ) : (
-          <form onSubmit={submitPassword} style={{ textAlign: "left", marginTop: 12 }}>
-            <label className="field">
-              <span>Email</span>
-              <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-            </label>
-            <label className="field">
-              <span>Password</span>
-              <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-            </label>
-            <button className="btn primary block" disabled={busy}>
-              {busy ? "Signing in…" : "Sign in"}
-            </button>
-            <button type="button" className="btn ghost small block" style={{ marginTop: 8 }} onClick={() => setMode("pin")}>
-              Use PIN pad
-            </button>
-          </form>
-        )}
-      </div>
-    </div>
+          {expired && <Alert severity="warning">{t("errors:session_expired")}</Alert>}
+          {error && <Alert severity="error">{error}</Alert>}
+
+          <Tabs value={tab} onChange={(_, v) => { setTab(v); setError(""); }} variant="fullWidth">
+            <Tab value="password" label={t("auth:password_tab")} />
+            <Tab value="pin" label={t("auth:pin_tab")} />
+          </Tabs>
+
+          {tab === "password" ? (
+            <Box component="form" onSubmit={submitPassword}>
+              <Stack spacing={2}>
+                <TextField
+                  label={t("auth:username")}
+                  value={handle}
+                  onChange={(e) => setHandle(e.target.value)}
+                  autoFocus
+                  fullWidth
+                  autoComplete="username"
+                />
+                <TextField
+                  label={t("auth:password")}
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  fullWidth
+                  autoComplete="current-password"
+                />
+                <Button type="submit" variant="contained" size="large" disabled={busy || !handle.trim() || !password}>
+                  {busy ? <CircularProgress size={22} color="inherit" /> : t("auth:sign_in")}
+                </Button>
+              </Stack>
+            </Box>
+          ) : (
+            <Box component="form" onSubmit={submitPin}>
+              <Stack spacing={2}>
+                <TextField
+                  type="password"
+                  value={pin}
+                  onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  autoFocus
+                  fullWidth
+                  placeholder="••••"
+                  slotProps={{ htmlInput: { inputMode: "numeric", style: { textAlign: "center", fontSize: 26, letterSpacing: 10 } } }}
+                />
+                <Button type="submit" variant="contained" size="large" disabled={busy || pin.length < 4}>
+                  {busy ? <CircularProgress size={22} color="inherit" /> : t("auth:sign_in")}
+                </Button>
+              </Stack>
+            </Box>
+          )}
+
+          {setup?.data.needsSetup && (
+            <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center" }}>
+              {t("auth:first_time")}{" "}
+              <Link component={RouterLink} to="/setup">
+                {t("auth:setup_account")}
+              </Link>
+            </Typography>
+          )}
+        </Stack>
+      </Paper>
+    </Box>
   );
 }

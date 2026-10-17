@@ -106,9 +106,21 @@ adminRouter.get(
   "/audit",
   requirePermission("audit.view"),
   asyncHandler(async (req, res) => {
-    const { action, userId, limit } = req.query as Record<string, string | undefined>;
+    const { action, userId, limit, from, to } = req.query as Record<string, string | undefined>;
     const logs = await prisma.auditLog.findMany({
-      where: { restaurantId: req.auth!.restaurantId, ...(action ? { action } : {}), ...(userId ? { userId } : {}) },
+      where: {
+        restaurantId: req.auth!.restaurantId,
+        ...(action ? { action } : {}),
+        ...(userId ? { userId } : {}),
+        ...(from || to
+          ? {
+              createdAt: {
+                ...(from ? { gte: new Date(from) } : {}),
+                ...(to ? { lte: new Date(`${to}T23:59:59.999Z`) } : {}),
+              },
+            }
+          : {}),
+      },
       include: { user: { select: { name: true, role: true } } },
       orderBy: { createdAt: "desc" },
       take: limit ? Math.min(Number(limit), 500) : 100,
@@ -135,6 +147,12 @@ const settingsSchema = z.object({
   serviceChargePct: z.number().min(0).max(1).optional(),
   receiptHeader: z.string().max(120).nullable().optional(),
   receiptFooter: z.string().max(120).nullable().optional(),
+  cashVarianceTolerance: z.number().min(0).max(10000).optional(),
+  address: z.string().max(200).nullable().optional(),
+  phone: z.string().max(40).nullable().optional(),
+  email: z.string().email().nullable().optional(),
+  taxId: z.string().max(60).nullable().optional(),
+  logo: z.string().max(500).nullable().optional(),
 });
 
 adminRouter.patch(
@@ -154,6 +172,12 @@ adminRouter.patch(
         ...(b.serviceChargePct !== undefined ? { serviceChargePct: b.serviceChargePct.toFixed(4) } : {}),
         ...(b.receiptHeader !== undefined ? { receiptHeader: b.receiptHeader } : {}),
         ...(b.receiptFooter !== undefined ? { receiptFooter: b.receiptFooter } : {}),
+        ...(b.cashVarianceTolerance !== undefined ? { cashVarianceTolerance: b.cashVarianceTolerance.toFixed(2) } : {}),
+        ...(b.address !== undefined ? { address: b.address } : {}),
+        ...(b.phone !== undefined ? { phone: b.phone } : {}),
+        ...(b.email !== undefined ? { email: b.email } : {}),
+        ...(b.taxId !== undefined ? { taxId: b.taxId } : {}),
+        ...(b.logo !== undefined ? { logo: b.logo } : {}),
       },
     });
     await audit({ restaurantId: req.auth!.restaurantId, userId: req.auth!.userId, action: "SETTINGS_UPDATED", entityType: "Restaurant", entityId: restaurant.id, after: b });
