@@ -398,20 +398,6 @@ Seed an initial admin user manually in Prisma Studio or via a seed script, then 
 
 ---
 
-## 🤝 Support the channel
-
-If this project helped you, consider supporting on Patreon for exclusive source code features and early access to future projects.
-
-👉 [patreon.com/bensonraro](https://patreon.com/bensonraro)
-
-Subscribe on YouTube for weekly full stack tutorials:
-👉 [youtube.com/@ScriptForger](https://youtube.com/@ScriptForger)
-
-Follow on X for daily dev tips:
-👉 [x.com/TheScriptForger](https://x.com/ScriptForger)
-
----
-
 ## 📄 License
 
 This project is for educational purposes. Please do not republish or resell this source code.
