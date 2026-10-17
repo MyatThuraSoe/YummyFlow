@@ -222,6 +222,41 @@ async function main() {
     assert.ok(auditCount >= 5, "expected audit entries for the flow");
     ok(`audit log captured the session (${auditCount} entries)`);
 
+    // ── MEGA-4: platform auth + license status ──────────
+    const ownerPassword = process.env.SEED_OWNER_PASSWORD ?? "owner123";
+    const setup = await api<{ success: boolean; data: { needsSetup: boolean } }>("/auth/setup-status");
+    assert.equal(setup.status, 200);
+    assert.equal(setup.data.data.needsSetup, false);
+    ok("setup-status reports an initialized installation (envelope)");
+
+    const creds = await api<{ user: { username: string; role: string }; token: string }>("/auth/login", {
+      method: "POST",
+      body: { username: "owner", password: ownerPassword },
+    });
+    assert.equal(creds.status, 200, JSON.stringify(creds.data));
+    assert.equal(creds.data.user.username, "owner");
+    assert.equal(creds.data.user.role, "OWNER");
+    ok("username + password login resolves the OWNER");
+
+    const emailLogin = await api<{ user: { username: string } }>("/auth/login", {
+      method: "POST",
+      body: { email: "Owner@MegaDine.Local", password: ownerPassword },
+    });
+    assert.equal(emailLogin.status, 200);
+    assert.equal(emailLogin.data.user.username, "owner");
+    ok("email login is case-insensitive");
+
+    const licStatus = await api<{ success: boolean; data: { machineId: string; edition: string; licensed: boolean; reason: string } }>(
+      "/license/status",
+      { token: creds.data.token },
+    );
+    assert.equal(licStatus.status, 200, JSON.stringify(licStatus.data));
+    assert.equal(licStatus.data.data.edition, "BASIC"); // hermetic env clears LICENSE_KEY
+    assert.equal(licStatus.data.data.licensed, false);
+    assert.equal(licStatus.data.data.reason, "no_license");
+    assert.ok(licStatus.data.data.machineId.length > 0);
+    ok("license status reports BASIC / no_license with a machine id (envelope)");
+
     console.log(`\n\u2705 MegaDine Basic verification passed: ${passed} checks\n`);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));

@@ -53,6 +53,22 @@ function publicKeyFromEnv(): crypto.KeyObject | null {
   return crypto.createPublicKey({ key: Buffer.from(v, "base64"), format: "der", type: "spki" });
 }
 
+/**
+ * Runtime license key (PRD §7.1): the activation API persists the key to
+ * `Restaurant.licenseKey` and mirrors it here so the synchronous `getLimits()`
+ * can honour it without a DB round-trip. Prefer this over `env.LICENSE_KEY`.
+ */
+let runtimeLicenseKey: string | null = null;
+
+export function setRuntimeLicenseKey(key: string | null): void {
+  runtimeLicenseKey = key?.trim() || null;
+}
+
+/** The key in force: persisted runtime key first, env var as fallback. */
+export function activeLicenseKey(): string | null {
+  return runtimeLicenseKey ?? (env.LICENSE_KEY || null);
+}
+
 /** Decode (and, if a public key is configured, verify) the license key. */
 export function decodeLicense(licenseKey: string): MegaDineLicense {
   const decoded = JSON.parse(Buffer.from(licenseKey, "base64").toString("utf-8")) as MegaDineLicense & { signature?: string };
@@ -79,9 +95,10 @@ export function decodeLicense(licenseKey: string): MegaDineLicense {
 
 /** Limits in force right now. Falls back to BASIC when no/invalid key. */
 export function getLimits(): PlanLimits {
-  if (env.LICENSE_KEY) {
+  const key = activeLicenseKey();
+  if (key) {
     try {
-      const lic = decodeLicense(env.LICENSE_KEY);
+      const lic = decodeLicense(key);
       return {
         edition: lic.edition,
         maxTerminals: lic.maxTerminals ?? EDITION_LIMITS[lic.edition].maxTerminals,

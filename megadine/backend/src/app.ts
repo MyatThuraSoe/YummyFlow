@@ -18,6 +18,8 @@ import { reportsRouter } from "./routes/reports.routes.js";
 import { inventoryRouter } from "./routes/inventory.routes.js";
 import { expensesRouter } from "./routes/expenses.routes.js";
 import { adminRouter } from "./routes/admin.routes.js";
+import { usersRouter } from "./routes/users.routes.js";
+import { licenseRouter } from "./routes/license.routes.js";
 
 export function createApp() {
   const app = express();
@@ -55,6 +57,8 @@ export function createApp() {
   v1.use("/inventory", inventoryRouter);
   v1.use("/expenses", expensesRouter);
   v1.use("/admin", adminRouter);
+  v1.use("/users", usersRouter);
+  v1.use("/license", licenseRouter);
   app.use("/api/v1", v1);
 
   app.use(notFoundHandler);

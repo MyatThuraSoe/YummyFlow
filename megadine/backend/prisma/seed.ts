@@ -40,6 +40,7 @@ async function main() {
       prisma.expense.deleteMany({ where: { restaurantId: rid } }),
       prisma.auditLog.deleteMany({ where: { restaurantId: rid } }),
       prisma.backupRun.deleteMany({ where: { restaurantId: rid } }),
+      prisma.businessDayClose.deleteMany({ where: { restaurantId: rid } }),
       prisma.terminal.deleteMany({ where: { restaurantId: rid } }),
       prisma.session.deleteMany({}),
       prisma.user.deleteMany({ where: { restaurantId: rid } }),
@@ -78,11 +79,11 @@ async function main() {
 
   await prisma.user.createMany({
     data: [
-      { restaurantId: restaurant.id, name: "Olivia Owner", email: "owner@megadine.local", role: "OWNER", pinHash: ownerPin, passwordHash: await hashPassword("owner123") },
-      { restaurantId: restaurant.id, name: "Adam Admin", email: "admin@megadine.local", role: "ADMIN", pinHash: adminPin, passwordHash: await hashPassword("admin123") },
-      { restaurantId: restaurant.id, name: "Cara Cashier", role: "CASHIER", pinHash: cashierPin },
-      { restaurantId: restaurant.id, name: "Will Waiter", role: "WAITER", pinHash: waiterPin },
-      { restaurantId: restaurant.id, name: "Ken Kitchen", role: "KITCHEN", pinHash: kitchenPin },
+      { restaurantId: restaurant.id, name: "Olivia Owner", username: "owner", firstName: "Olivia", lastName: "Owner", email: "owner@megadine.local", role: "OWNER", pinHash: ownerPin, passwordHash: await hashPassword("owner123") },
+      { restaurantId: restaurant.id, name: "Adam Admin", username: "admin", firstName: "Adam", lastName: "Admin", email: "admin@megadine.local", role: "ADMIN", pinHash: adminPin, passwordHash: await hashPassword("admin123") },
+      { restaurantId: restaurant.id, name: "Cara Cashier", username: "cashier", firstName: "Cara", lastName: "Cashier", role: "CASHIER", pinHash: cashierPin },
+      { restaurantId: restaurant.id, name: "Will Waiter", username: "waiter", firstName: "Will", lastName: "Waiter", role: "WAITER", pinHash: waiterPin },
+      { restaurantId: restaurant.id, name: "Ken Kitchen", username: "kitchen", firstName: "Ken", lastName: "Kitchen", role: "KITCHEN", pinHash: kitchenPin },
     ],
   });
 

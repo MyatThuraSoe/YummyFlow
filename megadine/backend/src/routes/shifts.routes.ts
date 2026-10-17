@@ -112,6 +112,8 @@ shiftsRouter.post(
     res.json({
       shift: result.shift,
       variance: fromCents(result.variance),
+      varianceTolerance: result.varianceTolerance,
+      varianceExceedsTolerance: result.varianceExceedsTolerance,
       summary: { ...result.summary, shift: undefined },
     });
   }),

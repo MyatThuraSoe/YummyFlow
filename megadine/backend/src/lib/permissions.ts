@@ -38,17 +38,19 @@ const ALL: Capability[] = [
 
 export const ROLE_CAPABILITIES: Record<Role, Capability[]> = {
   OWNER: [...ALL],
-  ADMIN: ALL.filter((c) => c !== "pos.use" || true), // Admin: all except physical cashier duties
+  // Admin: full back-office access plus floor operations.
+  ADMIN: [...ALL],
+  // Manager: everything except the last-admin/platform-level capabilities.
+  MANAGER: ALL.filter(
+    (c) => !["staff.manage", "settings.manage", "audit.view", "backup.manage", "hardware.manage"].includes(c),
+  ),
   CASHIER: [
-    "pos.use", "order.discount.small", "shift.open", "shift.close", "report.view",
-    "inventory.view", "kds.view",
+    "pos.use", "order.discount.small", "kds.view", "shift.open", "shift.close",
+    "report.view", "inventory.view",
   ],
-  WAITER: ["pos.use", "order.discount.small", "table.manage", "kds.view", "inventory.view"],
+  WAITER: ["pos.use", "order.discount.small", "table.manage", "kds.view", "report.view", "inventory.view"],
   KITCHEN: ["kds.view", "kds.update", "inventory.view"],
 };
-
-// Admin can do everything except own a cash shift (owner/cashier handle drawers).
-ROLE_CAPABILITIES.ADMIN = ALL.filter((c) => c !== "shift.open" && c !== "shift.close");
 
 export function can(role: Role, capability: Capability): boolean {
   return ROLE_CAPABILITIES[role]?.includes(capability) ?? false;
