@@ -1,12 +1,12 @@
 {
-  "shift_open": "Shift open",
-  "opened_at": "Opened at",
-  "expected_cash": "Expected cash",
-  "actual_cash": "Actual cash",
-  "variance": "Variance",
-  "variance_warning": "Cash variance exceeds the configured tolerance",
-  "close_shift": "Close shift",
-  "open_shift": "Open shift",
-  "opening_float": "Opening float",
-  "tolerance": "Tolerance"
+  "shift_open": "Shift ဖွင့်ထားသည်",
+  "opened_at": "ဖွင့်ချိန်",
+  "expected_cash": "မျှော်မှန်းငွေသား",
+  "actual_cash": "အမှန်တကယ်ငွေသား",
+  "variance": "ကွာခြားချက်",
+  "variance_warning": "ငွေသား ကွာခြားချက်သည် သတ်မှတ်ထားသော အတိုင်းအတာကို ကျော်လွန်နေပါသည်",
+  "close_shift": "Shift ပိတ်ရန်",
+  "open_shift": "Shift ဖွင့်ရန်",
+  "opening_float": "အစပိုင်း ငွေအလုံးအရင်း",
+  "tolerance": "ခွင့်ပြုအတိုင်းအတာ"
 }

@@ -1,14 +1,14 @@
 {
-  "save": "Save",
-  "cancel": "Cancel",
-  "loading": "Loading…",
-  "error": "Something went wrong",
-  "success": "Success",
-  "passwords_not_match": "Passwords do not match",
-  "password_min": "Password must be at least 8 characters",
-  "password_changed": "Password changed",
-  "failed_to_change_password": "Failed to change password",
-  "copy": "Copy",
-  "copied": "Copied",
-  "basic_plan_banner": "You're on the Basic plan. Activate a license to raise limits."
+  "save": "သိမ်းရန်",
+  "cancel": "ပယ်ဖျက်ရန်",
+  "loading": "ဖွင့်နေသည်…",
+  "error": "တစ်ခုခု မှားယွင်းသွားပါသည်",
+  "success": "အောင်မြင်ပါသည်",
+  "passwords_not_match": "စကားဝှက်များ မကိုက်ညီပါ",
+  "password_min": "စကားဝှက်သည် အနည်းဆုံး စာလုံး ၈ လုံး ရှိရမည်",
+  "password_changed": "စကားဝှက် ပြောင်းပြီးပါပြီ",
+  "failed_to_change_password": "စကားဝှက် ပြောင်းလဲခြင်း မအောင်မြင်ပါ",
+  "copy": "ကူးယူရန်",
+  "copied": "ကူးယူပြီးပါပြီ",
+  "basic_plan_banner": "သင်သည် Basic အစီအစဉ်တွင် ရှိပါသည်။ ကန့်သတ်ချက်များ တိုးမြှင့်ရန် လိုင်စင် အသက်သွင်းပါ။"
 }

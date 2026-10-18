@@ -1,12 +1,12 @@
 {
-  "shift_open": "Shift open",
-  "opened_at": "Opened at",
-  "expected_cash": "Expected cash",
-  "actual_cash": "Actual cash",
-  "variance": "Variance",
-  "variance_warning": "Cash variance exceeds the configured tolerance",
-  "close_shift": "Close shift",
-  "open_shift": "Open shift",
-  "opening_float": "Opening float",
-  "tolerance": "Tolerance"
+  "shift_open": "Service ouvert",
+  "opened_at": "Ouvert à",
+  "expected_cash": "Espèces attendues",
+  "actual_cash": "Espèces réelles",
+  "variance": "Écart",
+  "variance_warning": "L'écart de caisse dépasse la tolérance configurée",
+  "close_shift": "Clôturer le service",
+  "open_shift": "Ouvrir le service",
+  "opening_float": "Fond de caisse initial",
+  "tolerance": "Tolérance"
 }

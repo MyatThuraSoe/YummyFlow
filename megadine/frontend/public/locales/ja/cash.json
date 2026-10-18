@@ -1,12 +1,12 @@
 {
-  "shift_open": "Shift open",
-  "opened_at": "Opened at",
-  "expected_cash": "Expected cash",
-  "actual_cash": "Actual cash",
-  "variance": "Variance",
-  "variance_warning": "Cash variance exceeds the configured tolerance",
-  "close_shift": "Close shift",
-  "open_shift": "Open shift",
-  "opening_float": "Opening float",
-  "tolerance": "Tolerance"
+  "shift_open": "シフト営業中",
+  "opened_at": "開始時刻",
+  "expected_cash": "予想現金",
+  "actual_cash": "実際の現金",
+  "variance": "差異",
+  "variance_warning": "現金差異が設定された許容範囲を超えています",
+  "close_shift": "シフトを締める",
+  "open_shift": "シフトを開く",
+  "opening_float": "開始時の釣り銭",
+  "tolerance": "許容範囲"
 }

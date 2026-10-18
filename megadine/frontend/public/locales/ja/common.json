@@ -1,14 +1,14 @@
 {
-  "save": "Save",
-  "cancel": "Cancel",
-  "loading": "Loading…",
-  "error": "Something went wrong",
-  "success": "Success",
-  "passwords_not_match": "Passwords do not match",
-  "password_min": "Password must be at least 8 characters",
-  "password_changed": "Password changed",
-  "failed_to_change_password": "Failed to change password",
-  "copy": "Copy",
-  "copied": "Copied",
-  "basic_plan_banner": "You're on the Basic plan. Activate a license to raise limits."
+  "save": "保存",
+  "cancel": "キャンセル",
+  "loading": "読み込み中…",
+  "error": "問題が発生しました",
+  "success": "成功",
+  "passwords_not_match": "パスワードが一致しません",
+  "password_min": "パスワードは8文字以上必要です",
+  "password_changed": "パスワードを変更しました",
+  "failed_to_change_password": "パスワードの変更に失敗しました",
+  "copy": "コピー",
+  "copied": "コピーしました",
+  "basic_plan_banner": "Basicプランをご利用中です。制限を解除するにはライセンスを有効化してください。"
 }
