@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost } from "../lib/api";
 import { useCart, type CartLine } from "../store/cart";
@@ -30,6 +31,7 @@ export default function Pos() {
   const qc = useQueryClient();
   const { push } = useToast();
   const { can } = useAuth();
+  const { t } = useTranslation(["ops", "common"]);
   const cart = useCart();
   const [searchParams, setSearchParams] = useSearchParams();
   const [activeCat, setActiveCat] = useState<string | null>(null);
@@ -68,6 +70,9 @@ export default function Pos() {
   const newItemsTotal = cart.lines.length ? totals.total : 0;
   const chargeTotal = order ? orderDue + newItemsTotal : totals.total;
 
+  const channelLabel = (channel: string) => t(`ops:channel_${String(channel).toLowerCase()}`, { defaultValue: String(channel).replace("_", " ") });
+  const statusLabel = (status: string) => t(`ops:order_status_${String(status).toLowerCase()}`, { defaultValue: String(status).replaceAll("_", " ") });
+
   function recallOrder(o: OrderShape) {
     cart.loadFromServer({
       channel: o.channel as never,
@@ -80,7 +85,7 @@ export default function Pos() {
     });
     setOrder(o);
     setShowOrders(false);
-    push(`Recalled order #${o.orderNumber}`, "ok");
+    push(t("ops:pos_recalled", { number: o.orderNumber }), "ok");
   }
 
   useEffect(() => {
@@ -97,17 +102,17 @@ export default function Pos() {
   }, []);
 
   async function pickTable(tableId: string) {
-    const t = availableTables.find((x) => x.id === tableId);
-    if (!tableId || !t) {
+    const tbl = availableTables.find((x) => x.id === tableId);
+    if (!tableId || !tbl) {
       cart.setTable(null, null);
       return;
     }
-    cart.setTable(t.id, `#${t.number}`);
-    if (t.status === "OCCUPIED") {
+    cart.setTable(tbl.id, `#${tbl.number}`);
+    if (tbl.status === "OCCUPIED") {
       try {
-        const res = await apiGet<{ orders: OrderShape[] }>("/orders/open", { tableId: t.id });
+        const res = await apiGet<{ orders: OrderShape[] }>("/orders/open", { tableId: tbl.id });
         if (res.orders[0]) recallOrder(res.orders[0]);
-        else push(`Table #${t.number} is marked in use but has no open order`, "info");
+        else push(t("ops:pos_table_in_use_no_order", { number: tbl.number }), "info");
       } catch {
         /* keep the selection; creating a new order will surface any conflict */
       }
@@ -163,7 +168,7 @@ export default function Pos() {
 
   function queueOffline(o: OrderShape | null, opts: { sendToKitchen: boolean; payNow: boolean; tenders?: Tender[]; idemKey?: string }) {
     enqueueOrder({
-      label: o ? `Order #${o.orderNumber} · ${cart.lines.length} new item(s)` : `${cart.channel} · ${cart.lines.length} item(s)`,
+      label: o ? `${t("ops:order_number", { number: o.orderNumber })} · ${cart.lines.length}` : `${channelLabel(cart.channel)} · ${cart.lines.length}`,
       orderId: o?.id ?? null,
       addItems: cartToItems(),
       create: o ? null : buildCreateBody(),
@@ -200,14 +205,14 @@ export default function Pos() {
     },
     onSuccess: (r) => {
       if (!r) {
-        push("Offline — order queued and will sync automatically", "info");
+        push(t("ops:pos_offline_queued_toast"), "info");
         return;
       }
-      push(`Sent to kitchen (${r.tickets} ticket${r.tickets === 1 ? "" : "s"})`, "ok");
+      push(t("ops:pos_sent_kitchen_toast", { count: r.tickets }), "ok");
       qc.invalidateQueries({ queryKey: ["tickets"] });
       qc.invalidateQueries({ queryKey: ["tables"] });
     },
-    onError: (e) => push(e instanceof Error ? e.message : "Failed", "error"),
+    onError: (e) => push(e instanceof Error ? e.message : t("ops:failed"), "error"),
   });
 
   async function doDiscount(type: "PERCENT" | "ABSOLUTE", value: number, managerPin?: string) {
@@ -216,7 +221,7 @@ export default function Pos() {
     const fresh = await apiGet<{ order: OrderShape }>(`/orders/${o.id}`);
     setOrder(fresh.order);
     setShowDiscount(false);
-    push("Discount applied", "ok");
+    push(t("ops:pos_discount_applied"), "ok");
     qc.invalidateQueries({ queryKey: ["orders"] });
   }
 
@@ -237,13 +242,13 @@ export default function Pos() {
         });
         setShowPay(false);
         if (res.order.paymentStatus !== "SUCCEEDED") {
-          push("Partial payment recorded — balance still due", "info");
+          push(t("ops:pos_partial_payment"), "info");
           const fresh = await apiGet<{ order: OrderShape }>(`/orders/${withItems.id}`);
           setOrder(fresh.order);
           cart.clearLines();
           return;
         }
-        push(`Payment complete — order #${res.order.orderNumber}`, "ok");
+        push(t("ops:pos_payment_complete", { number: res.order.orderNumber }), "ok");
         cart.reset();
         setOrder(null);
         setNotes("");
@@ -263,7 +268,7 @@ export default function Pos() {
     setOrder(null);
     setNotes("");
     setPickupName("");
-    push("Offline — payment queued and will sync automatically", "info");
+    push(t("ops:pos_offline_payment_queued"), "info");
   }
 
   async function holdOrder() {
@@ -272,15 +277,15 @@ export default function Pos() {
     try {
       o = await ensureOrder();
       if (cart.lines.length) o = await pushPendingItems(o);
-      push(`Order #${o.orderNumber} held`, "ok");
+      push(t("ops:pos_order_held", { number: o.orderNumber }), "ok");
     } catch (e) {
       if (!shouldQueue(e)) {
-        push(e instanceof Error ? e.message : "Failed", "error");
+        push(e instanceof Error ? e.message : t("ops:failed"), "error");
         return;
       }
       queueOffline(o, { sendToKitchen: false, payNow: false });
       if (o) cart.clearLines();
-      push("Offline — order queued and will sync automatically", "info");
+      push(t("ops:pos_offline_queued_toast"), "info");
     }
     cart.reset();
     setOrder(null);
@@ -292,9 +297,9 @@ export default function Pos() {
   async function reprint(orderId: string) {
     try {
       await apiPost(`/orders/${orderId}/reprint`);
-      push("Receipt sent to printer", "ok");
+      push(t("ops:receipt_sent"), "ok");
     } catch (e) {
-      push(e instanceof Error ? e.message : "Reprint failed", "error");
+      push(e instanceof Error ? e.message : t("ops:reprint_failed"), "error");
     }
   }
 
@@ -304,16 +309,16 @@ export default function Pos() {
     const fresh = await apiGet<{ order: OrderShape }>(`/orders/${o.id}`);
     setOrder(fresh.order);
     setVoidTarget(null);
-    push("Line voided", "ok");
+    push(t("ops:pos_line_voided"), "ok");
   }
 
   async function openShift() {
     try {
       await apiPost("/shifts/open", { openingFloat: 0 });
       qc.invalidateQueries({ queryKey: ["shift"] });
-      push("Shift opened", "ok");
+      push(t("ops:pos_shift_opened"), "ok");
     } catch (e) {
-      push(e instanceof Error ? e.message : "Failed to open shift", "error");
+      push(e instanceof Error ? e.message : t("ops:pos_failed_open_shift"), "error");
     }
   }
 
@@ -322,9 +327,9 @@ export default function Pos() {
       <section className="pos-menu">
         <div className="row" style={{ marginBottom: 8 }}>
           <button className="btn" onClick={() => setShowOrders(true)}>
-            Held orders{queued > 0 ? ` · ${queued} queued` : ""}
+            {t("ops:pos_held_orders")}{queued > 0 ? ` · ${t("ops:pos_queued_count", { count: queued })}` : ""}
           </button>
-          {queued > 0 && <span className="badge warn">{queued} offline queued</span>}
+          {queued > 0 && <span className="badge warn">{t("ops:pos_offline_queued", { count: queued })}</span>}
         </div>
         <div className="cat-tabs">
           {categories.map((c) => (
@@ -345,7 +350,7 @@ export default function Pos() {
               <span className="price">{formatMoney(toCents(item.price), currency)}</span>
             </button>
           ))}
-          {current?.items.length === 0 && <p className="muted">No items in this category.</p>}
+          {current?.items.length === 0 && <p className="muted">{t("ops:pos_no_items_category")}</p>}
         </div>
       </section>
 
@@ -353,16 +358,16 @@ export default function Pos() {
         <div style={{ padding: 12, borderBottom: "1px solid var(--line)" }}>
           <div className="row">
             <select className="input" value={cart.channel} onChange={(e) => cart.setChannel(e.target.value as never)} disabled={locked}>
-              <option value="DINE_IN">Dine-in</option>
-              <option value="TAKEAWAY">Takeaway</option>
-              <option value="PARCEL">Parcel</option>
+              <option value="DINE_IN">{t("ops:channel_dine_in")}</option>
+              <option value="TAKEAWAY">{t("ops:channel_takeaway")}</option>
+              <option value="PARCEL">{t("ops:channel_parcel")}</option>
             </select>
             {cart.channel === "DINE_IN" && (
               <select className="input" value={cart.tableId ?? ""} onChange={(e) => pickTable(e.target.value)} disabled={locked}>
-                <option value="">Table…</option>
-                {availableTables.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    #{t.number} {t.name ? `· ${t.name}` : ""} ({t.status === "OCCUPIED" ? "in use" : "free"})
+                <option value="">{t("ops:pos_table_placeholder")}</option>
+                {availableTables.map((tbl) => (
+                  <option key={tbl.id} value={tbl.id}>
+                    #{tbl.number} {tbl.name ? `· ${tbl.name}` : ""} ({tbl.status === "OCCUPIED" ? t("ops:pos_in_use") : t("ops:pos_free")})
                   </option>
                 ))}
               </select>
@@ -371,9 +376,9 @@ export default function Pos() {
           {!locked && (
             <div className="row" style={{ marginTop: 8 }}>
               {cart.channel !== "DINE_IN" && (
-                <input className="input" placeholder="Pickup name" value={pickupName} onChange={(e) => setPickupName(e.target.value)} />
+                <input className="input" placeholder={t("ops:pos_pickup_name")} value={pickupName} onChange={(e) => setPickupName(e.target.value)} />
               )}
-              <input className="input" placeholder="Order notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} />
+              <input className="input" placeholder={t("ops:pos_order_notes")} value={notes} onChange={(e) => setNotes(e.target.value)} />
             </div>
           )}
         </div>
@@ -382,9 +387,9 @@ export default function Pos() {
           {order && (
             <>
               <div className="row" style={{ padding: 12 }}>
-                <strong>Order #{order.orderNumber}</strong>
+                <strong>{t("ops:order_number", { number: order.orderNumber })}</strong>
                 <div className="spacer" />
-                <span className={`badge ${order.status === "DRAFT" ? "muted" : "ok"}`}>{order.status.replaceAll("_", " ")}</span>
+                <span className={`badge ${order.status === "DRAFT" ? "muted" : "ok"}`}>{statusLabel(order.status)}</span>
               </div>
               {order.lines.filter((l) => !l.isVoided).map((l) => (
                 <div className="cart-line" key={l.id}>
@@ -396,24 +401,24 @@ export default function Pos() {
                     </div>
                     <div className="mono">{formatMoney(toCents(l.lineTotal), currency)}</div>
                     {order.status !== "COMPLETED" && order.status !== "CANCELLED" && (
-                      <button className="btn ghost small" onClick={() => setVoidTarget(l)}>Void</button>
+                      <button className="btn ghost small" onClick={() => setVoidTarget(l)}>{t("ops:pos_void")}</button>
                     )}
                   </div>
                 </div>
               ))}
               {order.lines.some((l) => l.isVoided) && (
                 <p className="muted small" style={{ padding: "4px 12px" }}>
-                  {order.lines.filter((l) => l.isVoided).length} voided line(s) hidden
+                  {t("ops:pos_void_hidden", { count: order.lines.filter((l) => l.isVoided).length })}
                 </p>
               )}
             </>
           )}
 
-          {!order && cart.lines.length === 0 && <p className="muted" style={{ padding: 12 }}>Tap items to build the order.</p>}
+          {!order && cart.lines.length === 0 && <p className="muted" style={{ padding: 12 }}>{t("ops:pos_tap_items")}</p>}
 
           {cart.lines.length > 0 && (
             <>
-              {order && <p className="muted small" style={{ padding: "10px 12px 0" }}>New items — not added to the order yet</p>}
+              {order && <p className="muted small" style={{ padding: "10px 12px 0" }}>{t("ops:pos_new_items_pending")}</p>}
               {cart.lines.map((l: CartLine) => (
                 <div className="cart-line" key={l.key}>
                   <div className="row">
@@ -429,7 +434,7 @@ export default function Pos() {
                     <span className="mono" style={{ minWidth: 24, textAlign: "center" }}>{l.quantity}</span>
                     <button className="qty-btn" onClick={() => cart.incQty(l.key)}>+</button>
                     <div className="spacer" />
-                    <button className="btn ghost small" onClick={() => cart.removeLine(l.key)}>Remove</button>
+                    <button className="btn ghost small" onClick={() => cart.removeLine(l.key)}>{t("ops:remove")}</button>
                   </div>
                 </div>
               ))}
@@ -440,29 +445,29 @@ export default function Pos() {
         <div className="cart-footer">
           {!shiftOpen && (
             <div className="row" style={{ marginBottom: 10 }}>
-              <span className="badge warn">No open shift</span>
+              <span className="badge warn">{t("ops:pos_no_open_shift")}</span>
               <div className="spacer" />
-              <button className="btn" onClick={openShift}>Open shift</button>
+              <button className="btn" onClick={openShift}>{t("ops:pos_open_shift")}</button>
             </div>
           )}
           {order ? (
             <>
-              <div className="totals-row"><span className="muted">Order subtotal</span><span className="mono">{formatMoney(toCents(order.subtotal), currency)}</span></div>
-              {toCents(order.discountAmount) > 0 && <div className="totals-row"><span className="muted">Discount</span><span className="mono">−{formatMoney(toCents(order.discountAmount), currency)}</span></div>}
-              {toCents(order.serviceCharge) > 0 && <div className="totals-row"><span className="muted">Service</span><span className="mono">{formatMoney(toCents(order.serviceCharge), currency)}</span></div>}
-              <div className="totals-row"><span className="muted">Tax</span><span className="mono">{formatMoney(toCents(order.taxAmount), currency)}</span></div>
-              <div className="totals-row"><span className="muted">Order total</span><span className="mono">{formatMoney(toCents(order.total), currency)}</span></div>
-              {toCents(order.amountPaid) > 0 && <div className="totals-row"><span className="muted">Paid so far</span><span className="mono">−{formatMoney(toCents(order.amountPaid), currency)}</span></div>}
-              {newItemsTotal > 0 && <div className="totals-row"><span className="muted">New items (est.)</span><span className="mono">+{formatMoney(newItemsTotal, currency)}</span></div>}
-              <div className="totals-row grand"><span>Due</span><span className="mono">{formatMoney(chargeTotal, currency)}</span></div>
+              <div className="totals-row"><span className="muted">{t("ops:pos_order_subtotal")}</span><span className="mono">{formatMoney(toCents(order.subtotal), currency)}</span></div>
+              {toCents(order.discountAmount) > 0 && <div className="totals-row"><span className="muted">{t("ops:pos_discount")}</span><span className="mono">−{formatMoney(toCents(order.discountAmount), currency)}</span></div>}
+              {toCents(order.serviceCharge) > 0 && <div className="totals-row"><span className="muted">{t("ops:pos_service")}</span><span className="mono">{formatMoney(toCents(order.serviceCharge), currency)}</span></div>}
+              <div className="totals-row"><span className="muted">{t("ops:pos_tax")}</span><span className="mono">{formatMoney(toCents(order.taxAmount), currency)}</span></div>
+              <div className="totals-row"><span className="muted">{t("ops:pos_order_total")}</span><span className="mono">{formatMoney(toCents(order.total), currency)}</span></div>
+              {toCents(order.amountPaid) > 0 && <div className="totals-row"><span className="muted">{t("ops:pos_paid_so_far")}</span><span className="mono">−{formatMoney(toCents(order.amountPaid), currency)}</span></div>}
+              {newItemsTotal > 0 && <div className="totals-row"><span className="muted">{t("ops:pos_new_items_est")}</span><span className="mono">+{formatMoney(newItemsTotal, currency)}</span></div>}
+              <div className="totals-row grand"><span>{t("ops:pos_due")}</span><span className="mono">{formatMoney(chargeTotal, currency)}</span></div>
             </>
           ) : (
             <>
-              <div className="totals-row"><span className="muted">Subtotal</span><span className="mono">{formatMoney(totals.subtotal, currency)}</span></div>
-              {totals.discountAmount > 0 && <div className="totals-row"><span className="muted">Discount</span><span className="mono">−{formatMoney(totals.discountAmount, currency)}</span></div>}
-              {totals.serviceCharge > 0 && <div className="totals-row"><span className="muted">Service</span><span className="mono">{formatMoney(totals.serviceCharge, currency)}</span></div>}
-              <div className="totals-row"><span className="muted">Tax</span><span className="mono">{formatMoney(totals.taxAmount, currency)}</span></div>
-              <div className="totals-row grand"><span>Total</span><span className="mono">{formatMoney(totals.total, currency)}</span></div>
+              <div className="totals-row"><span className="muted">{t("ops:pos_subtotal")}</span><span className="mono">{formatMoney(totals.subtotal, currency)}</span></div>
+              {totals.discountAmount > 0 && <div className="totals-row"><span className="muted">{t("ops:pos_discount")}</span><span className="mono">−{formatMoney(totals.discountAmount, currency)}</span></div>}
+              {totals.serviceCharge > 0 && <div className="totals-row"><span className="muted">{t("ops:pos_service")}</span><span className="mono">{formatMoney(totals.serviceCharge, currency)}</span></div>}
+              <div className="totals-row"><span className="muted">{t("ops:pos_tax")}</span><span className="mono">{formatMoney(totals.taxAmount, currency)}</span></div>
+              <div className="totals-row grand"><span>{t("ops:pos_total")}</span><span className="mono">{formatMoney(totals.total, currency)}</span></div>
             </>
           )}
 
@@ -473,15 +478,15 @@ export default function Pos() {
               disabled={(!cart.lines.length && !order) || busy || (cart.channel === "DINE_IN" && !cart.tableId && !order)}
               onClick={() => sendMut.mutate()}
             >
-              {sendMut.isPending ? "Sending…" : "Send to Kitchen"}
+              {sendMut.isPending ? t("ops:pos_sending") : t("ops:pos_send_kitchen")}
             </button>
-            <button className="btn" disabled={(!cart.lines.length && !order) || busy} onClick={() => setShowDiscount(true)}>Discount</button>
+            <button className="btn" disabled={(!cart.lines.length && !order) || busy} onClick={() => setShowDiscount(true)}>{t("ops:pos_discount_btn")}</button>
           </div>
           <div className="row" style={{ marginTop: 8, gap: 8 }}>
-            <button className="btn" style={{ flex: 1 }} disabled={(!cart.lines.length && !order) || busy} onClick={holdOrder}>Hold</button>
-            {order && <button className="btn" onClick={() => reprint(order.id)}>Reprint</button>}
+            <button className="btn" style={{ flex: 1 }} disabled={(!cart.lines.length && !order) || busy} onClick={holdOrder}>{t("ops:pos_hold")}</button>
+            {order && <button className="btn" onClick={() => reprint(order.id)}>{t("ops:pos_reprint")}</button>}
             {order && (
-              <button className="btn ghost" onClick={() => { cart.reset(); setOrder(null); setNotes(""); setPickupName(""); }}>New</button>
+              <button className="btn ghost" onClick={() => { cart.reset(); setOrder(null); setNotes(""); setPickupName(""); }}>{t("ops:pos_new")}</button>
             )}
           </div>
           <button
@@ -490,7 +495,7 @@ export default function Pos() {
             disabled={(!cart.lines.length && !order) || busy || !shiftOpen || (cart.channel === "DINE_IN" && !cart.tableId && !order)}
             onClick={() => setShowPay(true)}
           >
-            Charge {formatMoney(chargeTotal, currency)}
+            {t("ops:pos_charge", { amount: formatMoney(chargeTotal, currency) })}
           </button>
         </div>
       </aside>
@@ -543,6 +548,7 @@ function OrdersModal({
 }) {
   const { push } = useToast();
   const qc = useQueryClient();
+  const { t } = useTranslation(["ops", "common"]);
   const [tab, setTab] = useState<"OPEN" | "RECENT">("OPEN");
   const [refundOrder, setRefundOrder] = useState<OrderShape | null>(null);
 
@@ -556,38 +562,39 @@ function OrdersModal({
   async function reprint(id: string) {
     try {
       await apiPost(`/orders/${id}/reprint`);
-      push("Receipt sent to printer", "ok");
+      push(t("ops:receipt_sent"), "ok");
     } catch (e) {
-      push(e instanceof Error ? e.message : "Reprint failed", "error");
+      push(e instanceof Error ? e.message : t("ops:reprint_failed"), "error");
     }
   }
 
   const rows = tab === "OPEN" ? open?.orders ?? [] : recent?.orders ?? [];
+  const channelLabel = (channel: string) => t(`ops:channel_${String(channel).toLowerCase()}`, { defaultValue: String(channel).replace("_", " ") });
 
   return (
-    <Modal title="Orders" onClose={onClose} wide footer={<button className="btn ghost" onClick={onClose}>Close</button>}>
+    <Modal title={t("ops:orders_title")} onClose={onClose} wide footer={<button className="btn ghost" onClick={onClose}>{t("ops:close")}</button>}>
       <div className="row" style={{ marginBottom: 12 }}>
-        <button className={`cat-tab ${tab === "OPEN" ? "active" : ""}`} onClick={() => setTab("OPEN")}>Held / open</button>
-        <button className={`cat-tab ${tab === "RECENT" ? "active" : ""}`} onClick={() => setTab("RECENT")}>Recent (paid)</button>
+        <button className={`cat-tab ${tab === "OPEN" ? "active" : ""}`} onClick={() => setTab("OPEN")}>{t("ops:orders_held_open")}</button>
+        <button className={`cat-tab ${tab === "RECENT" ? "active" : ""}`} onClick={() => setTab("RECENT")}>{t("ops:orders_recent")}</button>
       </div>
       <table className="tbl">
-        <thead><tr><th>#</th><th>Items</th><th style={{ textAlign: "right" }}>Total</th><th /></tr></thead>
+        <thead><tr><th>#</th><th>{t("ops:orders_items_header")}</th><th style={{ textAlign: "right" }}>{t("ops:orders_total_header")}</th><th /></tr></thead>
         <tbody>
           {rows.map((o) => (
             <tr key={o.id}>
               <td>#{o.orderNumber}</td>
-              <td className="small muted">{o.lines.filter((l) => !l.isVoided).length} item(s) · {o.channel.replace("_", "-")}</td>
+              <td className="small muted">{t("ops:orders_item_count", { count: o.lines.filter((l) => !l.isVoided).length, channel: channelLabel(o.channel) })}</td>
               <td className="mono" style={{ textAlign: "right" }}>{formatMoney(toCents(o.total), currency)}</td>
               <td>
                 <div className="row" style={{ justifyContent: "flex-end" }}>
-                  {tab === "OPEN" && <button className="btn small primary" onClick={() => onRecall(o)}>Recall</button>}
-                  {tab === "RECENT" && <button className="btn small" onClick={() => reprint(o.id)}>Reprint</button>}
-                  {tab === "RECENT" && canRefund && <button className="btn small danger" onClick={() => setRefundOrder(o)}>Refund</button>}
+                  {tab === "OPEN" && <button className="btn small primary" onClick={() => onRecall(o)}>{t("ops:orders_recall")}</button>}
+                  {tab === "RECENT" && <button className="btn small" onClick={() => reprint(o.id)}>{t("ops:pos_reprint")}</button>}
+                  {tab === "RECENT" && canRefund && <button className="btn small danger" onClick={() => setRefundOrder(o)}>{t("ops:orders_refund")}</button>}
                 </div>
               </td>
             </tr>
           ))}
-          {rows.length === 0 && <tr><td colSpan={4} className="muted">Nothing here.</td></tr>}
+          {rows.length === 0 && <tr><td colSpan={4} className="muted">{t("ops:orders_nothing")}</td></tr>}
         </tbody>
       </table>
 
@@ -604,6 +611,7 @@ function OrdersModal({
 }
 
 function VoidModal({ line, onClose, onSubmit }: { line: ServerLine; onClose: () => void; onSubmit: (lineId: string, reason: string, managerPin?: string) => Promise<void> }) {
+  const { t } = useTranslation(["ops", "common"]);
   const [reason, setReason] = useState("");
   const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
@@ -615,7 +623,7 @@ function VoidModal({ line, onClose, onSubmit }: { line: ServerLine; onClose: () 
     try {
       await onSubmit(line.id, reason, pin || undefined);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Void failed");
+      setErr(e instanceof Error ? e.message : t("ops:void_failed"));
     } finally {
       setBusy(false);
     }
@@ -623,12 +631,12 @@ function VoidModal({ line, onClose, onSubmit }: { line: ServerLine; onClose: () 
 
   return (
     <Modal
-      title={`Void · ${line.itemNameSnapshot}`}
+      title={t("ops:void_title", { name: line.itemNameSnapshot })}
       onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn danger" disabled={!reason || busy} onClick={submit}>{busy ? "…" : "Void line"}</button></>}
+      footer={<><button className="btn ghost" onClick={onClose}>{t("ops:cancel")}</button><button className="btn danger" disabled={!reason || busy} onClick={submit}>{busy ? "…" : t("ops:void_submit")}</button></>}
     >
-      <Field label="Reason"><input className="input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why is this being voided?" /></Field>
-      <Field label="Manager PIN (if already sent to kitchen)"><input className="input" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="••••" /></Field>
+      <Field label={t("ops:void_reason")}><input className="input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder={t("ops:void_reason_placeholder")} /></Field>
+      <Field label={t("ops:void_manager_pin")}><input className="input" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="••••" /></Field>
       {err && <p className="badge danger">{err}</p>}
     </Modal>
   );
@@ -636,6 +644,7 @@ function VoidModal({ line, onClose, onSubmit }: { line: ServerLine; onClose: () 
 
 function RefundModal({ order, currency, onClose, onDone }: { order: OrderShape; currency: string; onClose: () => void; onDone: () => void }) {
   const { push } = useToast();
+  const { t } = useTranslation(["ops", "common"]);
   const [amount, setAmount] = useState(fromCents(toCents(order.total)));
   const [reason, setReason] = useState("");
   const [pin, setPin] = useState("");
@@ -648,10 +657,10 @@ function RefundModal({ order, currency, onClose, onDone }: { order: OrderShape; 
     setErr("");
     try {
       await apiPost("/payments/refund", { orderId: order.id, amount: Number(amount), reason, managerPin: pin, restock });
-      push("Refund recorded", "ok");
+      push(t("ops:refund_recorded"), "ok");
       onDone();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Refund failed");
+      setErr(e instanceof Error ? e.message : t("ops:refund_failed"));
     } finally {
       setBusy(false);
     }
@@ -659,16 +668,16 @@ function RefundModal({ order, currency, onClose, onDone }: { order: OrderShape; 
 
   return (
     <Modal
-      title={`Refund · order #${order.orderNumber}`}
+      title={t("ops:refund_title", { number: order.orderNumber })}
       onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn danger" disabled={busy || !reason || pin.length < 4} onClick={submit}>{busy ? "…" : "Refund"}</button></>}
+      footer={<><button className="btn ghost" onClick={onClose}>{t("ops:cancel")}</button><button className="btn danger" disabled={busy || !reason || pin.length < 4} onClick={submit}>{busy ? "…" : t("ops:refund_submit")}</button></>}
     >
-      <p className="muted small">Order total {formatMoney(toCents(order.total), currency)}</p>
-      <Field label={`Refund amount (${currency})`}><input className="input" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
-      <Field label="Reason"><input className="input" value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
-      <Field label="Manager PIN"><input className="input" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="••••" /></Field>
+      <p className="muted small">{t("ops:refund_order_total", { amount: formatMoney(toCents(order.total), currency) })}</p>
+      <Field label={t("ops:refund_amount", { currency })}><input className="input" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
+      <Field label={t("ops:refund_reason")}><input className="input" value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
+      <Field label={t("ops:refund_manager_pin")}><input className="input" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="••••" /></Field>
       <label className="row small" style={{ gap: 6 }}>
-        <input type="checkbox" checked={restock} onChange={(e) => setRestock(e.target.checked)} /> Restock ingredients
+        <input type="checkbox" checked={restock} onChange={(e) => setRestock(e.target.checked)} /> {t("ops:refund_restock")}
       </label>
       {err && <p className="badge danger">{err}</p>}
     </Modal>
@@ -686,6 +695,7 @@ function ModifierModal({
   onClose: () => void;
   onAdd: (line: Omit<CartLine, "key">) => void;
 }) {
+  const { t } = useTranslation(["ops", "common"]);
   const [variantId, setVariantId] = useState<string | null>(item.variants[0]?.id ?? null);
   const [selected, setSelected] = useState<Record<string, string[]>>({});
   const [qty, setQty] = useState(1);
@@ -716,7 +726,7 @@ function ModifierModal({
       onClose={onClose}
       footer={
         <>
-          <button className="btn ghost" onClick={onClose}>Cancel</button>
+          <button className="btn ghost" onClick={onClose}>{t("ops:cancel")}</button>
           <button
             className="btn primary"
             disabled={invalid}
@@ -733,14 +743,14 @@ function ModifierModal({
               })
             }
           >
-            Add · {formatMoney((unitPrice + chosen.reduce((s, o) => s + toCents(o.price), 0)) * qty, currency)}
+            {t("ops:mod_add", { amount: formatMoney((unitPrice + chosen.reduce((s, o) => s + toCents(o.price), 0)) * qty, currency) })}
           </button>
         </>
       }
     >
       {item.variants.length > 0 && (
         <div className="field">
-          <span className="small muted">Variant</span>
+          <span className="small muted">{t("ops:mod_variant")}</span>
           <div className="row wrap" style={{ marginTop: 6 }}>
             {item.variants.map((v) => (
               <button key={v.id} className={`cat-tab ${variantId === v.id ? "active" : ""}`} onClick={() => setVariantId(v.id)}>
@@ -753,7 +763,7 @@ function ModifierModal({
       {item.modifierGroups.map((g) => (
         <div className="field" key={g.id}>
           <span className="small muted">
-            {g.name} {g.required ? "(required)" : ""} {g.maxSelect ? `· max ${g.maxSelect}` : ""}
+            {g.name} {g.required ? t("ops:mod_required") : ""} {g.maxSelect ? t("ops:mod_max", { count: g.maxSelect }) : ""}
           </span>
           <div className="grid cols-2" style={{ marginTop: 6 }}>
             {g.options.map((o) => {
@@ -769,7 +779,7 @@ function ModifierModal({
       ))}
       <div className="row">
         <div>
-          <span className="small muted">Qty</span>
+          <span className="small muted">{t("ops:mod_qty")}</span>
           <div className="row" style={{ marginTop: 6 }}>
             <button className="qty-btn" onClick={() => setQty((q) => Math.max(1, q - 1))}>−</button>
             <span className="mono" style={{ minWidth: 24, textAlign: "center" }}>{qty}</span>
@@ -777,8 +787,8 @@ function ModifierModal({
           </div>
         </div>
         <div style={{ flex: 1 }}>
-          <Field label="Notes">
-            <input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="No onions…" />
+          <Field label={t("ops:mod_notes")}>
+            <input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={t("ops:mod_notes_placeholder")} />
           </Field>
         </div>
       </div>
@@ -797,6 +807,7 @@ function DiscountModal({
   onClose: () => void;
   onApply: (type: "PERCENT" | "ABSOLUTE", value: number, managerPin?: string) => Promise<void>;
 }) {
+  const { t } = useTranslation(["ops", "common"]);
   const [type, setType] = useState<"PERCENT" | "ABSOLUTE">("PERCENT");
   const [value, setValue] = useState(10);
   const [pin, setPin] = useState("");
@@ -811,7 +822,7 @@ function DiscountModal({
     try {
       await onApply(type, value, pin || undefined);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Failed");
+      setErr(e instanceof Error ? e.message : t("ops:failed"));
     } finally {
       setBusy(false);
     }
@@ -819,20 +830,20 @@ function DiscountModal({
 
   return (
     <Modal
-      title="Apply discount"
+      title={t("ops:disc_title")}
       onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" disabled={busy} onClick={apply}>{busy ? "…" : "Apply"}</button></>}
+      footer={<><button className="btn ghost" onClick={onClose}>{t("ops:cancel")}</button><button className="btn primary" disabled={busy} onClick={apply}>{busy ? "…" : t("ops:disc_apply")}</button></>}
     >
       <div className="row" style={{ marginBottom: 10 }}>
-        <button className={`cat-tab ${type === "PERCENT" ? "active" : ""}`} onClick={() => setType("PERCENT")}>Percent %</button>
-        <button className={`cat-tab ${type === "ABSOLUTE" ? "active" : ""}`} onClick={() => setType("ABSOLUTE")}>Amount</button>
+        <button className={`cat-tab ${type === "PERCENT" ? "active" : ""}`} onClick={() => setType("PERCENT")}>{t("ops:disc_percent")}</button>
+        <button className={`cat-tab ${type === "ABSOLUTE" ? "active" : ""}`} onClick={() => setType("ABSOLUTE")}>{t("ops:disc_amount")}</button>
       </div>
-      <Field label={type === "PERCENT" ? "Percent off" : `Amount (${currency})`}>
+      <Field label={type === "PERCENT" ? t("ops:disc_percent_off") : t("ops:disc_amount_label", { currency })}>
         <input className="input" type="number" value={value} onChange={(e) => setValue(Number(e.target.value))} />
       </Field>
-      <p className="muted small">Discount: {formatMoney(amount, currency)}</p>
+      <p className="muted small">{t("ops:disc_total", { amount: formatMoney(amount, currency) })}</p>
       {needsManager && (
-        <Field label="Manager PIN (required above 10%)">
+        <Field label={t("ops:disc_manager_pin")}>
           <input className="input" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="••••" />
         </Field>
       )}
@@ -852,6 +863,7 @@ function PaymentModal({
   onClose: () => void;
   onPay: (tenders: Tender[], idemKey: string) => Promise<void>;
 }) {
+  const { t } = useTranslation(["ops", "common"]);
   const [idemKey] = useState(() => `pay-${crypto.randomUUID()}`);
   const [tenders, setTenders] = useState<{ method: string; amount: string; cash: string; reference: string }[]>([
     { method: "CASH", amount: fromCents(total), cash: fromCents(total), reference: "" },
@@ -864,7 +876,7 @@ function PaymentModal({
   const cashChange = tenders.reduce((s, t) => (t.method === "CASH" ? s + (toCents(t.cash || "0") - toCents(t.amount || "0")) : s), 0);
 
   function update(i: number, patch: Partial<{ method: string; amount: string; cash: string; reference: string }>) {
-    setTenders((ts) => ts.map((t, idx) => (idx === i ? { ...t, ...patch } : t)));
+    setTenders((ts) => ts.map((tnd, idx) => (idx === i ? { ...tnd, ...patch } : tnd)));
   }
 
   async function submit() {
@@ -872,16 +884,16 @@ function PaymentModal({
     setErr("");
     try {
       await onPay(
-        tenders.map((t) => ({
-          method: t.method,
-          amount: Number(t.amount),
-          cashReceived: t.method === "CASH" ? Number(t.cash) : undefined,
-          reference: t.method !== "CASH" && t.reference ? t.reference : undefined,
+        tenders.map((tnd) => ({
+          method: tnd.method,
+          amount: Number(tnd.amount),
+          cashReceived: tnd.method === "CASH" ? Number(tnd.cash) : undefined,
+          reference: tnd.method !== "CASH" && tnd.reference ? tnd.reference : undefined,
         })),
         idemKey,
       );
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Payment failed");
+      setErr(e instanceof Error ? e.message : t("ops:pay_failed"));
     } finally {
       setBusy(false);
     }
@@ -889,53 +901,53 @@ function PaymentModal({
 
   return (
     <Modal
-      title="Charge order"
+      title={t("ops:pay_title")}
       onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" disabled={busy || tendered < total} onClick={submit}>{busy ? "Processing…" : `Pay ${formatMoney(total, currency)}`}</button></>}
+      footer={<><button className="btn ghost" onClick={onClose}>{t("ops:cancel")}</button><button className="btn primary" disabled={busy || tendered < total} onClick={submit}>{busy ? t("ops:pay_processing") : t("ops:pay_pay", { amount: formatMoney(total, currency) })}</button></>}
     >
       <div className="totals-row grand" style={{ marginTop: 0 }}>
-        <span>Amount due</span>
+        <span>{t("ops:pay_due")}</span>
         <span className="mono">{formatMoney(total, currency)}</span>
       </div>
       <div style={{ marginTop: 12 }}>
-        {tenders.map((t, i) => (
+        {tenders.map((tender, i) => (
           <div key={i} className="card" style={{ marginBottom: 10 }}>
             <div className="row">
-              <select className="input" value={t.method} onChange={(e) => update(i, { method: e.target.value })}>
-                <option value="CASH">Cash</option>
-                <option value="CARD">Card</option>
-                <option value="MOBILE">Mobile</option>
+              <select className="input" value={tender.method} onChange={(e) => update(i, { method: e.target.value })}>
+                <option value="CASH">{t("ops:cash")}</option>
+                <option value="CARD">{t("ops:card")}</option>
+                <option value="MOBILE">{t("ops:mobile")}</option>
               </select>
-              <input className="input" type="number" value={t.amount} onChange={(e) => update(i, { amount: e.target.value })} placeholder="Amount" />
+              <input className="input" type="number" value={tender.amount} onChange={(e) => update(i, { amount: e.target.value })} placeholder={t("ops:pay_amount_placeholder")} />
             </div>
-            {t.method === "CASH" && (
+            {tender.method === "CASH" && (
               <div className="row" style={{ marginTop: 8 }}>
-                <span className="muted small" style={{ minWidth: 90 }}>Cash received</span>
-                <input className="input" type="number" value={t.cash} onChange={(e) => update(i, { cash: e.target.value })} />
+                <span className="muted small" style={{ minWidth: 90 }}>{t("ops:pay_cash_received")}</span>
+                <input className="input" type="number" value={tender.cash} onChange={(e) => update(i, { cash: e.target.value })} />
               </div>
             )}
-            {t.method !== "CASH" && (
+            {tender.method !== "CASH" && (
               <div className="row" style={{ marginTop: 8 }}>
-                <span className="muted small" style={{ minWidth: 90 }}>Reference</span>
-                <input className="input" value={t.reference} onChange={(e) => update(i, { reference: e.target.value })} placeholder="Auth code (optional)" />
+                <span className="muted small" style={{ minWidth: 90 }}>{t("ops:pay_reference")}</span>
+                <input className="input" value={tender.reference} onChange={(e) => update(i, { reference: e.target.value })} placeholder={t("ops:pay_reference_placeholder")} />
               </div>
             )}
             {i > 0 && (
-              <button className="btn ghost small" style={{ marginTop: 8 }} onClick={() => setTenders((ts) => ts.filter((_, idx) => idx !== i))}>Remove</button>
+              <button className="btn ghost small" style={{ marginTop: 8 }} onClick={() => setTenders((ts) => ts.filter((_, idx) => idx !== i))}>{t("ops:remove")}</button>
             )}
           </div>
         ))}
       </div>
       <div className="row">
         <button className="btn" onClick={() => setTenders((ts) => [...ts, { method: "CARD", amount: fromCents(Math.max(0, remaining)), cash: "0", reference: "" }])} disabled={remaining <= 0}>
-          + Split payment
+          {t("ops:pay_split")}
         </button>
         <div className="spacer" />
         <span className={remaining > 0 ? "badge warn" : "badge ok"}>
-          {remaining > 0 ? `Remaining ${formatMoney(remaining, currency)}` : "Fully tendered"}
+          {remaining > 0 ? t("ops:pay_remaining", { amount: formatMoney(remaining, currency) }) : t("ops:pay_fully_tendered")}
         </span>
       </div>
-      {cashChange > 0 && <p className="muted" style={{ marginTop: 10 }}>Change due: {formatMoney(cashChange, currency)}</p>}
+      {cashChange > 0 && <p className="muted" style={{ marginTop: 10 }}>{t("ops:pay_change_due", { amount: formatMoney(cashChange, currency) })}</p>}
       {err && <p className="badge danger" style={{ marginTop: 10 }}>{err}</p>}
     </Modal>
   );
@@ -957,15 +969,16 @@ function ReceiptModal({
   onClose: () => void;
 }) {
   const { push } = useToast();
+  const { t } = useTranslation(["ops", "common"]);
   const [busy, setBusy] = useState(false);
 
   async function print() {
     setBusy(true);
     try {
       const r = await printOrderReceipt(orderId);
-      push(r.simulated ? "Receipt printed (simulated)" : "Receipt sent to printer", "ok");
+      push(r.simulated ? t("ops:receipt_printed_simulated") : t("ops:receipt_sent"), "ok");
     } catch (e) {
-      push(e instanceof Error ? e.message : "Print failed", "error");
+      push(e instanceof Error ? e.message : t("ops:print_failed"), "error");
     } finally {
       setBusy(false);
     }
@@ -973,18 +986,18 @@ function ReceiptModal({
 
   return (
     <Modal
-      title={`Payment complete — order #${orderNumber}`}
+      title={t("ops:receipt_title", { number: orderNumber })}
       onClose={onClose}
       footer={
         <>
-          <button className="btn ghost" onClick={onClose}>Done</button>
-          <button className="btn primary" disabled={busy} onClick={print}>{busy ? "…" : "Print receipt"}</button>
+          <button className="btn ghost" onClick={onClose}>{t("ops:done")}</button>
+          <button className="btn primary" disabled={busy} onClick={print}>{busy ? "…" : t("ops:receipt_print")}</button>
         </>
       }
     >
       {changeGiven !== null && Number(changeGiven) > 0 && (
         <div className="totals-row grand" style={{ marginTop: 0 }}>
-          <span>Change due</span>
+          <span>{t("ops:receipt_change_due")}</span>
           <span className="mono">{formatMoney(toCents(changeGiven), currency)}</span>
         </div>
       )}
