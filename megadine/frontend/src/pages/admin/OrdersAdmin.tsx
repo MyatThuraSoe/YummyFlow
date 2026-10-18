@@ -113,20 +113,28 @@ const STATUS_COLORS: Record<string, "default" | "info" | "warning" | "success" |
   CANCELLED: "error",
 };
 
-const CHANNEL_LABELS: Record<string, string> = {
-  DINE_IN: "Dine-in",
-  TAKEAWAY: "Takeaway",
-  PARCEL: "Parcel",
-};
-
 const today = () => new Date().toISOString().slice(0, 10);
 
 export default function OrdersAdmin() {
   const qc = useQueryClient();
   const { push } = useToast();
   const { can } = useAuth();
-  const { t } = useTranslation(["nav", "common"]);
+  const { t } = useTranslation(["nav", "common", "admin", "ops"]);
   const nav = useNavigate();
+
+  const statusLabel = (s: string) => t(`ops:order_status_${s.toLowerCase()}`, { defaultValue: s.replace(/_/g, " ") });
+  const channelLabel = (c: string) => t(`ops:channel_${c.toLowerCase()}`, { defaultValue: c.replace(/_/g, " ") });
+  const paymentStatusLabel = (s: string) => t(`admin:ps_${s.toLowerCase()}`, { defaultValue: s.replace(/_/g, " ") });
+  const ticketStatusLabel = (s: string) => {
+    const map: Record<string, string> = {
+      QUEUED: "ops:kds_queued",
+      PREPARING: "ops:kds_preparing",
+      READY: "ops:kds_ready",
+      SERVED: "ops:kds_served",
+      CANCELLED: "ops:order_status_cancelled",
+    };
+    return map[s] ? t(map[s]) : s.replace(/_/g, " ");
+  };
 
   const [date, setDate] = useState(today());
   const [status, setStatus] = useState("ALL");
@@ -195,7 +203,7 @@ export default function OrdersAdmin() {
   const cancelMut = useMutation({
     mutationFn: () => apiPost(`/orders/${selectedId}/cancel`, { reason: cancelReason, managerPin: managerPin || undefined }),
     onSuccess: () => {
-      push("Order cancelled", "ok");
+      push(t("admin:ord_cancelled_toast"), "ok");
       setCancelOpen(false);
       setCancelReason("");
       setManagerPin("");
@@ -207,14 +215,14 @@ export default function OrdersAdmin() {
 
   const reprintMut = useMutation({
     mutationFn: () => printOrderReceipt(selectedId!),
-    onSuccess: (r) => push(r.ok ? `Receipt sent to printer (${r.mode})` : `Printer unavailable (${r.mode})`, r.ok ? "ok" : "error"),
+    onSuccess: (r) => push(r.ok ? t("admin:ord_receipt_sent", { mode: r.mode }) : t("admin:ord_printer_unavailable", { mode: r.mode }), r.ok ? "ok" : "error"),
     onError: (e) => push(errorMessage(e, t), "error"),
   });
 
   const refundMut = useMutation({
     mutationFn: () => apiPost("/payments/refund", { orderId: selectedId, amount: Number(refundAmount), reason: refundReason, managerPin: refundPin, restock: refundRestock }),
     onSuccess: () => {
-      push(`Refunded ${formatMoney(Math.round(Number(refundAmount) * 100), currency)}`, "ok");
+      push(t("admin:ord_refunded_toast", { amount: formatMoney(Math.round(Number(refundAmount) * 100), currency) }), "ok");
       setRefundOpen(false);
       qc.invalidateQueries({ queryKey: ["orders"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
@@ -251,26 +259,26 @@ export default function OrdersAdmin() {
         <Typography variant="h5" sx={{ flex: 1 }}>
           {t("nav:orders")}
         </Typography>
-        <TextField type="date" label="Business date" value={date} onChange={(e) => setDate(e.target.value)} size="small" slotProps={{ inputLabel: { shrink: true } }} />
-        <TextField select label="Status" value={status} onChange={(e) => setStatus(e.target.value)} size="small" sx={{ minWidth: 170 }}>
-          <MenuItem value="ALL">All statuses</MenuItem>
+        <TextField type="date" label={t("admin:sh_business_date")} value={date} onChange={(e) => setDate(e.target.value)} size="small" slotProps={{ inputLabel: { shrink: true } }} />
+        <TextField select label={t("admin:col_status")} value={status} onChange={(e) => setStatus(e.target.value)} size="small" sx={{ minWidth: 170 }}>
+          <MenuItem value="ALL">{t("admin:ord_all_statuses")}</MenuItem>
           {STATUSES.map((s) => (
             <MenuItem key={s} value={s}>
-              {s.replace(/_/g, " ")}
+              {statusLabel(s)}
             </MenuItem>
           ))}
         </TextField>
-        <TextField select label="Channel" value={channel} onChange={(e) => setChannel(e.target.value)} size="small" sx={{ minWidth: 150 }}>
-          <MenuItem value="ALL">All channels</MenuItem>
+        <TextField select label={t("admin:ord_channel")} value={channel} onChange={(e) => setChannel(e.target.value)} size="small" sx={{ minWidth: 150 }}>
+          <MenuItem value="ALL">{t("admin:ord_all_channels")}</MenuItem>
           {CHANNELS.map((c) => (
             <MenuItem key={c} value={c}>
-              {CHANNEL_LABELS[c]}
+              {channelLabel(c)}
             </MenuItem>
           ))}
         </TextField>
         {can("staff.manage") && (
-          <TextField select label="Cashier" value={cashierId} onChange={(e) => setCashierId(e.target.value)} size="small" sx={{ minWidth: 180 }}>
-            <MenuItem value="ALL">All cashiers</MenuItem>
+          <TextField select label={t("admin:col_cashier")} value={cashierId} onChange={(e) => setCashierId(e.target.value)} size="small" sx={{ minWidth: 180 }}>
+            <MenuItem value="ALL">{t("admin:ord_all_cashiers")}</MenuItem>
             {(usersData?.data.users ?? []).map((u) => (
               <MenuItem key={u.id} value={u.id}>
                 {u.name} ({u.role})
@@ -278,8 +286,8 @@ export default function OrdersAdmin() {
             ))}
           </TextField>
         )}
-        <TextField select label="Table" value={tableId} onChange={(e) => setTableId(e.target.value)} size="small" sx={{ minWidth: 130 }}>
-          <MenuItem value="ALL">All tables</MenuItem>
+        <TextField select label={t("admin:ord_table")} value={tableId} onChange={(e) => setTableId(e.target.value)} size="small" sx={{ minWidth: 130 }}>
+          <MenuItem value="ALL">{t("admin:ord_all_tables")}</MenuItem>
           {(tablesData?.tables ?? []).map((tb) => (
             <MenuItem key={tb.id} value={tb.id}>
               #{tb.number}
@@ -298,12 +306,12 @@ export default function OrdersAdmin() {
             <Table size="small">
               <TableHead>
                 <TableRow>
-                  <TableCell>Order</TableCell>
-                  <TableCell>Time</TableCell>
-                  <TableCell>Type</TableCell>
-                  <TableCell>Status</TableCell>
-                  <TableCell align="right">Items</TableCell>
-                  <TableCell align="right">Total</TableCell>
+                  <TableCell>{t("admin:ord_col_order")}</TableCell>
+                  <TableCell>{t("admin:col_time")}</TableCell>
+                  <TableCell>{t("admin:col_type")}</TableCell>
+                  <TableCell>{t("admin:col_status")}</TableCell>
+                  <TableCell align="right">{t("admin:ord_col_items")}</TableCell>
+                  <TableCell align="right">{t("admin:ord_col_total")}</TableCell>
                   <TableCell align="right" />
                 </TableRow>
               </TableHead>
@@ -313,11 +321,11 @@ export default function OrdersAdmin() {
                     <TableCell sx={{ fontWeight: 700 }}>#{o.orderNumber}</TableCell>
                     <TableCell>{new Date(o.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</TableCell>
                     <TableCell>
-                      {CHANNEL_LABELS[o.channel] ?? o.channel}
+                      {channelLabel(o.channel)}
                       {o.tableSession?.table ? ` · #${o.tableSession.table.number}` : ""}
                     </TableCell>
                     <TableCell>
-                      <Chip size="small" label={o.status.replace(/_/g, " ")} color={STATUS_COLORS[o.status] ?? "default"} variant="outlined" />
+                      <Chip size="small" label={statusLabel(o.status)} color={STATUS_COLORS[o.status] ?? "default"} variant="outlined" />
                     </TableCell>
                     <TableCell align="right">{o.lines.filter((l) => !l.isVoided).reduce((n, l) => n + l.quantity, 0)}</TableCell>
                     <TableCell align="right" sx={{ fontWeight: 700 }}>
@@ -325,7 +333,7 @@ export default function OrdersAdmin() {
                     </TableCell>
                     <TableCell align="right">
                       <Button size="small" onClick={(e) => { e.stopPropagation(); setSelectedId(o.id); }}>
-                        View
+                        {t("admin:ord_view")}
                       </Button>
                     </TableCell>
                   </TableRow>
@@ -333,7 +341,7 @@ export default function OrdersAdmin() {
                 {orders.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={7} align="center" sx={{ py: 4, color: "text.secondary" }}>
-                      No orders for this filter.
+                      {t("admin:ord_empty")}
                     </TableCell>
                   </TableRow>
                 )}
@@ -345,12 +353,12 @@ export default function OrdersAdmin() {
 
       <Dialog open={!!selectedId} onClose={closeDetail} maxWidth="sm" fullWidth>
         <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          {order ? `Order #${order.orderNumber}` : "Order"}
-          {order && <Chip size="small" label={order.status.replace(/_/g, " ")} color={STATUS_COLORS[order.status] ?? "default"} variant="outlined" />}
+          {order ? t("admin:ord_order_title", { number: order.orderNumber }) : t("admin:ord_order")}
+          {order && <Chip size="small" label={statusLabel(order.status)} color={STATUS_COLORS[order.status] ?? "default"} variant="outlined" />}
           {order && order.paymentStatus !== "SUCCEEDED" && (
             <Chip
               size="small"
-              label={order.paymentStatus.replace(/_/g, " ")}
+              label={paymentStatusLabel(order.paymentStatus)}
               color={order.paymentStatus === "REFUNDED" ? "error" : order.paymentStatus === "PARTIALLY_REFUNDED" ? "warning" : "default"}
               variant="outlined"
             />
@@ -364,10 +372,10 @@ export default function OrdersAdmin() {
           ) : (
             <Stack spacing={1.5}>
               <Typography variant="body2" color="text.secondary">
-                {new Date(order.createdAt).toLocaleString()} · {CHANNEL_LABELS[order.channel] ?? order.channel}
-                {order.tableSession?.table ? ` · Table #${order.tableSession.table.number}${order.tableSession.table.name ? ` (${order.tableSession.table.name})` : ""}` : ""}
+                {new Date(order.createdAt).toLocaleString()} · {channelLabel(order.channel)}
+                {order.tableSession?.table ? ` · ${t("admin:ord_table")} #${order.tableSession.table.number}${order.tableSession.table.name ? ` (${order.tableSession.table.name})` : ""}` : ""}
               </Typography>
-              {order.cancelReason && <Alert severity="error">Cancelled: {order.cancelReason}</Alert>}
+              {order.cancelReason && <Alert severity="error">{t("admin:ord_cancel_reason_alert", { reason: order.cancelReason })}</Alert>}
               <Divider />
               {order.lines.map((l) => (
                 <Stack key={l.id} direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
@@ -386,11 +394,11 @@ export default function OrdersAdmin() {
                     )}
                     {l.notes && (
                       <Typography variant="caption" color="text.secondary">
-                        Note: {l.notes}
+                        {t("admin:ord_line_note", { note: l.notes })}
                       </Typography>
                     )}
                   </Stack>
-                  {l.isVoided && <Chip size="small" label="VOID" color="error" variant="outlined" />}
+                  {l.isVoided && <Chip size="small" label={t("admin:ord_void_chip")} color="error" variant="outlined" />}
                   <Typography variant="body2" sx={{ textDecoration: l.isVoided ? "line-through" : "none", opacity: l.isVoided ? 0.6 : 1 }}>
                     {formatMoney(toCents(l.lineTotal), currency)}
                   </Typography>
@@ -398,19 +406,19 @@ export default function OrdersAdmin() {
               ))}
               <Divider />
               <Stack spacing={0.5}>
-                <SummaryRow label="Subtotal" value={formatMoney(toCents(order.subtotal), currency)} />
-                {toCents(order.discountAmount) > 0 && <SummaryRow label="Discount" value={`−${formatMoney(toCents(order.discountAmount), currency)}`} />}
-                <SummaryRow label="Tax" value={formatMoney(toCents(order.taxAmount), currency)} />
-                {toCents(order.serviceCharge) > 0 && <SummaryRow label="Service" value={formatMoney(toCents(order.serviceCharge), currency)} />}
-                <SummaryRow label="Total" value={formatMoney(toCents(order.total), currency)} bold />
-                {paidCents > 0 && <SummaryRow label="Paid" value={formatMoney(paidCents, currency)} />}
-                {refundedCents > 0 && <SummaryRow label="Refunded" value={`−${formatMoney(refundedCents, currency)}`} />}
-                {canRefund && <SummaryRow label="Refundable" value={formatMoney(refundableCents, currency)} />}
+                <SummaryRow label={t("admin:col_subtotal")} value={formatMoney(toCents(order.subtotal), currency)} />
+                {toCents(order.discountAmount) > 0 && <SummaryRow label={t("admin:ord_sum_discount")} value={`−${formatMoney(toCents(order.discountAmount), currency)}`} />}
+                <SummaryRow label={t("admin:dash_tax")} value={formatMoney(toCents(order.taxAmount), currency)} />
+                {toCents(order.serviceCharge) > 0 && <SummaryRow label={t("admin:sh_service")} value={formatMoney(toCents(order.serviceCharge), currency)} />}
+                <SummaryRow label={t("admin:ord_col_total")} value={formatMoney(toCents(order.total), currency)} bold />
+                {paidCents > 0 && <SummaryRow label={t("admin:ord_sum_paid")} value={formatMoney(paidCents, currency)} />}
+                {refundedCents > 0 && <SummaryRow label={t("admin:ord_sum_refunded")} value={`−${formatMoney(refundedCents, currency)}`} />}
+                {canRefund && <SummaryRow label={t("admin:ord_sum_refundable")} value={formatMoney(refundableCents, currency)} />}
               </Stack>
               {order.payments.length > 0 && (
                 <>
                   <Divider />
-                  <Typography variant="subtitle2">Payments</Typography>
+                  <Typography variant="subtitle2">{t("admin:ord_payments")}</Typography>
                   {order.payments.map((p) => (
                     <Stack key={p.id} direction="row" sx={{ justifyContent: "space-between" }}>
                       <Typography variant="body2">{p.method}</Typography>
@@ -420,7 +428,7 @@ export default function OrdersAdmin() {
                   {order.payments.flatMap((p) => p.refunds ?? []).map((r) => (
                     <Stack key={r.id} direction="row" sx={{ justifyContent: "space-between", alignItems: "baseline" }}>
                       <Typography variant="body2" color="error.main">
-                        Refund{r.reason ? ` · ${r.reason}` : ""}
+                        {t("admin:ord_refund_label")}{r.reason ? ` · ${r.reason}` : ""}
                       </Typography>
                       <Typography variant="body2" color="error.main">
                         −{formatMoney(Math.round(Number(r.amount) * 100), currency)}
@@ -432,7 +440,7 @@ export default function OrdersAdmin() {
               {(order.kitchenTickets ?? []).length > 0 && (
                 <>
                   <Divider />
-                  <Typography variant="subtitle2">Kitchen tickets</Typography>
+                  <Typography variant="subtitle2">{t("admin:ord_kitchen_tickets")}</Typography>
                   {order.kitchenTickets!.map((tk) => (
                     <Paper key={tk.id} variant="outlined" sx={{ p: 1.25 }}>
                       <Stack spacing={0.5}>
@@ -440,7 +448,7 @@ export default function OrdersAdmin() {
                           <Chip size="small" label={tk.station} variant="outlined" />
                           <Chip
                             size="small"
-                            label={tk.status.replace(/_/g, " ")}
+                            label={ticketStatusLabel(tk.status)}
                             color={tk.status === "READY" ? "success" : tk.status === "PREPARING" ? "warning" : tk.status === "SERVED" ? "default" : "info"}
                             variant="outlined"
                           />
@@ -451,7 +459,7 @@ export default function OrdersAdmin() {
                         </Stack>
                         {tk.lines.map((tl) => (
                           <Typography key={tl.id} variant="caption" color="text.secondary">
-                            {tl.quantity}× {tl.itemName} · {tl.status.replace(/_/g, " ")}
+                            {tl.quantity}× {tl.itemName} · {ticketStatusLabel(tl.status)}
                           </Typography>
                         ))}
                       </Stack>
@@ -462,7 +470,7 @@ export default function OrdersAdmin() {
               {receiptOpen && (
                 <>
                   <Divider />
-                  <Typography variant="subtitle2">Receipt</Typography>
+                  <Typography variant="subtitle2">{t("admin:ord_receipt")}</Typography>
                   <Paper variant="outlined" sx={{ p: 1.5, maxHeight: 260, overflow: "auto" }}>
                     <Typography component="pre" variant="caption" sx={{ fontFamily: "ui-monospace, monospace", whiteSpace: "pre-wrap", m: 0 }}>
                       {receipt?.receipt ?? t("common:loading")}
@@ -476,36 +484,36 @@ export default function OrdersAdmin() {
         <DialogActions>
           <Button onClick={closeDetail}>{t("common:cancel")}</Button>
           <Button onClick={() => setReceiptOpen((v) => !v)} disabled={!order}>
-            {receiptOpen ? "Hide receipt" : "Receipt"}
+            {receiptOpen ? t("admin:ord_hide_receipt") : t("admin:ord_receipt")}
           </Button>
           {order && (
-            <Button onClick={() => nav(`/admin/receipt/${order.id}`)}>Receipt page</Button>
+            <Button onClick={() => nav(`/admin/receipt/${order.id}`)}>{t("admin:ord_receipt_page")}</Button>
           )}
           {can("pos.use") && (
             <Button onClick={() => reprintMut.mutate()} disabled={!order || reprintMut.isPending}>
-              Reprint
+              {t("ops:pos_reprint")}
             </Button>
           )}
           {canRefund && (
             <Button color="warning" onClick={openRefund} disabled={!order}>
-              Refund
+              {t("ops:orders_refund")}
             </Button>
           )}
           {cancellable && (
             <Button color="error" onClick={() => setCancelOpen(true)}>
-              Cancel order
+              {t("admin:ord_cancel_order")}
             </Button>
           )}
         </DialogActions>
       </Dialog>
 
       <Dialog open={cancelOpen} onClose={() => setCancelOpen(false)} maxWidth="xs" fullWidth>
-        <DialogTitle>Cancel order{order ? ` #${order.orderNumber}` : ""}</DialogTitle>
+        <DialogTitle>{order ? t("admin:ord_cancel_title", { number: order.orderNumber }) : t("admin:ord_cancel_order")}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
-            <TextField label="Reason" value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} fullWidth autoFocus />
+            <TextField label={t("admin:col_reason")} value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} fullWidth autoFocus />
             <TextField
-              label="Manager PIN (optional)"
+              label={t("admin:ord_pin_optional")}
               value={managerPin}
               onChange={(e) => setManagerPin(e.target.value)}
               fullWidth
@@ -516,41 +524,41 @@ export default function OrdersAdmin() {
         <DialogActions>
           <Button onClick={() => setCancelOpen(false)}>{t("common:cancel")}</Button>
           <Button color="error" variant="contained" disabled={cancelReason.trim().length < 2 || cancelMut.isPending} onClick={() => cancelMut.mutate()}>
-            {cancelMut.isPending ? <CircularProgress size={18} color="inherit" /> : "Cancel order"}
+            {cancelMut.isPending ? <CircularProgress size={18} color="inherit" /> : t("admin:ord_cancel_order")}
           </Button>
         </DialogActions>
       </Dialog>
 
       <Dialog open={refundOpen} onClose={() => setRefundOpen(false)} maxWidth="xs" fullWidth>
-        <DialogTitle>Refund{order ? ` order #${order.orderNumber}` : ""}</DialogTitle>
+        <DialogTitle>{order ? t("admin:ord_refund_title", { number: order.orderNumber }) : t("ops:orders_refund")}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
             <Alert severity="info">
-              Refundable balance: {formatMoney(refundableCents, currency)}
+              {t("admin:ord_refundable_balance", { amount: formatMoney(refundableCents, currency) })}
             </Alert>
             <TextField
-              label={`Amount (${currency})`}
+              label={t("admin:exp_amount_currency", { currency })}
               type="number"
               value={refundAmount}
               onChange={(e) => setRefundAmount(e.target.value)}
               fullWidth
               autoFocus
               error={Number(refundAmount) > 0 && Math.round(Number(refundAmount) * 100) > refundableCents}
-              helperText={Number(refundAmount) > 0 && Math.round(Number(refundAmount) * 100) > refundableCents ? "Exceeds refundable balance" : " "}
+              helperText={Number(refundAmount) > 0 && Math.round(Number(refundAmount) * 100) > refundableCents ? t("admin:ord_exceeds_refundable") : " "}
             />
-            <TextField label="Reason" value={refundReason} onChange={(e) => setRefundReason(e.target.value)} fullWidth multiline minRows={2} />
+            <TextField label={t("admin:col_reason")} value={refundReason} onChange={(e) => setRefundReason(e.target.value)} fullWidth multiline minRows={2} />
             <TextField
-              label="Manager PIN"
+              label={t("ops:refund_manager_pin")}
               value={refundPin}
               onChange={(e) => setRefundPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
               fullWidth
               slotProps={{ htmlInput: { inputMode: "numeric", maxLength: 6 } }}
-              helperText="A manager or owner other than you must approve"
+              helperText={t("admin:ord_approver_hint")}
             />
             <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
               <input id="refund-restock" type="checkbox" checked={refundRestock} onChange={(e) => setRefundRestock(e.target.checked)} />
               <Typography component="label" htmlFor="refund-restock" variant="body2">
-                Restock refunded items to inventory
+                {t("admin:ord_restock")}
               </Typography>
             </Stack>
           </Stack>
@@ -558,7 +566,7 @@ export default function OrdersAdmin() {
         <DialogActions>
           <Button onClick={() => setRefundOpen(false)}>{t("common:cancel")}</Button>
           <Button color="warning" variant="contained" disabled={!refundValid || refundMut.isPending} onClick={() => refundMut.mutate()}>
-            {refundMut.isPending ? <CircularProgress size={18} color="inherit" /> : `Refund ${refundAmount ? formatMoney(Math.round(Number(refundAmount) * 100), currency) : ""}`}
+            {refundMut.isPending ? <CircularProgress size={18} color="inherit" /> : t("admin:ord_refund_submit", { amount: refundAmount ? formatMoney(Math.round(Number(refundAmount) * 100), currency) : "" })}
           </Button>
         </DialogActions>
       </Dialog>
