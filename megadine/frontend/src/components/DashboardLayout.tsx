@@ -31,6 +31,7 @@ import {
   useMediaQuery,
 } from "@mui/material";
 import {
+  AccessTime as AccessTimeIcon,
   Backup as BackupIcon,
   BarChart as BarChartIcon,
   ChevronLeft as ChevronLeftIcon,
@@ -108,7 +109,8 @@ const GROUPS: NavGroup[] = [
   {
     labelKey: "group_sales",
     items: [
-      { to: "/admin/shifts", labelKey: "shifts", cap: "report.view", icon: <ReceiptLongIcon /> },
+      { to: "/admin/orders", labelKey: "orders", cap: "report.view", icon: <ReceiptLongIcon /> },
+      { to: "/admin/shifts", labelKey: "shifts", cap: "report.view", icon: <AccessTimeIcon /> },
       { to: "/admin/reports", labelKey: "reports", cap: "report.view", icon: <BarChartIcon /> },
       { to: "/admin/expenses", labelKey: "expenses", cap: "expense.manage", icon: <PaymentsIcon /> },
     ],

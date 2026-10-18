@@ -17,6 +17,7 @@ const InventoryAdmin = lazy(() => import("./pages/admin/InventoryAdmin"));
 const ExpensesAdmin = lazy(() => import("./pages/admin/ExpensesAdmin"));
 const ReportsAdmin = lazy(() => import("./pages/admin/ReportsAdmin"));
 const ShiftsAdmin = lazy(() => import("./pages/admin/ShiftsAdmin"));
+const OrdersAdmin = lazy(() => import("./pages/admin/OrdersAdmin"));
 const BackupAdmin = lazy(() => import("./pages/admin/BackupAdmin"));
 const AuditAdmin = lazy(() => import("./pages/admin/AuditAdmin"));
 const UsersAdmin = lazy(() => import("./pages/admin/UsersAdmin"));
@@ -97,6 +98,7 @@ export default function App() {
             <Route path="inventory" element={<AdminGuard capability="inventory.view"><Lazy page={<InventoryAdmin />} /></AdminGuard>} />
             <Route path="expenses" element={<AdminGuard capability="expense.manage"><Lazy page={<ExpensesAdmin />} /></AdminGuard>} />
             <Route path="reports" element={<AdminGuard capability="report.view"><Lazy page={<ReportsAdmin />} /></AdminGuard>} />
+            <Route path="orders" element={<AdminGuard capability="report.view"><Lazy page={<OrdersAdmin />} /></AdminGuard>} />
             <Route path="shifts" element={<AdminGuard capability="report.view"><Lazy page={<ShiftsAdmin />} /></AdminGuard>} />
             <Route path="backup" element={<AdminGuard capability="backup.manage"><Lazy page={<BackupAdmin />} /></AdminGuard>} />
             <Route path="audit" element={<AdminGuard capability="audit.view"><Lazy page={<AuditAdmin />} /></AdminGuard>} />

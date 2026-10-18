@@ -80,7 +80,7 @@ ordersRouter.get(
         ...(cashierId ? { cashierId } : {}),
         ...(businessDate ? { businessDate: new Date(businessDate) } : {}),
       },
-      include: { lines: { include: { modifiers: true } }, payments: true },
+      include: { lines: { include: { modifiers: true } }, payments: true, tableSession: { include: { table: true } } },
       orderBy: { createdAt: "desc" },
       take: limit ? Math.min(Number(limit), 200) : 50,
     });
