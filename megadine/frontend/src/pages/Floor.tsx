@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost } from "../lib/api";
 import { formatMoney, fromCents, toCents } from "../lib/format";
+import { printOrderReceipt } from "../lib/receipts";
 import { Badge, Field, Modal, useToast } from "../components/ui";
 import { useCart } from "../store/cart";
 import { useNavigate } from "react-router-dom";
@@ -44,10 +45,12 @@ export default function Floor() {
     cart.setChannel("DINE_IN");
     cart.setTable(t.id, `#${t.number}`);
     setSelected(null);
-    nav("/pos");
+    nav(t.status === "OCCUPIED" ? `/pos?tableId=${t.id}` : "/pos");
   }
 
   const tables = data?.tables ?? [];
+  const selectedHasOpenOrder =
+    !!selected?.current?.orderId && selected.current.status !== "COMPLETED" && selected.current.status !== "CANCELLED";
 
   return (
     <div>
@@ -94,7 +97,9 @@ export default function Floor() {
                   <button className="btn" onClick={() => setBill(selected.current!.orderId!)} disabled={!selected.current.orderId}>
                     View bill
                   </button>
-                  <button className="btn danger" onClick={() => clearMut.mutate(selected.id)}>Clear table</button>
+                  <button className="btn danger" onClick={() => clearMut.mutate(selected.id)} disabled={selectedHasOpenOrder}>
+                    Clear table
+                  </button>
                 </>
               ) : (
                 <button className="btn primary" onClick={() => startOrder(selected)}>Start order</button>
@@ -114,6 +119,11 @@ export default function Floor() {
               </div>
             </div>
           )}
+          {selectedHasOpenOrder && (
+            <p className="badge warn" style={{ marginBottom: 12 }}>
+              This table has an open order — pay or cancel it before clearing.
+            </p>
+          )}
           <Field label="Set status">
             <div className="row wrap">
               {STATUSES.map((s) => (
@@ -131,7 +141,7 @@ export default function Floor() {
             </div>
           </Field>
           {selected.current?.orderId && (
-            <button className="btn block" onClick={() => { setSelected(null); nav("/pos"); }}>
+            <button className="btn block" onClick={() => { setSelected(null); nav(`/pos?tableId=${selected.id}`); }}>
               Add items in POS
             </button>
           )}
@@ -150,40 +160,83 @@ function statusKind(s: string) {
 function BillModal({ orderId, currency, onClose, onPaid }: { orderId: string; currency: string; onClose: () => void; onPaid: () => void }) {
   const { push } = useToast();
   const { data } = useQuery({ queryKey: ["order", orderId], queryFn: () => apiGet<{ order: OrderShape }>(`/orders/${orderId}`) });
+  const { data: shiftRes } = useQuery({ queryKey: ["shift"], queryFn: () => apiGet<{ shift: { id: string } | null }>("/shifts/current") });
   const [method, setMethod] = useState("CASH");
   const [cash, setCash] = useState("");
+  const [reference, setReference] = useState("");
   const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [idemKey] = useState(() => `pay-${crypto.randomUUID()}`);
+  const [paid, setPaid] = useState<{ orderNumber: number; preview: string; changeGiven: string | null } | null>(null);
   const order = data?.order;
   const total = order ? toCents(order.total) : 0;
 
-  const payMut = useMutation({
-    mutationFn: () =>
-      apiPost("/payments", {
+  async function charge() {
+    setBusy(true);
+    setErr("");
+    try {
+      const res = await apiPost<{ order: { orderNumber: number; changeGiven: string | null; receiptPreview: string } }>("/payments", {
         orderId,
-        idempotencyKey: `pay-${orderId}`,
-        payments: [{ method, amount: Number(fromCents(total)), cashReceived: method === "CASH" ? Number(cash || fromCents(total)) : undefined }],
-      }),
-    onSuccess: () => {
+        shiftId: shiftRes?.shift?.id ?? null,
+        idempotencyKey: idemKey,
+        payments: [
+          {
+            method,
+            amount: Number(fromCents(total)),
+            cashReceived: method === "CASH" ? Number(cash || fromCents(total)) : undefined,
+            reference: method !== "CASH" && reference ? reference : undefined,
+          },
+        ],
+      });
       push("Payment complete", "ok");
-      onPaid();
-    },
-    onError: (e) => setErr(e instanceof Error ? e.message : "Payment failed"),
-  });
+      setPaid({ orderNumber: res.order.orderNumber, preview: res.order.receiptPreview, changeGiven: res.order.changeGiven });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Payment failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function printReceipt() {
+    try {
+      const r = await printOrderReceipt(orderId);
+      push(r.simulated ? "Receipt printed (simulated)" : "Receipt sent to printer", "ok");
+    } catch (e) {
+      push(e instanceof Error ? e.message : "Print failed", "error");
+    }
+  }
 
   return (
     <Modal
-      title={order ? `Bill · Order #${order.orderNumber}` : "Bill"}
-      onClose={onClose}
+      title={paid ? `Payment complete — order #${paid.orderNumber}` : order ? `Bill · Order #${order.orderNumber}` : "Bill"}
+      onClose={paid ? onPaid : onClose}
       footer={
-        <>
-          <button className="btn ghost" onClick={onClose}>Close</button>
-          <button className="btn primary" disabled={!order || payMut.isPending} onClick={() => payMut.mutate()}>
-            {payMut.isPending ? "…" : `Charge ${formatMoney(total, currency)}`}
-          </button>
-        </>
+        paid ? (
+          <>
+            <button className="btn ghost" onClick={onPaid}>Done</button>
+            <button className="btn primary" onClick={printReceipt}>Print receipt</button>
+          </>
+        ) : (
+          <>
+            <button className="btn ghost" onClick={onClose}>Close</button>
+            <button className="btn primary" disabled={!order || busy} onClick={charge}>
+              {busy ? "…" : `Charge ${formatMoney(total, currency)}`}
+            </button>
+          </>
+        )
       }
     >
-      {!order ? (
+      {paid ? (
+        <>
+          {paid.changeGiven !== null && Number(paid.changeGiven) > 0 && (
+            <div className="totals-row grand" style={{ marginTop: 0 }}>
+              <span>Change due</span>
+              <span className="mono">{formatMoney(toCents(paid.changeGiven), currency)}</span>
+            </div>
+          )}
+          <pre className="receipt-paper">{paid.preview || "…"}</pre>
+        </>
+      ) : !order ? (
         <p className="muted">Loading…</p>
       ) : (
         <>
@@ -205,14 +258,17 @@ function BillModal({ orderId, currency, onClose, onPaid }: { orderId: string; cu
             <span>Total</span>
             <span className="mono">{formatMoney(total, currency)}</span>
           </div>
+          {!shiftRes?.shift && <p className="badge warn" style={{ marginTop: 10 }}>No open shift — payment will not count toward a drawer</p>}
           <div className="row" style={{ marginTop: 12 }}>
             <select className="input" value={method} onChange={(e) => setMethod(e.target.value)}>
               <option value="CASH">Cash</option>
               <option value="CARD">Card</option>
               <option value="MOBILE">Mobile</option>
             </select>
-            {method === "CASH" && (
+            {method === "CASH" ? (
               <input className="input" type="number" placeholder="Cash received" value={cash} onChange={(e) => setCash(e.target.value)} />
+            ) : (
+              <input className="input" placeholder="Reference (optional)" value={reference} onChange={(e) => setReference(e.target.value)} />
             )}
           </div>
           {err && <p className="badge danger" style={{ marginTop: 10 }}>{err}</p>}

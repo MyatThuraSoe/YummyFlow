@@ -257,6 +257,9 @@ export default function DashboardLayout() {
     const goOffline = () => setOnline(false);
     window.addEventListener("online", goOnline);
     window.addEventListener("offline", goOffline);
+    // Flush anything queued while online (e.g. after a restart) — not only on
+    // a fresh connectivity transition.
+    if (navigator.onLine && pendingCount() > 0) void goOnline();
     return () => {
       window.removeEventListener("online", goOnline);
       window.removeEventListener("offline", goOffline);

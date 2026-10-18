@@ -130,6 +130,13 @@ tablesRouter.post(
       where: { id: String(req.params.id), restaurantId: req.auth!.restaurantId },
     });
     if (!table) throw ApiError.notFound("Table not found");
+    const open = await prisma.tableSession.findFirst({
+      where: { tableId: table.id, status: "OPEN" },
+      include: { order: { select: { orderNumber: true, status: true } } },
+    });
+    if (open?.order && open.order.status !== "COMPLETED" && open.order.status !== "CANCELLED") {
+      throw ApiError.conflict(`Table has an open order #${open.order.orderNumber}. Pay or cancel it first.`);
+    }
     await prisma.$transaction([
       prisma.tableSession.updateMany({ where: { tableId: table.id, status: "OPEN" }, data: { status: "CLOSED", closedAt: new Date() } }),
       prisma.restaurantTable.update({ where: { id: table.id }, data: { status: "AVAILABLE", version: { increment: 1 } } }),

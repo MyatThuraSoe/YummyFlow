@@ -267,6 +267,88 @@ async function main() {
   await api(`/orders/${v2.data.order.id}/cancel`, { method: "POST", token: cashier.token, body: { reason: "verify cleanup", managerPin: PIN_OWNER } });
     ok("manager PIN required (and works) to void a kitchen-sent line");
 
+    // ── Round-2 items, occupied-table guard, partial payments ──
+    const menuFull = await api<{ categories: { items: { id: string; modifierGroups: { options: { id: string }[] }[] }[] }[] }>("/menu", { token: cashier.token });
+    const modItem = menuFull.data.categories.flatMap((c) => c.items).find((i) => i.modifierGroups.some((g) => g.options.length));
+    const modOpt = modItem?.modifierGroups.find((g) => g.options.length)?.options[0]?.id;
+
+    const r2 = await api<{ order: { id: string; total: string } }>("/orders", {
+      method: "POST",
+      token: cashier.token,
+      body: { channel: "TAKEAWAY", items: [{ menuItemId: coke.id, quantity: 1 }] },
+    });
+    const r2Total = Number(r2.data.order.total);
+    const r2add = await api<{ order: { total: string } }>(`/orders/${r2.data.order.id}/items`, {
+      method: "POST",
+      token: cashier.token,
+      body: { items: [{ menuItemId: modItem ? modItem.id : burger.id, quantity: 1, ...(modOpt ? { modifierOptionIds: [modOpt] } : {}) }] },
+    });
+    assert.equal(r2add.status, 200, JSON.stringify(r2add.data));
+    assert.ok(Number(r2add.data.order.total) > r2Total, "adding items must raise the order total");
+    const r2full = await api<{ order: { lines: { isVoided: boolean; modifiers: { nameSnapshot: string }[] }[] } }>(`/orders/${r2.data.order.id}`, { token: cashier.token });
+    if (modItem) {
+      assert.ok(
+        r2full.data.order.lines.some((l) => !l.isVoided && l.modifiers.length > 0),
+        "added line must keep its modifiers",
+      );
+    }
+    await api(`/orders/${r2.data.order.id}/cancel`, { method: "POST", token: cashier.token, body: { reason: "verify cleanup" } });
+    ok("round-2 items append to an existing order with modifiers and recalculated total");
+
+    const tblList = await api<{ tables: { id: string; status: string }[] }>("/tables", { token: cashier.token });
+    const freeTable = tblList.data.tables.find((t) => t.status === "AVAILABLE");
+    if (freeTable) {
+      const d1 = await api<{ order: { id: string } }>("/orders", {
+        method: "POST",
+        token: cashier.token,
+        body: { channel: "DINE_IN", tableId: freeTable.id, items: [{ menuItemId: burger.id, quantity: 1 }] },
+      });
+      assert.equal(d1.status, 201, JSON.stringify(d1.data));
+      const d2 = await api("/orders", {
+        method: "POST",
+        token: cashier.token,
+        body: { channel: "DINE_IN", tableId: freeTable.id, items: [{ menuItemId: burger.id, quantity: 1 }] },
+      });
+      assert.equal(d2.status, 409, `expected 409 on occupied table, got ${d2.status}`);
+      const blockedClear = await api(`/tables/${freeTable.id}/clear`, { method: "POST", token: admin.token });
+      assert.equal(blockedClear.status, 409, `expected 409 clearing a table with an open order, got ${blockedClear.status}`);
+      await api(`/orders/${d1.data.order.id}/cancel`, { method: "POST", token: cashier.token, body: { reason: "verify cleanup" } });
+      const okClear = await api(`/tables/${freeTable.id}/clear`, { method: "POST", token: admin.token });
+      assert.equal(okClear.status, 200);
+      ok("occupied table rejects new orders and clear-table while an order is open");
+    } else {
+      ok("occupied-table guard skipped (no AVAILABLE table)");
+    }
+
+    const pp = await api<{ order: { id: string; total: string } }>("/orders", {
+      method: "POST",
+      token: cashier.token,
+      body: { channel: "TAKEAWAY", items: [{ menuItemId: coke.id, quantity: 1 }] },
+    });
+    const ppTotal = Number(pp.data.order.total);
+    const half = Math.round((ppTotal / 2) * 100) / 100;
+    const part1 = await api<{ order: { paymentStatus: string } }>("/payments", {
+      method: "POST",
+      token: cashier.token,
+      body: { orderId: pp.data.order.id, idempotencyKey: `part1-${pp.data.order.id}`, payments: [{ method: "CASH", amount: half, cashReceived: half }] },
+    });
+    assert.equal(part1.status, 201, JSON.stringify(part1.data));
+    assert.equal(part1.data.order.paymentStatus, "PENDING");
+    const replayPart = await api<{ order: { amountPaid: string } }>("/payments", {
+      method: "POST",
+      token: cashier.token,
+      body: { orderId: pp.data.order.id, idempotencyKey: `part1-${pp.data.order.id}`, payments: [{ method: "CASH", amount: half, cashReceived: half }] },
+    });
+    assert.equal(Number(replayPart.data.order.amountPaid), half, "replaying a key must not charge twice");
+    const rest = Math.round((ppTotal - half) * 100) / 100;
+    const part2 = await api<{ order: { paymentStatus: string } }>("/payments", {
+      method: "POST",
+      token: cashier.token,
+      body: { orderId: pp.data.order.id, idempotencyKey: `part2-${pp.data.order.id}`, payments: [{ method: "CASH", amount: rest, cashReceived: rest }] },
+    });
+    assert.equal(part2.data.order.paymentStatus, "SUCCEEDED");
+    ok("partial payment stays PENDING, replays are idempotent, balance settles the order");
+
     // Close the shift, reconciling exactly.
     const closed = await api<{ variance: string }>(`/shifts/${shiftId}/close`, {
       method: "POST",

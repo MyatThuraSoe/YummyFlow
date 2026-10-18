@@ -1,10 +1,12 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost } from "../lib/api";
 import { useCart, type CartLine } from "../store/cart";
 import { useAuth } from "../store/auth";
 import { computeTotals, formatMoney, fromCents, toCents } from "../lib/format";
 import { enqueueOrder, pendingCount, shouldQueue } from "../lib/outbox";
+import { printOrderReceipt } from "../lib/receipts";
 import { Field, Modal, useToast } from "../components/ui";
 
 interface MenuOption { id: string; name: string; price: string; isAvailable: boolean }
@@ -17,16 +19,19 @@ interface Settings { restaurant: { currency: string; taxRate: string; taxInclusi
 
 interface ServerLine { id: string; menuItemId: string; itemNameSnapshot: string; variantSnapshot: string | null; unitPriceSnapshot: string; quantity: number; lineTotal: string; isVoided: boolean; notes: string | null; modifiers: { id: string; nameSnapshot: string; priceSnapshot: string }[] }
 interface OrderShape {
-  id: string; orderNumber: number; total: string; subtotal: string; taxAmount: string; serviceCharge: string; discountAmount: string;
+  id: string; orderNumber: number; total: string; subtotal: string; taxAmount: string; serviceCharge: string; discountAmount: string; amountPaid: string; paymentStatus: string;
   status: string; channel: string; tableId: string | null; lines: ServerLine[];
   tableSession?: { table: { number: number; name: string | null } } | null;
 }
+
+type Tender = { method: string; amount: number; cashReceived?: number; reference?: string | null };
 
 export default function Pos() {
   const qc = useQueryClient();
   const { push } = useToast();
   const { can } = useAuth();
   const cart = useCart();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [activeCat, setActiveCat] = useState<string | null>(null);
   const [modItem, setModItem] = useState<MenuItem | null>(null);
   const [showPay, setShowPay] = useState(false);
@@ -36,6 +41,9 @@ export default function Pos() {
   const [voidTarget, setVoidTarget] = useState<ServerLine | null>(null);
   const [busy] = useState(false);
   const [queued, setQueued] = useState(pendingCount());
+  const [notes, setNotes] = useState("");
+  const [pickupName, setPickupName] = useState("");
+  const [receipt, setReceipt] = useState<{ orderId: string; orderNumber: number; preview: string; changeGiven: string | null } | null>(null);
 
   const { data: menu } = useQuery({ queryKey: ["menu"], queryFn: () => apiGet<{ categories: Category[] }>("/menu") });
   const { data: tables } = useQuery({ queryKey: ["tables"], queryFn: () => apiGet<{ tables: TableRow[] }>("/tables") });
@@ -55,14 +63,71 @@ export default function Pos() {
   const locked = !!cart.orderId;
 
   const lineTotals = cart.lineTotals();
-  const totals = useMemo(() => computeTotals(lineTotals, cart.orderDiscount, cfg), [lineTotals, cart.orderDiscount, cfg]);
-  const serverTotal = order ? toCents(order.total) : totals.total;
+  const totals = useMemo(() => computeTotals(lineTotals, 0, cfg), [lineTotals, cfg]);
+  const orderDue = order ? Math.max(0, toCents(order.total) - toCents(order.amountPaid ?? "0")) : 0;
+  const newItemsTotal = cart.lines.length ? totals.total : 0;
+  const chargeTotal = order ? orderDue + newItemsTotal : totals.total;
+
+  function recallOrder(o: OrderShape) {
+    cart.loadFromServer({
+      channel: o.channel as never,
+      tableId: o.tableId,
+      tableLabel: o.tableSession?.table ? `#${o.tableSession.table.number}` : null,
+      orderId: o.id,
+      orderNumber: o.orderNumber,
+      orderDiscount: 0,
+      lines: [],
+    });
+    setOrder(o);
+    setShowOrders(false);
+    push(`Recalled order #${o.orderNumber}`, "ok");
+  }
+
+  useEffect(() => {
+    const tid = searchParams.get("tableId");
+    if (!tid) return;
+    setSearchParams({}, { replace: true });
+    if (cart.orderId) return;
+    apiGet<{ orders: OrderShape[] }>("/orders/open", { tableId: tid })
+      .then((res) => {
+        if (res.orders[0]) recallOrder(res.orders[0]);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function pickTable(tableId: string) {
+    const t = availableTables.find((x) => x.id === tableId);
+    if (!tableId || !t) {
+      cart.setTable(null, null);
+      return;
+    }
+    cart.setTable(t.id, `#${t.number}`);
+    if (t.status === "OCCUPIED") {
+      try {
+        const res = await apiGet<{ orders: OrderShape[] }>("/orders/open", { tableId: t.id });
+        if (res.orders[0]) recallOrder(res.orders[0]);
+        else push(`Table #${t.number} is marked in use but has no open order`, "info");
+      } catch {
+        /* keep the selection; creating a new order will surface any conflict */
+      }
+    }
+  }
 
   function addItem(item: MenuItem) {
-    if (locked) return;
     const needsModal = item.variants.length > 0 || item.modifierGroups.some((g) => g.options.length > 0);
     if (needsModal) return setModItem(item);
     cart.addLine({ menuItemId: item.id, name: item.name, unitPrice: toCents(item.price), modifiers: [], quantity: 1, variantId: null, variantName: null });
+  }
+
+  function cartToItems() {
+    return cart.lines.map((l) => ({
+      menuItemId: l.menuItemId,
+      quantity: l.quantity,
+      variantId: l.variantId || null,
+      modifierOptionIds: l.modifiers.map((m) => m.id),
+      notes: l.notes ?? null,
+    }));
   }
 
   function buildCreateBody() {
@@ -70,14 +135,9 @@ export default function Pos() {
       channel: cart.channel,
       tableId: cart.channel === "DINE_IN" ? cart.tableId : null,
       shiftId: shiftRes?.shift?.id ?? null,
-      items: cart.lines.map((l) => ({
-        menuItemId: l.menuItemId,
-        quantity: l.quantity,
-        variantId: l.variantId || null,
-        modifierOptionIds: l.modifiers.map((m) => m.id),
-        notes: l.notes ?? null,
-      })),
-      orderDiscount: cart.orderDiscount ? Number(fromCents(cart.orderDiscount)) : undefined,
+      items: cartToItems(),
+      notes: notes || null,
+      pickupName: cart.channel === "DINE_IN" ? null : pickupName || null,
     };
   }
 
@@ -85,45 +145,69 @@ export default function Pos() {
     if (order) return order;
     const res = await apiPost<{ order: OrderShape }>("/orders", buildCreateBody());
     cart.setOrder(res.order.id, res.order.orderNumber);
+    cart.clearLines();
     setOrder(res.order);
     qc.invalidateQueries({ queryKey: ["orders"] });
     return res.order;
   }
 
-  function queueOffline(sendToKitchen: boolean, payNow: boolean) {
+  /** Append not-yet-submitted cart lines to the server order (round 2+). */
+  async function pushPendingItems(o: OrderShape): Promise<OrderShape> {
+    if (!cart.lines.length) return o;
+    await apiPost(`/orders/${o.id}/items`, { items: cartToItems() });
+    cart.clearLines();
+    const fresh = await apiGet<{ order: OrderShape }>(`/orders/${o.id}`);
+    setOrder(fresh.order);
+    return fresh.order;
+  }
+
+  function queueOffline(o: OrderShape | null, opts: { sendToKitchen: boolean; payNow: boolean; tenders?: Tender[]; idemKey?: string }) {
     enqueueOrder({
-      label: `${cart.channel} · ${cart.lines.length} item(s)`,
-      create: buildCreateBody(),
-      sendToKitchen,
-      pay: payNow
+      label: o ? `Order #${o.orderNumber} · ${cart.lines.length} new item(s)` : `${cart.channel} · ${cart.lines.length} item(s)`,
+      orderId: o?.id ?? null,
+      addItems: cartToItems(),
+      create: o ? null : buildCreateBody(),
+      sendToKitchen: opts.sendToKitchen,
+      pay: opts.payNow
         ? {
             shiftId: shiftRes?.shift?.id ?? null,
-            idempotencyKey: `pay-${crypto.randomUUID()}`,
-            payments: [{ method: "CASH", amount: Number(fromCents(serverTotal)) }],
+            idempotencyKey: opts.idemKey ?? `pay-${crypto.randomUUID()}`,
+            payments: opts.tenders ?? [{ method: "CASH", amount: Number(fromCents(chargeTotal)) }],
           }
         : null,
     });
     setQueued(pendingCount());
-    cart.reset();
-    setOrder(null);
-    push("Offline — order queued and will sync automatically", "info");
     qc.invalidateQueries({ queryKey: ["outbox"] });
   }
 
   const sendMut = useMutation({
     mutationFn: async () => {
-      const o = await ensureOrder();
-      return apiPost<{ tickets: number }>(`/orders/${o.id}/send-to-kitchen`);
+      let o: OrderShape | null = null;
+      try {
+        o = await ensureOrder();
+        const withItems = await pushPendingItems(o);
+        return await apiPost<{ tickets: number }>(`/orders/${withItems.id}/send-to-kitchen`);
+      } catch (e) {
+        if (!shouldQueue(e)) throw e;
+        queueOffline(o, { sendToKitchen: true, payNow: false });
+        if (o) cart.clearLines();
+        else {
+          cart.reset();
+          setOrder(null);
+        }
+        return null;
+      }
     },
     onSuccess: (r) => {
+      if (!r) {
+        push("Offline — order queued and will sync automatically", "info");
+        return;
+      }
       push(`Sent to kitchen (${r.tickets} ticket${r.tickets === 1 ? "" : "s"})`, "ok");
       qc.invalidateQueries({ queryKey: ["tickets"] });
       qc.invalidateQueries({ queryKey: ["tables"] });
     },
-    onError: (e) => {
-      if (shouldQueue(e)) queueOffline(true, false);
-      else push(e instanceof Error ? e.message : "Failed", "error");
-    },
+    onError: (e) => push(e instanceof Error ? e.message : "Failed", "error"),
   });
 
   async function doDiscount(type: "PERCENT" | "ABSOLUTE", value: number, managerPin?: string) {
@@ -131,74 +215,78 @@ export default function Pos() {
     await apiPost(`/orders/${o.id}/discount`, { type, value, managerPin });
     const fresh = await apiGet<{ order: OrderShape }>(`/orders/${o.id}`);
     setOrder(fresh.order);
-    const discountCents = type === "PERCENT" ? Math.round(toCents(fresh.order.subtotal) * (value / 100)) : toCents(value);
-    cart.setOrderDiscount(discountCents);
     setShowDiscount(false);
     push("Discount applied", "ok");
     qc.invalidateQueries({ queryKey: ["orders"] });
   }
 
-  async function pay(tenders: { method: string; amount: number; cashReceived?: number }[]) {
-    if (shouldQueue()) {
-      enqueueOrder({
-        label: `${cart.channel} · ${cart.lines.length} item(s)`,
-        create: buildCreateBody(),
-        sendToKitchen: false,
-        pay: { shiftId: shiftRes?.shift?.id ?? null, idempotencyKey: `pay-${crypto.randomUUID()}`, payments: tenders },
-      });
-      setQueued(pendingCount());
-      setShowPay(false);
-      setOrder(null);
-      cart.reset();
-      push("Offline — payment queued and will sync automatically", "info");
-      return;
-    }
+  async function pay(tenders: Tender[], idemKey: string) {
+    let o: OrderShape | null = order;
     try {
-      const o = await ensureOrder();
-      await apiPost("/payments", {
-        orderId: o.id,
-        shiftId: shiftRes?.shift?.id ?? null,
-        idempotencyKey: `pay-${o.id}`,
-        payments: tenders,
-      });
-      push(`Payment complete — order #${o.orderNumber}`, "ok");
-      setShowPay(false);
-      setOrder(null);
-      cart.reset();
-      qc.invalidateQueries({ queryKey: ["orders"] });
-      qc.invalidateQueries({ queryKey: ["tables"] });
-      qc.invalidateQueries({ queryKey: ["shift"] });
-    } catch (e) {
-      if (shouldQueue(e)) {
-        enqueueOrder({
-          label: `${cart.channel} · ${cart.lines.length} item(s)`,
-          create: buildCreateBody(),
-          sendToKitchen: false,
-          pay: { shiftId: shiftRes?.shift?.id ?? null, idempotencyKey: `pay-${crypto.randomUUID()}`, payments: tenders },
+      if (!shouldQueue()) {
+        o = await ensureOrder();
+        const withItems = await pushPendingItems(o);
+        // Anything not yet in the kitchen must still reach it before the sale
+        // completes (send-to-kitchen only creates tickets for unsent lines).
+        await apiPost(`/orders/${withItems.id}/send-to-kitchen`);
+        const res = await apiPost<{ order: { orderNumber: number; paymentStatus: string; receiptPreview: string; changeGiven: string | null } }>("/payments", {
+          orderId: withItems.id,
+          shiftId: shiftRes?.shift?.id ?? null,
+          idempotencyKey: idemKey,
+          payments: tenders,
         });
-        setQueued(pendingCount());
         setShowPay(false);
-        setOrder(null);
+        if (res.order.paymentStatus !== "SUCCEEDED") {
+          push("Partial payment recorded — balance still due", "info");
+          const fresh = await apiGet<{ order: OrderShape }>(`/orders/${withItems.id}`);
+          setOrder(fresh.order);
+          cart.clearLines();
+          return;
+        }
+        push(`Payment complete — order #${res.order.orderNumber}`, "ok");
         cart.reset();
-        push("Offline — payment queued and will sync automatically", "info");
-      } else {
-        throw e;
+        setOrder(null);
+        setNotes("");
+        setPickupName("");
+        setReceipt({ orderId: withItems.id, orderNumber: res.order.orderNumber, preview: res.order.receiptPreview, changeGiven: res.order.changeGiven });
+        qc.invalidateQueries({ queryKey: ["orders"] });
+        qc.invalidateQueries({ queryKey: ["tables"] });
+        qc.invalidateQueries({ queryKey: ["shift"] });
+        return;
       }
+    } catch (e) {
+      if (!shouldQueue(e)) throw e;
     }
+    queueOffline(o, { sendToKitchen: true, payNow: true, tenders, idemKey });
+    setShowPay(false);
+    cart.reset();
+    setOrder(null);
+    setNotes("");
+    setPickupName("");
+    push("Offline — payment queued and will sync automatically", "info");
   }
 
   async function holdOrder() {
-    if (!cart.lines.length) return;
+    if (!cart.lines.length && !order) return;
+    let o: OrderShape | null = order;
     try {
-      await ensureOrder();
-      push(`Order #${cart.orderNumber} held`, "ok");
-      cart.reset();
-      setOrder(null);
-      setShowOrders(true);
+      o = await ensureOrder();
+      if (cart.lines.length) o = await pushPendingItems(o);
+      push(`Order #${o.orderNumber} held`, "ok");
     } catch (e) {
-      if (shouldQueue(e)) queueOffline(false, false);
-      else push(e instanceof Error ? e.message : "Failed", "error");
+      if (!shouldQueue(e)) {
+        push(e instanceof Error ? e.message : "Failed", "error");
+        return;
+      }
+      queueOffline(o, { sendToKitchen: false, payNow: false });
+      if (o) cart.clearLines();
+      push("Offline — order queued and will sync automatically", "info");
     }
+    cart.reset();
+    setOrder(null);
+    setNotes("");
+    setPickupName("");
+    setShowOrders(true);
   }
 
   async function reprint(orderId: string) {
@@ -250,7 +338,7 @@ export default function Pos() {
             <button
               key={item.id}
               className={`item-card ${!item.isAvailable ? "unavailable" : ""}`}
-              disabled={!item.isAvailable || locked}
+              disabled={!item.isAvailable}
               onClick={() => addItem(item)}
             >
               <span className="name">{item.name}</span>
@@ -262,73 +350,86 @@ export default function Pos() {
       </section>
 
       <aside className="pos-cart">
-        <div className="row" style={{ padding: 12, borderBottom: "1px solid var(--line)" }}>
-          <select className="input" value={cart.channel} onChange={(e) => cart.setChannel(e.target.value as never)} disabled={locked}>
-            <option value="DINE_IN">Dine-in</option>
-            <option value="TAKEAWAY">Takeaway</option>
-            <option value="PARCEL">Parcel</option>
-          </select>
-          {cart.channel === "DINE_IN" && (
-            <select
-              className="input"
-              value={cart.tableId ?? ""}
-              onChange={(e) => {
-                const t = availableTables.find((x) => x.id === e.target.value);
-                cart.setTable(e.target.value || null, t ? `#${t.number}` : null);
-              }}
-              disabled={locked}
-            >
-              <option value="">Table…</option>
-              {availableTables.map((t) => (
-                <option key={t.id} value={t.id}>
-                  #{t.number} {t.name ? `· ${t.name}` : ""} ({t.status === "OCCUPIED" ? "in use" : "free"})
-                </option>
-              ))}
+        <div style={{ padding: 12, borderBottom: "1px solid var(--line)" }}>
+          <div className="row">
+            <select className="input" value={cart.channel} onChange={(e) => cart.setChannel(e.target.value as never)} disabled={locked}>
+              <option value="DINE_IN">Dine-in</option>
+              <option value="TAKEAWAY">Takeaway</option>
+              <option value="PARCEL">Parcel</option>
             </select>
+            {cart.channel === "DINE_IN" && (
+              <select className="input" value={cart.tableId ?? ""} onChange={(e) => pickTable(e.target.value)} disabled={locked}>
+                <option value="">Table…</option>
+                {availableTables.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    #{t.number} {t.name ? `· ${t.name}` : ""} ({t.status === "OCCUPIED" ? "in use" : "free"})
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          {!locked && (
+            <div className="row" style={{ marginTop: 8 }}>
+              {cart.channel !== "DINE_IN" && (
+                <input className="input" placeholder="Pickup name" value={pickupName} onChange={(e) => setPickupName(e.target.value)} />
+              )}
+              <input className="input" placeholder="Order notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} />
+            </div>
           )}
         </div>
 
         <div className="cart-lines">
-          {!locked && cart.lines.length === 0 && <p className="muted" style={{ padding: 12 }}>Tap items to build the order.</p>}
-          {!locked &&
-            cart.lines.map((l: CartLine) => (
-              <div className="cart-line" key={l.key}>
-                <div className="row">
-                  <div style={{ flex: 1 }}>
-                    <div className="lname">{l.name}</div>
-                    {l.variantName && <div className="small muted">{l.variantName}</div>}
-                    {l.modifiers.length > 0 && <div className="small muted">+ {l.modifiers.map((m) => m.name).join(", ")}</div>}
-                  </div>
-                  <div className="mono">{formatMoney(cart.lineTotal(l), currency)}</div>
-                </div>
-                <div className="row" style={{ marginTop: 6 }}>
-                  <button className="qty-btn" onClick={() => cart.decQty(l.key)}>−</button>
-                  <span className="mono" style={{ minWidth: 24, textAlign: "center" }}>{l.quantity}</span>
-                  <button className="qty-btn" onClick={() => cart.incQty(l.key)}>+</button>
-                  <div className="spacer" />
-                  <button className="btn ghost small" onClick={() => cart.removeLine(l.key)}>Remove</button>
-                </div>
-              </div>
-            ))}
-
-          {locked && order && (
+          {order && (
             <>
               <div className="row" style={{ padding: 12 }}>
                 <strong>Order #{order.orderNumber}</strong>
                 <div className="spacer" />
                 <span className={`badge ${order.status === "DRAFT" ? "muted" : "ok"}`}>{order.status.replaceAll("_", " ")}</span>
               </div>
-              {order.lines.map((l) => (
-                <div className="cart-line" key={l.id} style={l.isVoided ? { opacity: 0.5 } : undefined}>
+              {order.lines.filter((l) => !l.isVoided).map((l) => (
+                <div className="cart-line" key={l.id}>
                   <div className="row">
                     <div style={{ flex: 1 }}>
-                      <div className="lname">{l.quantity}× {l.itemNameSnapshot}{l.isVoided ? " (voided)" : ""}</div>
+                      <div className="lname">{l.quantity}× {l.itemNameSnapshot}</div>
                       {l.modifiers.length > 0 && <div className="small muted">+ {l.modifiers.map((m) => m.nameSnapshot).join(", ")}</div>}
+                      {l.notes && <div className="small muted">{l.notes}</div>}
                     </div>
                     <div className="mono">{formatMoney(toCents(l.lineTotal), currency)}</div>
-                    {!l.isVoided && order.status !== "COMPLETED" && (
+                    {order.status !== "COMPLETED" && order.status !== "CANCELLED" && (
                       <button className="btn ghost small" onClick={() => setVoidTarget(l)}>Void</button>
                     )}
+                  </div>
+                </div>
+              ))}
+              {order.lines.some((l) => l.isVoided) && (
+                <p className="muted small" style={{ padding: "4px 12px" }}>
+                  {order.lines.filter((l) => l.isVoided).length} voided line(s) hidden
+                </p>
+              )}
+            </>
+          )}
+
+          {!order && cart.lines.length === 0 && <p className="muted" style={{ padding: 12 }}>Tap items to build the order.</p>}
+
+          {cart.lines.length > 0 && (
+            <>
+              {order && <p className="muted small" style={{ padding: "10px 12px 0" }}>New items — not added to the order yet</p>}
+              {cart.lines.map((l: CartLine) => (
+                <div className="cart-line" key={l.key}>
+                  <div className="row">
+                    <div style={{ flex: 1 }}>
+                      <div className="lname">{l.name}</div>
+                      {l.variantName && <div className="small muted">{l.variantName}</div>}
+                      {l.modifiers.length > 0 && <div className="small muted">+ {l.modifiers.map((m) => m.name).join(", ")}</div>}
+                    </div>
+                    <div className="mono">{formatMoney(cart.lineTotal(l), currency)}</div>
+                  </div>
+                  <div className="row" style={{ marginTop: 6 }}>
+                    <button className="qty-btn" onClick={() => cart.decQty(l.key)}>−</button>
+                    <span className="mono" style={{ minWidth: 24, textAlign: "center" }}>{l.quantity}</span>
+                    <button className="qty-btn" onClick={() => cart.incQty(l.key)}>+</button>
+                    <div className="spacer" />
+                    <button className="btn ghost small" onClick={() => cart.removeLine(l.key)}>Remove</button>
                   </div>
                 </div>
               ))}
@@ -344,32 +445,52 @@ export default function Pos() {
               <button className="btn" onClick={openShift}>Open shift</button>
             </div>
           )}
-          <div className="totals-row"><span className="muted">Subtotal</span><span className="mono">{formatMoney(totals.subtotal, currency)}</span></div>
-          {totals.discountAmount > 0 && <div className="totals-row"><span className="muted">Discount</span><span className="mono">−{formatMoney(totals.discountAmount, currency)}</span></div>}
-          {totals.serviceCharge > 0 && <div className="totals-row"><span className="muted">Service</span><span className="mono">{formatMoney(totals.serviceCharge, currency)}</span></div>}
-          <div className="totals-row"><span className="muted">Tax</span><span className="mono">{formatMoney(totals.taxAmount, currency)}</span></div>
-          <div className="totals-row grand"><span>Total</span><span className="mono">{formatMoney(serverTotal, currency)}</span></div>
+          {order ? (
+            <>
+              <div className="totals-row"><span className="muted">Order subtotal</span><span className="mono">{formatMoney(toCents(order.subtotal), currency)}</span></div>
+              {toCents(order.discountAmount) > 0 && <div className="totals-row"><span className="muted">Discount</span><span className="mono">−{formatMoney(toCents(order.discountAmount), currency)}</span></div>}
+              {toCents(order.serviceCharge) > 0 && <div className="totals-row"><span className="muted">Service</span><span className="mono">{formatMoney(toCents(order.serviceCharge), currency)}</span></div>}
+              <div className="totals-row"><span className="muted">Tax</span><span className="mono">{formatMoney(toCents(order.taxAmount), currency)}</span></div>
+              <div className="totals-row"><span className="muted">Order total</span><span className="mono">{formatMoney(toCents(order.total), currency)}</span></div>
+              {toCents(order.amountPaid) > 0 && <div className="totals-row"><span className="muted">Paid so far</span><span className="mono">−{formatMoney(toCents(order.amountPaid), currency)}</span></div>}
+              {newItemsTotal > 0 && <div className="totals-row"><span className="muted">New items (est.)</span><span className="mono">+{formatMoney(newItemsTotal, currency)}</span></div>}
+              <div className="totals-row grand"><span>Due</span><span className="mono">{formatMoney(chargeTotal, currency)}</span></div>
+            </>
+          ) : (
+            <>
+              <div className="totals-row"><span className="muted">Subtotal</span><span className="mono">{formatMoney(totals.subtotal, currency)}</span></div>
+              {totals.discountAmount > 0 && <div className="totals-row"><span className="muted">Discount</span><span className="mono">−{formatMoney(totals.discountAmount, currency)}</span></div>}
+              {totals.serviceCharge > 0 && <div className="totals-row"><span className="muted">Service</span><span className="mono">{formatMoney(totals.serviceCharge, currency)}</span></div>}
+              <div className="totals-row"><span className="muted">Tax</span><span className="mono">{formatMoney(totals.taxAmount, currency)}</span></div>
+              <div className="totals-row grand"><span>Total</span><span className="mono">{formatMoney(totals.total, currency)}</span></div>
+            </>
+          )}
 
           <div className="row" style={{ marginTop: 12, gap: 8 }}>
-            <button className="btn" style={{ flex: 1 }} disabled={!cart.lines.length || busy || (cart.channel === "DINE_IN" && !cart.tableId)} onClick={() => sendMut.mutate()}>
+            <button
+              className="btn"
+              style={{ flex: 1 }}
+              disabled={(!cart.lines.length && !order) || busy || (cart.channel === "DINE_IN" && !cart.tableId && !order)}
+              onClick={() => sendMut.mutate()}
+            >
               {sendMut.isPending ? "Sending…" : "Send to Kitchen"}
             </button>
-            <button className="btn" disabled={!cart.lines.length || busy} onClick={() => setShowDiscount(true)}>Discount</button>
+            <button className="btn" disabled={(!cart.lines.length && !order) || busy} onClick={() => setShowDiscount(true)}>Discount</button>
           </div>
           <div className="row" style={{ marginTop: 8, gap: 8 }}>
-            <button className="btn" style={{ flex: 1 }} disabled={!cart.lines.length || busy} onClick={holdOrder}>Hold</button>
+            <button className="btn" style={{ flex: 1 }} disabled={(!cart.lines.length && !order) || busy} onClick={holdOrder}>Hold</button>
             {order && <button className="btn" onClick={() => reprint(order.id)}>Reprint</button>}
             {order && (
-              <button className="btn ghost" onClick={() => { cart.reset(); setOrder(null); }}>New</button>
+              <button className="btn ghost" onClick={() => { cart.reset(); setOrder(null); setNotes(""); setPickupName(""); }}>New</button>
             )}
           </div>
           <button
             className="btn primary block"
             style={{ marginTop: 8, padding: "14px" }}
-            disabled={!cart.lines.length || busy || !shiftOpen || (cart.channel === "DINE_IN" && !cart.tableId)}
+            disabled={(!cart.lines.length && !order) || busy || !shiftOpen || (cart.channel === "DINE_IN" && !cart.tableId && !order)}
             onClick={() => setShowPay(true)}
           >
-            Charge {formatMoney(serverTotal, currency)}
+            Charge {formatMoney(chargeTotal, currency)}
           </button>
         </div>
       </aside>
@@ -387,38 +508,21 @@ export default function Pos() {
         <DiscountModal onClose={() => setShowDiscount(false)} onApply={doDiscount} currency={currency} subtotal={totals.subtotal} />
       )}
 
-      {showPay && <PaymentModal currency={currency} total={serverTotal} onClose={() => setShowPay(false)} onPay={pay} />}
+      {showPay && <PaymentModal currency={currency} total={chargeTotal} onClose={() => setShowPay(false)} onPay={pay} />}
+
+      {receipt && (
+        <ReceiptModal
+          currency={currency}
+          orderNumber={receipt.orderNumber}
+          preview={receipt.preview}
+          changeGiven={receipt.changeGiven}
+          orderId={receipt.orderId}
+          onClose={() => setReceipt(null)}
+        />
+      )}
 
       {showOrders && (
-        <OrdersModal
-          currency={currency}
-          canRefund={can("order.refund")}
-          onClose={() => setShowOrders(false)}
-          onRecall={(o) => {
-            cart.loadFromServer({
-              channel: o.channel as never,
-              tableId: o.tableId,
-              tableLabel: o.tableSession?.table ? `#${o.tableSession.table.number}` : null,
-              orderId: o.id,
-              orderNumber: o.orderNumber,
-              orderDiscount: toCents(o.discountAmount),
-              lines: o.lines.map((l) => ({
-                key: l.id,
-                menuItemId: l.menuItemId,
-                name: l.itemNameSnapshot,
-                unitPrice: toCents(l.unitPriceSnapshot),
-                variantId: null,
-                variantName: l.variantSnapshot,
-                modifiers: l.modifiers.map((m) => ({ id: m.id, name: m.nameSnapshot, price: toCents(m.priceSnapshot) })),
-                quantity: l.quantity,
-                notes: l.notes,
-              })),
-            });
-            setOrder(o);
-            setShowOrders(false);
-            push(`Recalled order #${o.orderNumber}`, "ok");
-          }}
-        />
+        <OrdersModal currency={currency} canRefund={can("order.refund")} onClose={() => setShowOrders(false)} onRecall={recallOrder} />
       )}
 
       {voidTarget && <VoidModal line={voidTarget} onClose={() => setVoidTarget(null)} onSubmit={voidLine} />}
@@ -746,10 +850,11 @@ function PaymentModal({
   total: number;
   currency: string;
   onClose: () => void;
-  onPay: (tenders: { method: string; amount: number; cashReceived?: number }[]) => Promise<void>;
+  onPay: (tenders: Tender[], idemKey: string) => Promise<void>;
 }) {
-  const [tenders, setTenders] = useState<{ method: string; amount: string; cash: string }[]>([
-    { method: "CASH", amount: fromCents(total), cash: fromCents(total) },
+  const [idemKey] = useState(() => `pay-${crypto.randomUUID()}`);
+  const [tenders, setTenders] = useState<{ method: string; amount: string; cash: string; reference: string }[]>([
+    { method: "CASH", amount: fromCents(total), cash: fromCents(total), reference: "" },
   ]);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -758,7 +863,7 @@ function PaymentModal({
   const remaining = total - tendered;
   const cashChange = tenders.reduce((s, t) => (t.method === "CASH" ? s + (toCents(t.cash || "0") - toCents(t.amount || "0")) : s), 0);
 
-  function update(i: number, patch: Partial<{ method: string; amount: string; cash: string }>) {
+  function update(i: number, patch: Partial<{ method: string; amount: string; cash: string; reference: string }>) {
     setTenders((ts) => ts.map((t, idx) => (idx === i ? { ...t, ...patch } : t)));
   }
 
@@ -771,7 +876,9 @@ function PaymentModal({
           method: t.method,
           amount: Number(t.amount),
           cashReceived: t.method === "CASH" ? Number(t.cash) : undefined,
+          reference: t.method !== "CASH" && t.reference ? t.reference : undefined,
         })),
+        idemKey,
       );
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Payment failed");
@@ -807,6 +914,12 @@ function PaymentModal({
                 <input className="input" type="number" value={t.cash} onChange={(e) => update(i, { cash: e.target.value })} />
               </div>
             )}
+            {t.method !== "CASH" && (
+              <div className="row" style={{ marginTop: 8 }}>
+                <span className="muted small" style={{ minWidth: 90 }}>Reference</span>
+                <input className="input" value={t.reference} onChange={(e) => update(i, { reference: e.target.value })} placeholder="Auth code (optional)" />
+              </div>
+            )}
             {i > 0 && (
               <button className="btn ghost small" style={{ marginTop: 8 }} onClick={() => setTenders((ts) => ts.filter((_, idx) => idx !== i))}>Remove</button>
             )}
@@ -814,7 +927,7 @@ function PaymentModal({
         ))}
       </div>
       <div className="row">
-        <button className="btn" onClick={() => setTenders((ts) => [...ts, { method: "CARD", amount: fromCents(Math.max(0, remaining)), cash: "0" }])} disabled={remaining <= 0}>
+        <button className="btn" onClick={() => setTenders((ts) => [...ts, { method: "CARD", amount: fromCents(Math.max(0, remaining)), cash: "0", reference: "" }])} disabled={remaining <= 0}>
           + Split payment
         </button>
         <div className="spacer" />
@@ -824,6 +937,58 @@ function PaymentModal({
       </div>
       {cashChange > 0 && <p className="muted" style={{ marginTop: 10 }}>Change due: {formatMoney(cashChange, currency)}</p>}
       {err && <p className="badge danger" style={{ marginTop: 10 }}>{err}</p>}
+    </Modal>
+  );
+}
+
+function ReceiptModal({
+  currency,
+  orderNumber,
+  preview,
+  changeGiven,
+  orderId,
+  onClose,
+}: {
+  currency: string;
+  orderNumber: number;
+  preview: string;
+  changeGiven: string | null;
+  orderId: string;
+  onClose: () => void;
+}) {
+  const { push } = useToast();
+  const [busy, setBusy] = useState(false);
+
+  async function print() {
+    setBusy(true);
+    try {
+      const r = await printOrderReceipt(orderId);
+      push(r.simulated ? "Receipt printed (simulated)" : "Receipt sent to printer", "ok");
+    } catch (e) {
+      push(e instanceof Error ? e.message : "Print failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={`Payment complete — order #${orderNumber}`}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn ghost" onClick={onClose}>Done</button>
+          <button className="btn primary" disabled={busy} onClick={print}>{busy ? "…" : "Print receipt"}</button>
+        </>
+      }
+    >
+      {changeGiven !== null && Number(changeGiven) > 0 && (
+        <div className="totals-row grand" style={{ marginTop: 0 }}>
+          <span>Change due</span>
+          <span className="mono">{formatMoney(toCents(changeGiven), currency)}</span>
+        </div>
+      )}
+      <pre className="receipt-paper">{preview || "…"}</pre>
     </Modal>
   );
 }

@@ -1,24 +1,38 @@
 import { api, ApiError } from "./api";
 
+export type OrderItemInput = {
+  menuItemId: string;
+  quantity: number;
+  variantId?: string | null;
+  modifierOptionIds?: string[];
+  notes?: string | null;
+};
+
 export interface CreateOrderBody {
   channel: string;
   tableId: string | null;
   shiftId: string | null;
-  items: { menuItemId: string; quantity: number; variantId?: string | null; modifierOptionIds?: string[]; notes?: string | null }[];
+  items: OrderItemInput[];
   orderDiscount?: number;
+  notes?: string | null;
+  pickupName?: string | null;
 }
 
 export interface PaymentBody {
   shiftId: string | null;
   idempotencyKey: string;
-  payments: { method: string; amount: number; cashReceived?: number }[];
+  payments: { method: string; amount: number; cashReceived?: number; reference?: string | null }[];
 }
 
 export interface PendingOrder {
   localId: string;
   createdAt: number;
   label: string;
-  create: CreateOrderBody;
+  /** Set when the entry appends to / pays an existing order instead of creating one. */
+  orderId?: string | null;
+  /** Optional items to append to the existing order before send/pay. */
+  addItems?: OrderItemInput[] | null;
+  create: CreateOrderBody | null;
   sendToKitchen: boolean;
   pay: PaymentBody | null;
 }
@@ -58,8 +72,9 @@ export function removePending(localId: string) {
 }
 
 /**
- * Replay queued orders in order. Each entry creates the order first (idempotent
- * via idempotencyKey), then sends it to the kitchen and/or charges it.
+ * Replay queued orders in order. Each entry either creates a fresh order
+ * (idempotent via idempotencyKey) or appends to an existing one, then sends it
+ * to the kitchen and/or charges it.
  * Returns { sent, failed }.
  */
 export async function flushOutbox(): Promise<{ sent: number; failed: number }> {
@@ -68,18 +83,28 @@ export async function flushOutbox(): Promise<{ sent: number; failed: number }> {
   let failed = 0;
   for (const entry of list) {
     try {
-      const createBody = {
-        ...entry.create,
-        idempotencyKey: `outbox-${entry.localId}`,
-      };
-      const created = await api<{ order: { id: string; orderNumber: number } }>("/orders", { method: "POST", body: createBody });
+      let targetOrderId = entry.orderId ?? null;
+      if (targetOrderId) {
+        if (entry.addItems && entry.addItems.length) {
+          await api(`/orders/${targetOrderId}/items`, { method: "POST", body: { items: entry.addItems } });
+        }
+      } else if (entry.create) {
+        const created = await api<{ order: { id: string; orderNumber: number } }>("/orders", {
+          method: "POST",
+          body: { ...entry.create, idempotencyKey: `outbox-${entry.localId}` },
+        });
+        targetOrderId = created.order.id;
+      } else {
+        removePending(entry.localId);
+        continue;
+      }
       if (entry.sendToKitchen) {
-        await api(`/orders/${created.order.id}/send-to-kitchen`, { method: "POST" });
+        await api(`/orders/${targetOrderId}/send-to-kitchen`, { method: "POST" });
       }
       if (entry.pay) {
         await api("/payments", {
           method: "POST",
-          body: { orderId: created.order.id, shiftId: entry.pay.shiftId, idempotencyKey: entry.pay.idempotencyKey, payments: entry.pay.payments },
+          body: { orderId: targetOrderId, shiftId: entry.pay.shiftId, idempotencyKey: entry.pay.idempotencyKey, payments: entry.pay.payments },
         });
       }
       removePending(entry.localId);

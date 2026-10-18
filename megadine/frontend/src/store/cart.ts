@@ -36,6 +36,7 @@ interface CartState {
   removeLine: (key: string) => void;
   setOrderDiscount: (cents: number) => void;
   setOrder: (orderId: string, orderNumber: number) => void;
+  clearLines: () => void;
   loadFromServer: (payload: {
     channel: Channel;
     tableId: string | null;
@@ -82,6 +83,7 @@ export const useCart = create<CartState>((set, get) => ({
   removeLine: (key) => set({ lines: get().lines.filter((l) => l.key !== key) }),
   setOrderDiscount: (cents) => set({ orderDiscount: cents }),
   setOrder: (orderId, orderNumber) => set({ orderId, orderNumber }),
+  clearLines: () => set({ lines: [], orderDiscount: 0 }),
   loadFromServer: (payload) =>
     set({
       channel: payload.channel,
