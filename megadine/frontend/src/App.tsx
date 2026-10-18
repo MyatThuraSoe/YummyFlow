@@ -24,7 +24,8 @@ const UsersAdmin = lazy(() => import("./pages/admin/UsersAdmin"));
 const UserFormAdmin = lazy(() => import("./pages/admin/UserFormAdmin"));
 const SettingsHub = lazy(() => import("./pages/admin/SettingsHub"));
 const SystemSettingsAdmin = lazy(() => import("./pages/admin/SystemSettingsAdmin"));
-const ReceiptSettingsAdmin = lazy(() => import("./pages/admin/ReceiptSettingsAdmin"));
+const ReceiptCustomization = lazy(() => import("./pages/admin/ReceiptCustomization"));
+const ReceiptOrderAdmin = lazy(() => import("./pages/admin/ReceiptOrderAdmin"));
 const LanguageSettings = lazy(() => import("./pages/admin/LanguageSettings"));
 const ShopInfoAdmin = lazy(() => import("./pages/admin/ShopInfoAdmin"));
 const Activate = lazy(() => import("./pages/admin/Activate"));
@@ -107,8 +108,10 @@ export default function App() {
             <Route path="users/:id" element={<AdminGuard capability="staff.manage"><Lazy page={<UserFormAdmin />} /></AdminGuard>} />
             <Route path="settings" element={<AdminGuard capability="settings.manage"><Lazy page={<SettingsHub />} /></AdminGuard>} />
             <Route path="settings/system" element={<AdminGuard capability="settings.manage"><Lazy page={<SystemSettingsAdmin />} /></AdminGuard>} />
-            <Route path="settings/receipt" element={<AdminGuard capability="settings.manage"><Lazy page={<ReceiptSettingsAdmin />} /></AdminGuard>} />
+            <Route path="settings/receipt" element={<Navigate to="/admin/receipt-customization" replace />} />
             <Route path="settings/language" element={<Lazy page={<LanguageSettings />} />} />
+            <Route path="receipt-customization" element={<AdminGuard capability="settings.manage"><Lazy page={<ReceiptCustomization />} /></AdminGuard>} />
+            <Route path="receipt/:orderId" element={<AdminGuard capability="report.view"><Lazy page={<ReceiptOrderAdmin />} /></AdminGuard>} />
             <Route path="shop-info" element={<AdminGuard capability="settings.manage"><Lazy page={<ShopInfoAdmin />} /></AdminGuard>} />
             <Route path="license" element={<AdminGuard capability="settings.manage"><Lazy page={<Activate />} /></AdminGuard>} />
             <Route path="about" element={<Lazy page={<About />} />} />

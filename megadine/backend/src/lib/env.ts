@@ -32,6 +32,8 @@ export const env = {
   PRINTER_MODE: process.env.PRINTER_MODE ?? "simulate",
   RECEIPT_PRINTER_IP: process.env.RECEIPT_PRINTER_IP ?? "",
   KITCHEN_PRINTER_IP: process.env.KITCHEN_PRINTER_IP ?? "",
+  // Print a receipt automatically when an order is fully paid (spec §6.5).
+  AUTO_PRINT_RECEIPT: bool(process.env.AUTO_PRINT_RECEIPT, true),
   LICENSE_KEY: process.env.LICENSE_KEY ?? "",
   MEGACODE_LICENSE_PUBLIC_KEY: process.env.MEGACODE_LICENSE_PUBLIC_KEY ?? "",
   // Pin the machine id explicitly (e.g. inside Docker) so the hardware-bound

@@ -229,7 +229,10 @@ async function main() {
 
     const rb = await api<{ receipt: string }>(`/orders/${orderId}/receipt`, { token: cashier.token });
     assert.equal(rb.status, 200);
-    assert.ok(rb.data.receipt.includes(`#${o.data.order.orderNumber}`), "receipt should include the order number");
+    assert.ok(
+      rb.data.receipt.includes("Order #") && rb.data.receipt.includes(String(o.data.order.orderNumber)),
+      "receipt should include the order number",
+    );
     const rp = await api<{ printed: boolean }>(`/orders/${orderId}/reprint`, { method: "POST", token: cashier.token });
     assert.equal(rp.status, 200);
     assert.ok(rp.data.printed === true);
@@ -579,6 +582,69 @@ async function main() {
     assert.equal(close2.status, 200);
     assert.equal(close2.data.varianceExceedsTolerance, true);
     ok("variance one cent over tolerance IS flagged");
+
+    // ── Receipt customization (spec: receipt config, preview, per-order) ──
+    const rc = await api<{ success: boolean; data: { config: { paperWidth: number; showTax: boolean; fontSize: string } } }>("/receipts/config", { token: cashier.token });
+    assert.equal(rc.status, 200);
+    assert.equal(rc.data.data.config.paperWidth, 80);
+    assert.equal(rc.data.data.config.showTax, true);
+    assert.equal(rc.data.data.config.fontSize, "medium");
+    const rcDefaults = await api<{ success: boolean; data: { defaults: { paperWidth: number } } }>("/receipts/defaults", { token: admin.token });
+    assert.equal(rcDefaults.status, 200);
+    assert.equal(rcDefaults.data.data.defaults.paperWidth, 80);
+    ok("receipt config auto-provisions with defaults");
+
+    const badLogo = await api("/receipts/config", { method: "PUT", token: admin.token, body: { logo: "data:image/gif;base64,R0lGODlh" } });
+    assert.equal(badLogo.status, 400);
+    const putRc = await api<{ success: boolean; data: { config: { showTax: boolean } } }>("/receipts/config", {
+      method: "PUT",
+      token: admin.token,
+      body: { showTax: false },
+    });
+    assert.equal(putRc.status, 200, JSON.stringify(putRc.data));
+    assert.equal(putRc.data.data.config.showTax, false);
+    const rcAfter = await api<{ data: { config: { showTax: boolean } } }>("/receipts/config", { token: admin.token });
+    assert.equal(rcAfter.data.data.config.showTax, false);
+    const rcAudit = await prisma.auditLog.count({ where: { restaurantId: restaurant.id, action: "RECEIPT_CONFIG_UPDATED" } });
+    assert.ok(rcAudit >= 1);
+    ok("receipt config persists updates, validates logos and is audited");
+
+    const prevOff = await api<{ data: { html: string } }>("/receipts/preview", { method: "POST", token: admin.token, body: { showTax: false } });
+    assert.equal(prevOff.status, 200);
+    assert.ok(!prevOff.data.data.html.includes("Tax"), "preview override should remove the tax line");
+    const prevOn = await api<{ data: { html: string } }>("/receipts/preview", { method: "POST", token: admin.token, body: { showTax: true, alignment: "center" } });
+    assert.equal(prevOn.status, 200);
+    assert.ok(prevOn.data.data.html.includes("Tax"));
+    assert.ok(prevOn.data.data.html.includes('class="r-center"'));
+    ok("receipt preview reflects unsaved overrides");
+
+    const testPrint = await api<{ data: { ok: boolean; simulated: boolean; preview: string } }>("/receipts/test-print", { method: "POST", token: admin.token });
+    assert.equal(testPrint.status, 200);
+    assert.equal(testPrint.data.data.ok, true);
+    assert.equal(testPrint.data.data.simulated, true);
+    assert.ok(testPrint.data.data.preview.length > 0);
+    ok("receipt test-print simulates on the default printer mode");
+
+    const orHtml = await api<{ data: { html: string } }>(`/receipts/order/${orderId}/html`, { token: admin.token });
+    assert.equal(orHtml.status, 200);
+    assert.ok(orHtml.data.data.html.includes(String(o.data.order.orderNumber)));
+    const orText = await api<{ data: { text: string } }>(`/receipts/order/${orderId}/text`, { token: admin.token });
+    assert.equal(orText.status, 200);
+    assert.ok(orText.data.data.text.length > 0);
+    const missing = await api(`/receipts/order/00000000-0000-0000-0000-000000000000/html`, { token: admin.token });
+    assert.equal(missing.status, 404);
+    ok("order receipt html/text render and unknown orders 404");
+
+    const printOrder = await api<{ data: { ok: boolean; simulated: boolean; receipt: string } }>(`/receipts/order/${orderId}/print`, { method: "POST", token: cashier.token });
+    assert.equal(printOrder.status, 200, JSON.stringify(printOrder.data));
+    assert.equal(printOrder.data.data.ok, true);
+    assert.ok(printOrder.data.data.receipt.includes("*** REPRINT ***"));
+    const reprintAudit2 = await prisma.auditLog.count({ where: { restaurantId: restaurant.id, action: "RECEIPT_REPRINTED" } });
+    assert.ok(reprintAudit2 >= 1);
+    ok("order reprint prints (simulated) with marker and is audited");
+
+    await api("/receipts/config", { method: "PUT", token: admin.token, body: { showTax: true } });
+    ok("receipt config reset for repeat runs");
 
     console.log(`\n\u2705 MegaDine Basic extended verification passed: ${passed} checks\n`);
   } finally {

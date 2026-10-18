@@ -1,0 +1,435 @@
+
+
+# MegaDine POS — Receipt Customization Build Specification
+
+**Audience:** Autonomous coding agent
+**Goal:** Implement a full receipt-customization system with a live WYSIWYG editor, a single unified receipt renderer, thermal-printer output, and per-order reprint — matching the capability of the reference retail POS.
+**Read first:** `megadine/backend/src/lib/printers.ts`, `src/routes/orders.routes.ts`, `src/routes/payments.routes.ts`, `src/services/order.service.ts`, `src/lib/money.ts`, `prisma/schema.prisma`, `megadine/frontend/src/pages/Pos.tsx`, `src/lib/api.ts`, `src/index.css`.
+
+---
+
+## 1. What this feature is (self-contained definition)
+
+A restaurant prints a paper receipt after an order is paid. Today MegaDine only has two free-text fields (`Restaurant.receiptHeader`, `Restaurant.receiptFooter`). This build replaces that with a full customization system that lets the owner control:
+
+1. **Identity block** — whether the shop name, logo, address, phone are shown.
+2. **Custom messages** — multi-line header text (above the items) and footer text (below the total), plus a thank-you line.
+3. **Field visibility** — show/hide each data element: order number, table number, date/time, cashier name, subtotal, service charge, tax, discount, total, payment method, amount paid, change.
+4. **Layout** — paper width (58 mm or 80 mm), text alignment, font size, and whether item modifier lines are printed.
+5. **Extras** — a QR code (rendered under the footer) and currency formatting.
+
+The owner edits all of this in a **WYSIWYG page**: controls on the left, a **live preview** of the receipt on the right. Changes persist per restaurant. The **same renderer** produces:
+- an **HTML** version (for the preview and for browser/PDF printing), and
+- a **plain-text/ESC-POS** version (for the thermal printer).
+
+This "one renderer, two outputs" design is the core architectural rule: the preview must always look like what prints.
+
+**Non-goals:** barcode printing, per-item images on thermal output, Google Drive, and changing the offline-first POS flow.
+
+---
+
+## 2. Hard constraints (do not break)
+
+1. Reuse the existing printer transport: `sendToPrinter(ip, data)` in `lib/printers.ts` and the `PRINTER_MODE` (`simulate` | `tcp`) + `RECEIPT_PRINTER_IP` env vars. Do **not** add a new printing library.
+2. Do **not** touch the offline outbox (`lib/outbox.ts`) or Socket.IO invalidation logic.
+3. Keep the existing hand-rolled CSS for `Pos.tsx`. The new editor page lives in the admin workspace and may use MUI (consistent with the platform spec).
+4. All money values flow through the existing `toCents`/`fromCents` and `formatMoney` helpers. Never use floats for currency math.
+5. Every mutation is audited via the existing `audit()` helper.
+6. Backend inputs validated with Zod; async handlers wrapped in `asyncHandler`.
+7. `npm run typecheck`, `npm run lint` must pass in both backend and frontend.
+
+---
+
+## 3. Data model (Prisma)
+
+File: `megadine/backend/prisma/schema.prisma`. Add a dedicated model with a 1:1 relation to `Restaurant` (cleaner than piling columns onto `Restaurant`). Run `npx prisma migrate dev --name receipt_config` then `npx prisma generate`.
+
+```prisma
+model ReceiptConfig {
+  id           String     @id @default(uuid())
+  restaurantId String     @unique
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  // Identity block
+  showShopName   Boolean  @default(true)
+  showLogo       Boolean  @default(false)
+  logo           String?                  // data URL or stored path
+  showAddress    Boolean  @default(false)
+  showPhone      Boolean  @default(false)
+
+  // Custom messages
+  headerText     String?                  // printed above the items (multi-line)
+  footerText     String?                  // printed below the total (multi-line)
+  thankYouText   String?                  // e.g. "Thank you, come again!"
+
+  // Field visibility
+  showOrderNumber Boolean @default(true)
+  showTable       Boolean @default(true)
+  showDateTime    Boolean @default(true)
+  showCashier     Boolean @default(true)
+  showSubtotal    Boolean @default(true)
+  showServiceCharge Boolean @default(true)
+  showTax         Boolean @default(true)
+  showDiscount    Boolean @default(true)
+  showTotal       Boolean @default(true)
+  showPaymentMethod Boolean @default(true)
+  showAmountPaid  Boolean @default(true)
+  showChange      Boolean @default(true)
+  showModifiers   Boolean @default(true)   // item modifier/option lines
+
+  // Layout
+  paperWidth     Int      @default(80)     // 58 or 80 (mm)
+  fontSize       String   @default("medium") // small | medium | large
+  alignment      String   @default("left")   // left | center
+
+  // Extras
+  showQrCode     Boolean  @default(false)
+  qrContent      String?                  // URL/text encoded in the QR
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+```
+
+Add the reverse relation field `receiptConfig ReceiptConfig?` to the `Restaurant` model.
+
+**Keep** the legacy `receiptHeader`/`receiptFooter` columns for now (do not drop them); the migration should **copy** their values into the new `headerText`/`footerText` for the default config so no existing text is lost. Write this as a data migration step (or in the seed/ensure function in §5.1).
+
+---
+
+## 4. Receipt renderer (the heart of the feature)
+
+Create `megadine/backend/src/lib/receiptRenderer.ts`. This is a **pure module**: it takes an order + config and returns rendered output. It must have **no** side effects (no printing, no DB).
+
+### 4.1 Input type
+
+```ts
+export interface ReceiptData {
+  // identity (from Restaurant + ReceiptConfig)
+  shopName: string;
+  logo?: string | null;
+  address?: string | null;
+  phone?: string | null;
+  // order data
+  orderNumber: number;
+  tableName?: string | null;
+  createdAt: Date;
+  cashierName?: string | null;
+  channel: string;                 // DINE_IN | TAKEAWAY | PARCEL
+  lines: {
+    name: string;
+    quantity: number;
+    unitPrice: number;             // cents
+    lineTotal: number;             // cents
+    modifiers?: { name: string; price: number }[];  // prices in cents
+    notes?: string | null;
+  }[];
+  // money (cents)
+  subtotal: number;
+  serviceCharge: number;
+  taxAmount: number;
+  discountAmount: number;
+  total: number;
+  amountPaid: number;
+  changeGiven: number;
+  paymentMethod?: string;          // CASH | CARD | MOBILE
+  config: ReceiptConfigShape;      // the config fields from §3
+}
+```
+
+### 4.2 Two outputs from one source
+
+Implement:
+
+```ts
+export function renderReceiptHtml(data: ReceiptData): string
+export function renderReceiptText(data: ReceiptData): string   // plain text for ESC/POS
+```
+
+Both iterate the **same ordered list of blocks**, driven by the config toggles, in this order:
+
+1. Logo (HTML: `<img>`; text: skip — thermal logo support is optional, note it as a future item).
+2. Shop name (if `showShopName`).
+3. Address, phone (if toggled).
+4. `headerText` (if non-empty).
+5. Divider.
+6. Meta lines: order number, table, date/time, cashier, channel — each only if its toggle is on.
+7. Divider.
+8. Item lines. Each: `quantity × name` and right-aligned `lineTotal`. If `showModifiers`, print each modifier as an indented sub-line (`+ name (+price)` if priced).
+9. Divider.
+10. Totals block: subtotal, service charge, tax, discount (prefix with `−`), each respecting its toggle. Then a bold **TOTAL** line (if `showTotal`).
+11. Payment block: method, amount paid, change — each respecting its toggle.
+12. `footerText` (if non-empty).
+13. `thankYouText` (if non-empty), centered.
+14. QR code (if `showQrCode`) — HTML: an `<img>` from a QR data URL (generate server-side, see §4.4); text: print a placeholder line `[QR]` (actual QR raster over ESC/POS is a future item; see §12).
+
+**Column width:** derive the printable character width from `paperWidth` and `fontSize` for the text renderer (58 mm ≈ 32 chars, 80 mm ≈ 48 chars at medium; adjust ±6 for small/large). Provide a helper `lineWidth(config)`. Use it to right-align amounts and to draw dividers (`-` repeated to width).
+
+**Money formatting:** use the existing `formatMoney`/`lib/format` logic (pass the restaurant currency into `ReceiptData` as `currency`). In the text renderer, render amounts as plain numbers with 2 decimals (no currency symbol) to keep columns aligned — the reference POS uses plain numbers in item columns.
+
+### 4.3 Shared block-builder pattern
+
+Internally, build a neutral list of blocks first, then serialize:
+
+```ts
+type Block =
+  | { kind: "image"; src: string; alt?: string }
+  | { kind: "text"; text: string; align: "left" | "center" | "right"; bold?: boolean }
+  | { kind: "row"; left: string; right: string; bold?: boolean }  // item/totals lines
+  | { kind: "divider" }
+  | { kind: "qr"; value: string };
+
+function buildBlocks(data: ReceiptData): Block[] { /* config-driven order from §4.2 */ }
+```
+`renderReceiptHtml` and `renderReceiptText` both consume `buildBlocks`. This guarantees the preview matches print.
+
+### 4.4 QR code generation
+Add a small dependency to the backend: `npm install qrcode` (and `@types/qrcode`). Generate a data URL: `await QRCode.toDataURL(content, { width: 120 })`. Cache the QR data URL on the config load so it isn't regenerated per print. If `qrContent` is empty, fall back to the restaurant's LAN URL.
+
+---
+
+## 5. Backend: config endpoints
+
+New file `megadine/backend/src/routes/receipts.routes.ts`. Register in `app.ts`: `app.use("/api/v1/receipts", receiptsRouter)`. Apply `receiptsRouter.use(requireAuth)`.
+
+### 5.1 `GET /receipts/config`  (capability: none — any authenticated user can read, needed for preview)
+Return the restaurant's config. **Auto-provision**: if none exists, create a default (all defaults from §3, `headerText`/`footerText` seeded from the legacy `Restaurant.receiptHeader`/`receiptFooter`). Respond `{ config }`.
+
+### 5.2 `PUT /receipts/config`  (capability: `settings.manage`)
+Zod schema mirroring §3 (booleans, optional strings, `paperWidth` constrained to `z.union([z.literal(58), z.literal(80)])`, `fontSize` enum, `alignment` enum). Upsert the config for the restaurant. Validate `logo` if provided: accept a data URL under a size cap (e.g. 200 KB) and image types png/jpeg/webp; reject otherwise. Audit `RECEIPT_CONFIG_UPDATED` with an `after` snapshot of the non-blob fields (exclude the logo bytes from the audit payload). Respond `{ config }`.
+
+### 5.3 `POST /receipts/preview`  (capability: `settings.manage`)
+Body: a **partial** config override (the editor's current unsaved state). Merge it over the saved config, build a **sample** `ReceiptData` (fixed demo order: 2–3 items with modifiers, realistic totals), call `renderReceiptHtml`, respond `{ html }`. This powers the live preview without saving.
+
+### 5.4 `POST /receipts/test-print`  (capability: `settings.manage`)
+Build the same sample `ReceiptData`, render to **text**, and send via `sendToPrinter(env.RECEIPT_PRINTER_IP || null, text)`. Respect `PRINTER_MODE`: in `simulate` mode, log and return `{ ok: true, simulated: true }`. Audit `RECEIPT_TEST_PRINT`. Respond with the printer result.
+
+### 5.5 `GET /receipts/order/:orderId/html` and `/receipts/order/:orderId/text` (capability: `report.view`)
+Load the order (with lines, modifiers, payments, cashier, table) for the caller's restaurant, build `ReceiptData` from real data, and return `{ html }` or `{ text }`. This powers the per-order receipt view/reprint. **Guard:** the order must belong to `req.auth.restaurantId`.
+
+### 5.6 `POST /receipts/order/:orderId/print`  (capability: `pos.use` or `report.view`)
+Render the real order to text and send to the receipt printer. Audit `RECEIPT_REPRINTED` with `entityType: "Order"`, `entityId: orderId`. This is the "reprint" action.
+
+---
+
+## 6. Backend: auto-print on payment completion
+
+Find where an order is finalized/paid (the payment-success path in `payments.routes.ts` or `order.service.ts`). After a payment succeeds and the order is marked paid/completed:
+
+1. Load the config for the restaurant (use a cached/ensured loader, §5.1 logic).
+2. Build `ReceiptData` from the just-paid order.
+3. Render text and call `sendToPrinter(env.RECEIPT_PRINTER_IP || null, text)` **asynchronously, fire-and-forget** (`.catch(err => log)`), so a printer failure never blocks or fails the payment response.
+4. Add an env flag `AUTO_PRINT_RECEIPT` (default `true`) in `lib/env.ts` to allow disabling.
+
+Do **not** couple this to the HTTP response — printing must be best-effort. In `simulate` mode, just log the rendered text (this is how operators verify layout without hardware).
+
+---
+
+## 7. Frontend: receipt service layer
+
+Add to the frontend API service (or a new `src/lib/receipts.ts`):
+
+```ts
+getConfig(): Promise<{ config: ReceiptConfigShape }>
+saveConfig(config: Partial<ReceiptConfigShape>): Promise<{ config: ReceiptConfigShape }>
+preview(override: Partial<ReceiptConfigShape>): Promise<{ html: string }>
+testPrint(): Promise<{ ok: boolean; simulated?: boolean }>
+orderHtml(orderId: string): Promise<{ html: string }>
+printOrder(orderId: string): Promise<{ ok: boolean }>
+```
+Use the existing `apiGet/apiPut/apiPost` wrappers. Define a `ReceiptConfigShape` TS interface mirroring §3.
+
+---
+
+## 8. Frontend: the WYSIWYG editor page
+
+New page `frontend/src/pages/admin/ReceiptCustomization.tsx`, routed at `/admin/receipt-customization` (capability `settings.manage`), and add a "Receipt" item to the admin sidebar (per the platform spec's Settings/Administration group).
+
+### 8.1 Layout (two-pane)
+- **Left pane (controls):** a scrollable column of grouped controls.
+- **Right pane (preview):** a sticky, centered preview of the receipt rendered at a fixed on-screen width (simulate 58/80 mm by setting a pixel width, e.g. 300px/400px). The preview shows the **live HTML** from `/receipts/preview`.
+
+Use MUI for this page (`Paper`, `Switch`, `TextField`, `Select`, `Button`, `Tabs`), consistent with the admin workspace.
+
+### 8.2 Control groups (exact fields)
+1. **Identity**
+   - Switch: Show shop name
+   - Switch: Show logo + (if on) a logo uploader. Accept an image file, convert to data URL client-side (`FileReader.readAsDataURL`), enforce ≤200 KB and png/jpeg/webp, show a small thumbnail + "Remove" button.
+   - Switch: Show address
+   - Switch: Show phone
+2. **Messages**
+   - Multiline `TextField`: Header text (hint: printed above the items)
+   - Multiline `TextField`: Footer text (hint: printed below the total)
+   - `TextField`: Thank-you text
+3. **Fields** (a grid of switches, one per): Order number, Table, Date & time, Cashier, Subtotal, Service charge, Tax, Discount, Total, Payment method, Amount paid, Change, Item modifiers
+4. **Layout**
+   - Select: Paper width → `58 mm` / `80 mm`
+   - Select: Font size → Small / Medium / Large
+   - Select: Alignment → Left / Center
+5. **Extras**
+   - Switch: Show QR code
+   - `TextField`: QR content (URL or text) — enabled only when QR is on
+
+### 8.3 Live preview behavior
+- Keep the editor state in a local `config` state object initialized from `getConfig()`.
+- On **any** change, debounce (~300 ms) and call `preview(config)`; set the returned `html` into the preview pane via `dangerouslySetInnerHTML`. Wrap the preview in a container with class `receipt-preview` (see §10 for scoped CSS).
+- Show a subtle "Previewing…" indicator while a preview request is in flight. Do not block typing.
+- If the preview request fails, keep the last good HTML and show a small warning.
+
+### 8.4 Action buttons (top of page)
+- **Save** → `saveConfig(config)`. On success: toast "Receipt settings saved", invalidate `["receipt-config"]`. Disable while saving. Track a `dirty` flag; warn on navigation away if dirty and unsaved (optional but preferred).
+- **Reset to default** → opens a confirm dialog; on confirm, replace local state with the hardcoded default object (§11) and refresh preview (do **not** save until they press Save).
+- **Test print** → `testPrint()`. Toast the result; in simulate mode, toast "Simulated (set PRINTER_MODE=tcp to print)".
+
+### 8.5 Validation feedback
+- Disable Save if logo is too large or an invalid type.
+- Clamp/ignore invalid `paperWidth`; the Select only offers 58/80 so this is mostly guaranteed.
+
+---
+
+## 9. Frontend: per-order receipt view + reprint
+
+### 9.1 `ReceiptPreview.tsx` (route `/admin/receipt/:orderId`, capability `report.view`)
+- Fetch `orderHtml(orderId)`.
+- Render the HTML in the same `receipt-preview` styled container.
+- Buttons: **Print** (`printOrder(orderId)` → toast result), **Back** (navigate to the orders/sales list).
+- This is reached from an order detail/history "Receipt" action.
+
+### 9.2 Wire into existing order UI
+Wherever orders are listed/viewed (`ReportsAdmin`, or an order detail if one exists), add a "Receipt" / "Reprint" action button that navigates to `/admin/receipt/:orderId` (or calls `printOrder` directly for a quick reprint). Do not remove existing behavior.
+
+---
+
+## 10. Preview styling (scoped CSS)
+
+Add to `src/index.css` (plain CSS — this is scoped to the receipt preview, not MUI):
+
+```css
+.receipt-preview {
+  background: #fff;
+  color: #111;
+  font-family: "Courier New", monospace;   /* monospace keeps columns aligned */
+  padding: 16px;
+  width: 100%;
+  box-sizing: border-box;
+  white-space: pre-wrap;                     /* preserve line breaks/dividers */
+  font-size: 12px;
+  line-height: 1.4;
+}
+.receipt-preview .r-center { text-align: center; }
+.receipt-preview .r-right  { text-align: right; }
+.receipt-preview .r-row    { display: flex; justify-content: space-between; gap: 8px; }
+.receipt-preview .r-bold   { font-weight: 700; }
+.receipt-preview .r-divider{ border-top: 1px dashed #999; margin: 6px 0; }
+.receipt-preview img.r-logo, .receipt-preview img.r-qr { display:block; margin: 6px auto; max-width: 120px; }
+```
+Adjust `fontSize` by adding a class (`r-small`/`r-medium`/`r-large`) to the container that changes `font-size`. Ensure `renderReceiptHtml` emits these classes on blocks.
+
+---
+
+## 11. Defaults and reset-to-default
+
+Define the default config **once** in a shared backend module (`lib/receiptDefaults.ts`) and reuse it for auto-provisioning (§5.1) and expose it via `GET /receipts/defaults` so the frontend Reset button uses the same source of truth:
+
+```ts
+export const RECEIPT_DEFAULTS = {
+  showShopName: true, showLogo: false, logo: null, showAddress: false, showPhone: false,
+  headerText: "", footerText: "", thankYouText: "Thank you, come again!",
+  showOrderNumber: true, showTable: true, showDateTime: true, showCashier: true,
+  showSubtotal: true, showServiceCharge: true, showTax: true, showDiscount: true,
+  showTotal: true, showPaymentMethod: true, showAmountPaid: true, showChange: true,
+  showModifiers: true,
+  paperWidth: 80, fontSize: "medium", alignment: "left",
+  showQrCode: false, qrContent: null,
+};
+```
+
+---
+
+## 12. Known limitations (document, don't block)
+
+State these clearly in the UI where relevant so behavior is honest:
+- **Logo over ESC/POS** is not rendered in the text output (thermal image rastering is a future item). The logo appears in the HTML preview/PDF path.
+- **QR over ESC/POS** prints as a placeholder in text mode; it renders fully in the HTML preview. (Future: emit the ESC/POS QR command `GS ( k`.)
+- Preview is a faithful layout simulation but real 58/80 mm output may wrap slightly differently depending on the printer firmware.
+
+These mirror the reference system's pragmatic split (HTML WYSIWYG vs. best-effort thermal text).
+
+---
+
+## 13. Audit events
+
+Use the existing `audit()` helper. Emit:
+- `RECEIPT_CONFIG_UPDATED` (entityType `ReceiptConfig`)
+- `RECEIPT_TEST_PRINT` (entityType `Restaurant`)
+- `RECEIPT_REPRINTED` (entityType `Order`, entityId = orderId)
+- `RECEIPT_AUTO_PRINT_FAILED` (optional, on printer error in the payment path)
+
+---
+
+## 14. i18n keys
+
+Add to `settings.json` (or a new `receipt.json` namespace):
+`receipt_customization`, `identity`, `show_shop_name`, `show_logo`, `upload_logo`, `remove_logo`, `show_address`, `show_phone`, `messages`, `header_text`, `footer_text`, `thank_you_text`, `fields`, `paper_width`, `font_size`, `alignment`, `extras`, `show_qr`, `qr_content`, `save`, `reset_to_default`, `reset_confirm`, `test_print`, `preview`, `save_success`, `simulated_print`, `order_number`, `table`, `date_time`, `cashier`, `subtotal`, `service_charge`, `tax`, `discount`, `total`, `payment_method`, `amount_paid`, `change`, `modifiers`, `print_receipt`, `reprint`.
+Author English fully; other locales fall back to English.
+
+---
+
+## 15. Testing and acceptance criteria
+
+### 15.1 Backend unit tests (`backend/test/…`, Node test runner)
+1. `buildBlocks` respects every toggle: for each field toggle set to false, the corresponding block is absent; true → present.
+2. Text renderer right-aligns amounts to `lineWidth(config)` for both 58 and 80 mm.
+3. Discount renders with a minus sign and reduces the total correctly (use `toCents`).
+4. Modifier sub-lines appear only when `showModifiers` is true.
+5. Auto-provision: first `GET /receipts/config` creates a default and migrates legacy `receiptHeader`/`receiptFooter` into `headerText`/`footerText`.
+6. Logo validation rejects >200 KB and non-image types.
+
+### 15.2 Integration checks
+1. `PUT /receipts/config` persists and `GET` returns the same values.
+2. `POST /receipts/preview` returns HTML reflecting an override (e.g. turn off tax → no tax line in HTML).
+3. `POST /receipts/test-print` in simulate mode returns `{ ok: true, simulated: true }` and logs the text.
+4. Complete a payment → receipt auto-prints (simulate logs it). With `AUTO_PRINT_RECEIPT=false`, it does not.
+5. `GET /receipts/order/:id/html` returns the real order's lines and totals.
+6. Cross-tenant guard: requesting another restaurant's order receipt → 404/403.
+
+### 15.3 Frontend acceptance
+1. `/admin/receipt-customization` renders controls on the left, live preview on the right.
+2. Toggling any switch / editing any text updates the preview within ~500 ms.
+3. Uploading a valid logo shows it in the preview (when Show logo is on); invalid file shows an error.
+4. Save persists (reload → same values). Reset to default restores defaults in the editor.
+5. Test print shows the correct toast for simulate mode.
+6. An order's Receipt view shows the real receipt and the Print/Reprint action works.
+7. POS/Floor/KDS screens are visually unchanged; no MUI classes leak into them.
+
+### 15.4 Build hygiene
+```bash
+cd megadine/backend && npm run typecheck && npm run lint && npm test
+cd ../frontend && npm run typecheck && npm run lint && npm run build
+```
+Then `docker compose up -d --build` and confirm a real end-to-end: open an order, pay, and verify the simulated receipt text in backend logs matches the preview.
+
+---
+
+## 16. Implementation order
+
+1. Prisma model + migration + legacy-text copy (§3).
+2. `receiptDefaults.ts` + `receiptRenderer.ts` (blocks → html/text) with unit tests (§4, §11).
+3. `receipts.routes.ts` config + preview + test-print endpoints; register in `app.ts` (§5.1–5.4).
+4. Order receipt endpoints + reprint (§5.5–5.6).
+5. Auto-print hook in the payment path (§6) + `AUTO_PRINT_RECEIPT` env.
+6. Frontend service layer (§7).
+7. `ReceiptCustomization.tsx` editor + live preview + preview CSS (§8, §10).
+8. `ReceiptPreview.tsx` per-order view + wire reprint buttons (§9).
+9. i18n keys + audit wiring (§13, §14).
+10. Full verification pass (§15).
+
+**Definition of done:** the owner can fully customize the receipt via the WYSIWYG editor, the live preview always matches what prints, paying an order auto-prints the configured receipt (or simulates it), any order can be reprinted, and all existing POS behavior and offline flow are unchanged.
+
+---
+
+Save this as `AGENT_SPEC_RECEIPTS.md`. It stands alone — your agent doesn't need to know the reference app exists.
+
+Two things I'd flag before you hand it off:
+1. I could not re-fetch the reference source live just now (extraction tools are offline), so the **field set and behavior are defined from my earlier study of the LumiPOS receipt stack**. The architecture (single renderer → HTML + text, WYSIWYG, reset-to-default, server-side printing) matches it. If you want byte-for-byte parity with LumiPOS's exact field names, tell me and I'll re-pull those specific files when the tools are back and tighten §3/§4.
+2. Want me to also produce the **exact TypeScript code** for `receiptRenderer.ts` and the Prisma migration now, so the agent has a concrete starting point rather than a spec to interpret?

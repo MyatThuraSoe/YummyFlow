@@ -51,6 +51,7 @@ import {
   Payments as PaymentsIcon,
   People as PeopleIcon,
   PointOfSale as PointOfSaleIcon,
+  Receipt as ReceiptIcon,
   ReceiptLong as ReceiptLongIcon,
   RestaurantMenu as RestaurantMenuIcon,
   Settings as SettingsIcon,
@@ -119,6 +120,7 @@ const GROUPS: NavGroup[] = [
     labelKey: "group_administration",
     items: [
       { to: "/admin/users", labelKey: "users", cap: "staff.manage", icon: <PeopleIcon /> },
+      { to: "/admin/receipt-customization", labelKey: "receipt", cap: "settings.manage", icon: <ReceiptIcon /> },
       { to: "/admin/settings", labelKey: "settings", cap: "settings.manage", icon: <SettingsIcon /> },
       { to: "/admin/backup", labelKey: "backup", cap: "backup.manage", icon: <BackupIcon /> },
       { to: "/admin/audit", labelKey: "audit_logs", cap: "audit.view", icon: <HistoryIcon /> },

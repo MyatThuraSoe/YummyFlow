@@ -23,9 +23,11 @@ import {
   Typography,
 } from "@mui/material";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
 import { apiGet, apiPost } from "../../lib/api";
 import { errorMessage } from "../../lib/errors";
 import { formatMoney, toCents } from "../../lib/format";
+import { printOrderReceipt } from "../../lib/receipts";
 import { useToast } from "../../components/ui";
 import { useAuth } from "../../store/auth";
 
@@ -92,6 +94,7 @@ export default function OrdersAdmin() {
   const { push } = useToast();
   const { can } = useAuth();
   const { t } = useTranslation(["nav", "common"]);
+  const nav = useNavigate();
 
   const [date, setDate] = useState(today());
   const [status, setStatus] = useState("ALL");
@@ -147,8 +150,8 @@ export default function OrdersAdmin() {
   });
 
   const reprintMut = useMutation({
-    mutationFn: () => apiPost<{ printed: boolean; mode: string }>(`/orders/${selectedId}/reprint`),
-    onSuccess: (r) => push(r.printed ? `Receipt sent to printer (${r.mode})` : `Printer unavailable (${r.mode})`, r.printed ? "ok" : "error"),
+    mutationFn: () => printOrderReceipt(selectedId!),
+    onSuccess: (r) => push(r.ok ? `Receipt sent to printer (${r.mode})` : `Printer unavailable (${r.mode})`, r.ok ? "ok" : "error"),
     onError: (e) => push(errorMessage(e, t), "error"),
   });
 
@@ -335,6 +338,9 @@ export default function OrdersAdmin() {
           <Button onClick={() => setReceiptOpen((v) => !v)} disabled={!order}>
             {receiptOpen ? "Hide receipt" : "Receipt"}
           </Button>
+          {order && (
+            <Button onClick={() => nav(`/admin/receipt/${order.id}`)}>Receipt page</Button>
+          )}
           {can("pos.use") && (
             <Button onClick={() => reprintMut.mutate()} disabled={!order || reprintMut.isPending}>
               Reprint

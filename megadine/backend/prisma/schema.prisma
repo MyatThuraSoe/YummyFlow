@@ -126,6 +126,52 @@ model Restaurant {
   backupRuns     BackupRun[]
   cashShifts     CashShift[]
   dayCloses      BusinessDayClose[]
+  receiptConfig  ReceiptConfig?
+}
+
+model ReceiptConfig {
+  id           String     @id @default(uuid())
+  restaurantId String     @unique
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  // Identity block
+  showShopName Boolean @default(true)
+  showLogo     Boolean @default(false)
+  logo         String?
+  showAddress  Boolean @default(false)
+  showPhone    Boolean @default(false)
+
+  // Custom messages
+  headerText   String?
+  footerText   String?
+  thankYouText String?
+
+  // Field visibility
+  showOrderNumber   Boolean @default(true)
+  showTable         Boolean @default(true)
+  showDateTime      Boolean @default(true)
+  showCashier       Boolean @default(true)
+  showSubtotal      Boolean @default(true)
+  showServiceCharge Boolean @default(true)
+  showTax           Boolean @default(true)
+  showDiscount      Boolean @default(true)
+  showTotal         Boolean @default(true)
+  showPaymentMethod Boolean @default(true)
+  showAmountPaid    Boolean @default(true)
+  showChange        Boolean @default(true)
+  showModifiers     Boolean @default(true)
+
+  // Layout
+  paperWidth Int    @default(80)
+  fontSize   String @default("medium")
+  alignment  String @default("left")
+
+  // Extras
+  showQrCode Boolean @default(false)
+  qrContent  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model User {

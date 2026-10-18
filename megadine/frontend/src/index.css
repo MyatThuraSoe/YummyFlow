@@ -146,6 +146,23 @@ table.tbl tr:hover td { background: var(--panel-2); }
 .stat .v { font-size: 28px; font-weight: 800; }
 .stat .l { color: var(--muted); font-size: 13px; }
 
+/* Receipt preview (customization editor + per-order view) */
+.receipt-preview { background: #ffffff; color: #111111; font-family: "Courier New", ui-monospace, monospace; font-size: 13px; line-height: 1.45; padding: 14px 16px; border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); width: 100%; max-width: 320px; }
+.receipt-preview.rw-58 { max-width: 240px; }
+.receipt-preview.rw-80 { max-width: 330px; }
+.receipt-preview.r-small { font-size: 11px; }
+.receipt-preview.r-medium { font-size: 13px; }
+.receipt-preview.r-large { font-size: 15px; }
+.receipt-preview .r-left { text-align: left; }
+.receipt-preview .r-center { text-align: center; }
+.receipt-preview .r-right { text-align: right; }
+.receipt-preview .r-row { display: flex; justify-content: space-between; gap: 10px; }
+.receipt-preview .r-row span:last-child { text-align: right; white-space: nowrap; }
+.receipt-preview .r-bold { font-weight: 700; }
+.receipt-preview .r-divider { border-top: 1px dashed #9aa39c; margin: 6px 0; }
+.receipt-preview .r-logo { display: block; max-width: 140px; max-height: 72px; margin: 0 auto 8px; }
+.receipt-preview .r-qr { display: block; width: 96px; height: 96px; margin: 8px auto 0; }
+
 @media (max-width: 900px) {
   .pos { grid-template-columns: 1fr; height: auto; }
   .grid.cols-4, .grid.cols-3, .grid.cols-2 { grid-template-columns: 1fr; }

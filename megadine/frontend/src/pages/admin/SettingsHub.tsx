@@ -27,7 +27,7 @@ export default function SettingsHub() {
   const cards: HubCard[] = [
     { to: "/admin/shop-info", icon: <StoreIcon color="primary" />, title: t("settings:shop_info"), description: "Name, address, phone, tax ID and logo" },
     { to: "/admin/settings/system", icon: <TuneIcon color="primary" />, title: t("settings:system"), description: "Currency, business day cutoff, tax, service charge and cash tolerance" },
-    { to: "/admin/settings/receipt", icon: <ReceiptIcon color="primary" />, title: t("settings:receipt"), description: "Receipt header, footer and preview" },
+    { to: "/admin/receipt-customization", icon: <ReceiptIcon color="primary" />, title: t("settings:receipt"), description: "WYSIWYG receipt editor: identity, fields, layout, QR code and print test" },
     { to: "/admin/backup", icon: <BackupIcon color="primary" />, title: t("settings:backup"), description: "Run, export and restore database backups" },
     { to: "/admin/license", icon: <VpnKeyIcon color="primary" />, title: t("settings:license"), description: "Machine ID, license key and plan usage" },
     { to: "/admin/settings/language", icon: <LanguageIcon color="primary" />, title: t("settings:language"), description: "Interface language" },

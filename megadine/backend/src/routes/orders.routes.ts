@@ -16,7 +16,7 @@ import {
   sendToKitchen,
   voidOrderLine,
 } from "../services/order.service.js";
-import { receiptTextForOrder } from "../services/payment.service.js";
+import { receiptTextForOrder } from "../services/receipt.service.js";
 
 export const ordersRouter = Router();
 ordersRouter.use(requireAuth);
