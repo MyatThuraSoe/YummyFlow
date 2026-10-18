@@ -29,25 +29,6 @@ button { font-family: inherit; cursor: pointer; }
 input, select, textarea { font-family: inherit; }
 
 .app { display: flex; min-height: 100vh; }
-.sidebar {
-  width: 220px; background: var(--panel); border-right: 1px solid var(--line);
-  display: flex; flex-direction: column; padding: 16px 12px; gap: 4px; position: sticky; top: 0; height: 100vh;
-}
-.brand { font-size: 20px; font-weight: 800; letter-spacing: .5px; padding: 6px 10px 16px; }
-.brand span { color: var(--brand); }
-.nav-item {
-  display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px;
-  color: var(--muted); font-weight: 600;
-}
-.nav-item:hover { background: var(--panel-2); color: var(--text); }
-.nav-item.active { background: var(--brand); color: #ffffff; }
-.nav-spacer { flex: 1; }
-.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.topbar {
-  height: 58px; display: flex; align-items: center; gap: 16px; padding: 0 20px;
-  border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 20;
-}
-.topbar h1 { font-size: 17px; margin: 0; }
 .spacer { flex: 1; }
 .content { padding: 20px; flex: 1; overflow: auto; }
 
@@ -109,7 +90,7 @@ table.tbl tr:hover td { background: var(--panel-2); }
 .pin-key.wide { grid-column: span 3; }
 
 /* POS */
-.pos { display: grid; grid-template-columns: 1fr 380px; gap: 16px; height: calc(100vh - 58px); }
+.pos { display: grid; grid-template-columns: 1fr 380px; gap: 16px; height: calc(100dvh - 112px); }
 .pos-menu { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
 .cat-tabs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
 .cat-tab { white-space: nowrap; padding: 8px 14px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); font-weight: 700; }
@@ -166,8 +147,7 @@ table.tbl tr:hover td { background: var(--panel-2); }
 .stat .l { color: var(--muted); font-size: 13px; }
 
 @media (max-width: 900px) {
-  .pos { grid-template-columns: 1fr; }
-  .sidebar { display: none; }
+  .pos { grid-template-columns: 1fr; height: auto; }
   .grid.cols-4, .grid.cols-3, .grid.cols-2 { grid-template-columns: 1fr; }
   .kds-grid { grid-template-columns: 1fr; }
 }

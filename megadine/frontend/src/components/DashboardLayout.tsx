@@ -1,6 +1,6 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert,
   AppBar,
@@ -43,6 +43,7 @@ import {
   Info as InfoIcon,
   Inventory2 as Inventory2Icon,
   Kitchen as KitchenIcon,
+  Lock as LockIcon,
   LockReset as LockResetIcon,
   Logout as LogoutIcon,
   Menu as MenuIcon,
@@ -58,12 +59,17 @@ import {
 } from "@mui/icons-material";
 import { apiGet, apiPost } from "../lib/api";
 import { errorMessage } from "../lib/errors";
+import { connectSocket, EVENTS } from "../lib/socket";
+import { flushOutbox, pendingCount } from "../lib/outbox";
 import LanguageSwitcher from "./LanguageSwitcher";
+import LockOverlay from "./LockOverlay";
+import { useToast } from "./ui";
 import { useAuth } from "../store/auth";
 import { useTranslation } from "react-i18next";
 
 const WIDTH_EXPANDED = 240;
 const WIDTH_COLLAPSED = 68;
+const IDLE_MS = 5 * 60 * 1000;
 
 interface NavItem {
   to: string;
@@ -140,11 +146,20 @@ interface ShiftCurrent {
   shift: { id: string; openedAt: string } | null;
 }
 
+interface HardwareStatus {
+  printerMode: string;
+  receiptPrinter: string;
+  kitchenPrinter: string;
+  simulateMode: boolean;
+}
+
 export default function DashboardLayout() {
   const { t } = useTranslation(["nav", "common", "cash"]);
-  const { user, can, logout } = useAuth();
+  const { user, can, logout, loginPin } = useAuth();
   const nav = useNavigate();
   const loc = useLocation();
+  const qc = useQueryClient();
+  const { push } = useToast();
   const isMobile = useMediaQuery((th) => th.breakpoints.down("sm"));
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("md_sidebar_collapsed") === "1");
@@ -152,6 +167,11 @@ export default function DashboardLayout() {
   const [pwOpen, setPwOpen] = useState(false);
   const [bannerDismissed, setBannerDismissed] = useState(() => localStorage.getItem("md_basic_banner_dismissed") === "1");
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
+  const [socketUp, setSocketUp] = useState(false);
+  const [online, setOnline] = useState(navigator.onLine);
+  const [queued, setQueued] = useState(pendingCount());
+  const [locked, setLocked] = useState(false);
+  const idleRef = useRef<number | null>(null);
 
   const { data: settings } = useQuery({
     queryKey: ["settings", "summary"],
@@ -171,11 +191,89 @@ export default function DashboardLayout() {
     staleTime: 60_000,
   });
 
+  const { data: hw } = useQuery({
+    queryKey: ["hardware"],
+    queryFn: () => apiGet<HardwareStatus>("/admin/hardware/status"),
+    staleTime: 60_000,
+  });
+
   useEffect(() => {
     const onChange = () => setIsFullscreen(!!document.fullscreenElement);
     document.addEventListener("fullscreenchange", onChange);
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
+
+  useEffect(() => {
+    const s = connectSocket();
+    const invalidate = (keys: string[]) => () => keys.forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
+    const handlers: [string, () => void][] = [
+      [EVENTS.ORDER_CREATED, invalidate(["orders", "tables", "dashboard"])],
+      [EVENTS.ORDER_UPDATED, invalidate(["orders", "tables"])],
+      [EVENTS.ORDER_COMPLETED, invalidate(["orders", "tables", "shifts", "dashboard"])],
+      [EVENTS.KITCHEN_NEW, invalidate(["tickets"])],
+      [EVENTS.KITCHEN_UPDATED, invalidate(["tickets"])],
+      [EVENTS.TABLE_UPDATED, invalidate(["tables"])],
+      [EVENTS.MENU_ITEM_86, invalidate(["menu"])],
+      [EVENTS.SHIFT_UPDATED, invalidate(["shift"])],
+    ];
+    handlers.forEach(([ev, fn]) => s.on(ev, fn));
+    const on86 = (p: { name: string; isAvailable: boolean }) =>
+      push(t(p.isAvailable ? "nav:marked_available" : "nav:marked_86", { name: p.name }), "info");
+    s.on(EVENTS.MENU_ITEM_86, on86);
+    const onConnect = () => setSocketUp(true);
+    const onDisconnect = () => setSocketUp(false);
+    s.on("connect", onConnect);
+    s.on("disconnect", onDisconnect);
+    setSocketUp(s.connected);
+    return () => {
+      handlers.forEach(([ev, fn]) => s.off(ev, fn));
+      s.off(EVENTS.MENU_ITEM_86, on86);
+      s.off("connect", onConnect);
+      s.off("disconnect", onDisconnect);
+    };
+  }, [qc, push, t]);
+
+  useEffect(() => {
+    const update = () => setQueued(pendingCount());
+    window.addEventListener("md:outbox", update);
+    return () => window.removeEventListener("md:outbox", update);
+  }, []);
+
+  useEffect(() => {
+    const goOnline = async () => {
+      setOnline(true);
+      if (pendingCount() > 0) {
+        const { sent, failed } = await flushOutbox();
+        setQueued(pendingCount());
+        if (sent) push(t("nav:sync_sent", { count: sent }), "ok");
+        if (failed) push(t("nav:sync_failed", { count: failed }), "error");
+        qc.invalidateQueries({ queryKey: ["orders"] });
+      }
+    };
+    const goOffline = () => setOnline(false);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
+  }, [qc, push, t]);
+
+  useEffect(() => {
+    const reset = () => {
+      if (idleRef.current) window.clearTimeout(idleRef.current);
+      idleRef.current = window.setTimeout(() => setLocked(true), IDLE_MS);
+    };
+    const events = ["mousemove", "mousedown", "keydown", "touchstart", "scroll"];
+    if (!locked) {
+      reset();
+      events.forEach((e) => window.addEventListener(e, reset));
+    }
+    return () => {
+      events.forEach((e) => window.removeEventListener(e, reset));
+      if (idleRef.current) window.clearTimeout(idleRef.current);
+    };
+  }, [locked]);
 
   function toggleCollapsed() {
     setCollapsed((c) => {
@@ -330,6 +428,41 @@ export default function DashboardLayout() {
             <Typography variant="body2" color="text.secondary" noWrap sx={{ display: { xs: "none", md: "block" }, maxWidth: 200 }}>
               {settings?.restaurant.name ?? t("nav:shop_name_fallback")}
             </Typography>
+            {hw && (
+              <Tooltip title={`${hw.receiptPrinter} / ${hw.kitchenPrinter}`}>
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={`🖨 ${hw.simulateMode ? "simulated" : "tcp"}`}
+                  sx={{ display: { xs: "none", lg: "flex" } }}
+                />
+              </Tooltip>
+            )}
+            {queued > 0 && (
+              <Chip
+                size="small"
+                variant="outlined"
+                color="warning"
+                label={t("nav:queued", { count: queued })}
+                sx={{ display: { xs: "none", sm: "flex" } }}
+              />
+            )}
+            <Tooltip title={t("nav:realtime")}>
+              <Chip
+                size="small"
+                variant="outlined"
+                color={socketUp ? "success" : "warning"}
+                label={socketUp ? t("nav:live") : t("nav:reconnecting")}
+                sx={{ display: { xs: "none", sm: "flex" } }}
+              />
+            </Tooltip>
+            <Chip
+              size="small"
+              variant="outlined"
+              color={online ? "success" : "error"}
+              label={online ? t("nav:online") : t("nav:offline")}
+              sx={{ display: { xs: "none", sm: "flex" } }}
+            />
             {currentShift && (
               <Tooltip title={t("cash:opened_at", { time: new Date(currentShift.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) })}>
                 <Chip
@@ -362,6 +495,17 @@ export default function DashboardLayout() {
                 <ListItemText primary={user?.name} secondary={`@${user?.username ?? ""} · ${user?.role}`} />
               </MenuItem>
               <Divider />
+              <MenuItem
+                onClick={() => {
+                  setMenuAnchor(null);
+                  setLocked(true);
+                }}
+              >
+                <ListItemIcon>
+                  <LockIcon fontSize="small" />
+                </ListItemIcon>
+                {t("nav:lock")}
+              </MenuItem>
               <MenuItem
                 onClick={() => {
                   setMenuAnchor(null);
@@ -409,6 +553,18 @@ export default function DashboardLayout() {
       </Box>
 
       <ChangePasswordDialog open={pwOpen} onClose={() => setPwOpen(false)} />
+      {locked && (
+        <LockOverlay
+          onUnlock={async (pin) => {
+            await loginPin(pin);
+            setLocked(false);
+          }}
+          onSignOut={async () => {
+            await logout();
+            nav("/login");
+          }}
+        />
+      )}
     </Box>
   );
 }

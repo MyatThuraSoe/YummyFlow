@@ -12,8 +12,6 @@ interface Restaurant {
   taxRate: string;
   taxInclusive: boolean;
   serviceChargePct: string;
-  receiptHeader: string | null;
-  receiptFooter: string | null;
   cashVarianceTolerance: string;
 }
 
@@ -33,8 +31,6 @@ export default function SystemSettingsAdmin() {
     taxPct: "8.5",
     taxInclusive: false,
     servicePct: "0",
-    receiptHeader: "",
-    receiptFooter: "",
     cashVarianceTolerance: "10",
   });
   const [loaded, setLoaded] = useState(false);
@@ -51,8 +47,6 @@ export default function SystemSettingsAdmin() {
         taxPct: String((Number(r.taxRate) * 100).toFixed(2)),
         taxInclusive: r.taxInclusive,
         servicePct: String((Number(r.serviceChargePct) * 100).toFixed(2)),
-        receiptHeader: r.receiptHeader ?? "",
-        receiptFooter: r.receiptFooter ?? "",
         cashVarianceTolerance: String(Number(r.cashVarianceTolerance ?? 10).toFixed(2)),
       });
       setLoaded(true);
@@ -68,8 +62,6 @@ export default function SystemSettingsAdmin() {
         taxRate: Number(form.taxPct) / 100,
         taxInclusive: form.taxInclusive,
         serviceChargePct: Number(form.servicePct) / 100,
-        receiptHeader: form.receiptHeader || null,
-        receiptFooter: form.receiptFooter || null,
         cashVarianceTolerance: Number(form.cashVarianceTolerance),
       }),
     onSuccess: () => {
@@ -138,8 +130,6 @@ export default function SystemSettingsAdmin() {
               <MenuItem value="no">No</MenuItem>
             </TextField>
           </Stack>
-          <TextField label={t("settings:receipt_header")} value={form.receiptHeader} onChange={(e) => set("receiptHeader")(e.target.value)} fullWidth />
-          <TextField label={t("settings:receipt_footer")} value={form.receiptFooter} onChange={(e) => set("receiptFooter")(e.target.value)} fullWidth />
           <Button variant="contained" disabled={save.isPending} onClick={() => save.mutate()} sx={{ alignSelf: "flex-start" }}>
             {save.isPending ? <CircularProgress size={20} color="inherit" /> : t("settings:save_settings")}
           </Button>

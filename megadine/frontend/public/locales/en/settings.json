@@ -17,5 +17,7 @@
   "tax_inclusive": "Prices include tax (tax-inclusive)",
   "receipt_header": "Receipt header",
   "receipt_footer": "Receipt footer",
+  "receipt_preview": "Preview",
+  "language_hint": "Choose the language used across the interface. Your preference is saved to your account.",
   "save_settings": "Save settings"
 }
