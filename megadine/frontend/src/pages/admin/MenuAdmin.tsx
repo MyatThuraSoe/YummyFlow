@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiDel, apiGet, apiPatch, apiPost } from "../../lib/api";
-import { formatMoney, toCents } from "../../lib/format";
+import { formatMoney, fromCents, toCents } from "../../lib/format";
 import { Field, Modal, useToast } from "../../components/ui";
 
 interface Variant { id: string; name: string; priceAdjust: string; isAvailable: boolean }
 interface Option { id: string; name: string; price: string; isAvailable: boolean }
 interface ModGroup { id: string; name: string; required: boolean; minSelect: number; maxSelect: number | null; options: Option[] }
-interface Item { id: string; name: string; price: string; station: string; isAvailable: boolean; isActive: boolean; variants: Variant[]; modifierGroups: ModGroup[] }
+interface Item { id: string; name: string; description?: string | null; prepTime?: number; price: string; station: string; isAvailable: boolean; isActive: boolean; variants: Variant[]; modifierGroups: ModGroup[] }
 interface Category { id: string; name: string; isActive: boolean; items: Item[] }
 interface Settings { restaurant: { currency: string } | null }
 
@@ -22,6 +22,8 @@ export default function MenuAdmin() {
   const [showCat, setShowCat] = useState(false);
   const [catName, setCatName] = useState("");
   const [addTo, setAddTo] = useState<Category | null>(null);
+  const [editItem, setEditItem] = useState<{ category: Category; item: Item } | null>(null);
+  const [editCat, setEditCat] = useState<Category | null>(null);
   const [manage, setManage] = useState<Item | null>(null);
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["menu"] });
@@ -53,6 +55,7 @@ export default function MenuAdmin() {
           <div className="card" key={c.id}>
             <div className="row">
               <h3 style={{ margin: 0, flex: 1 }}>{c.name}</h3>
+              <button className="btn ghost small" onClick={() => setEditCat(c)}>Edit</button>
               <button className="btn small" onClick={() => setAddTo(c)}>+ Item</button>
             </div>
             <table className="tbl" style={{ marginTop: 8 }}>
@@ -71,6 +74,7 @@ export default function MenuAdmin() {
                     <td className="small muted">{i.station}</td>
                     <td>
                       <div className="row" style={{ justifyContent: "flex-end" }}>
+                        <button className="btn small ghost" onClick={() => setEditItem({ category: c, item: i })}>Edit</button>
                         <button className="btn small" onClick={() => setManage(i)}>Options</button>
                         <button className={`btn small ${i.isAvailable ? "" : "danger"}`} onClick={() => toggle.mutate({ id: i.id, isAvailable: !i.isAvailable })}>
                           {i.isAvailable ? "86" : "Restore"}
@@ -94,29 +98,56 @@ export default function MenuAdmin() {
       )}
 
       {addTo && <ItemModal category={addTo} currency={currency} onClose={() => setAddTo(null)} onSaved={() => { setAddTo(null); invalidate(); }} />}
+      {editItem && <ItemModal category={editItem.category} item={editItem.item} currency={currency} onClose={() => setEditItem(null)} onSaved={() => { setEditItem(null); invalidate(); }} />}
+      {editCat && <CategoryModal category={editCat} onClose={() => setEditCat(null)} onSaved={() => { setEditCat(null); invalidate(); }} />}
       {manage && <ItemOptionsModal item={manage} currency={currency} onClose={() => { setManage(null); invalidate(); }} />}
     </div>
   );
 }
 
-function ItemModal({ category, currency, onClose, onSaved }: { category: Category; currency: string; onClose: () => void; onSaved: () => void }) {
+function CategoryModal({ category, onClose, onSaved }: { category: Category; onClose: () => void; onSaved: () => void }) {
   const { push } = useToast();
-  const [name, setName] = useState("");
-  const [price, setPrice] = useState("");
-  const [station, setStation] = useState("KITCHEN");
-  const [desc, setDesc] = useState("");
+  const [name, setName] = useState(category.name);
 
   const mut = useMutation({
-    mutationFn: () => apiPost("/menu/items", { categoryId: category.id, name, price: Number(price), station, description: desc || undefined }),
-    onSuccess: () => { push("Item added", "ok"); onSaved(); },
+    mutationFn: () => apiPatch(`/menu/categories/${category.id}`, { name }),
+    onSuccess: () => { push("Category updated", "ok"); onSaved(); },
     onError: (e) => push(e instanceof Error ? e.message : "Failed", "error"),
   });
 
   return (
     <Modal
-      title={`New item · ${category.name}`}
+      title={`Edit category · ${category.name}`}
       onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" disabled={!name || !price} onClick={() => mut.mutate()}>Add</button></>}
+      footer={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" disabled={!name.trim() || mut.isPending} onClick={() => mut.mutate()}>Save</button></>}
+    >
+      <Field label="Name"><input className="input" value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field>
+    </Modal>
+  );
+}
+
+function ItemModal({ category, currency, item, onClose, onSaved }: { category: Category; currency: string; item?: Item; onClose: () => void; onSaved: () => void }) {
+  const { push } = useToast();
+  const [name, setName] = useState(item?.name ?? "");
+  const [price, setPrice] = useState(item ? fromCents(toCents(item.price)) : "");
+  const [station, setStation] = useState(item?.station ?? "KITCHEN");
+  const [desc, setDesc] = useState(item?.description ?? "");
+  const [prep, setPrep] = useState(item?.prepTime != null ? String(item.prepTime) : "10");
+
+  const mut = useMutation({
+    mutationFn: () => {
+      const body = { name, price: Number(price), station, description: desc || null, prepTime: Number(prep) || 0 };
+      return item ? apiPatch(`/menu/items/${item.id}`, body) : apiPost("/menu/items", { categoryId: category.id, ...body });
+    },
+    onSuccess: () => { push(item ? "Item updated" : "Item added", "ok"); onSaved(); },
+    onError: (e) => push(e instanceof Error ? e.message : "Failed", "error"),
+  });
+
+  return (
+    <Modal
+      title={`${item ? "Edit item" : "New item"} · ${category.name}`}
+      onClose={onClose}
+      footer={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" disabled={!name || !price || mut.isPending} onClick={() => mut.mutate()}>{item ? "Save" : "Add"}</button></>}
     >
       <Field label="Name"><input className="input" value={name} onChange={(e) => setName(e.target.value)} /></Field>
       <Field label={`Price (${currency})`}><input className="input" type="number" value={price} onChange={(e) => setPrice(e.target.value)} /></Field>
@@ -125,6 +156,7 @@ function ItemModal({ category, currency, onClose, onSaved }: { category: Categor
           {STATIONS.map((s) => <option key={s}>{s}</option>)}
         </select>
       </Field>
+      <Field label="Prep time (minutes)"><input className="input" type="number" value={prep} onChange={(e) => setPrep(e.target.value)} /></Field>
       <Field label="Description"><input className="input" value={desc} onChange={(e) => setDesc(e.target.value)} /></Field>
     </Modal>
   );

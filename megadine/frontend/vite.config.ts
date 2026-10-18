@@ -25,13 +25,13 @@ export default defineConfig({
         runtimeCaching: [
           {
             urlPattern: ({ url }) => url.pathname.startsWith("/api/v1/menu"),
-            handler: "StaleWhileRevalidate",
-            options: { cacheName: "menu-cache" },
+            handler: "NetworkFirst",
+            options: { cacheName: "menu-cache", networkTimeoutSeconds: 2 },
           },
           {
             urlPattern: ({ url }) => url.pathname.startsWith("/api/v1/tables"),
-            handler: "StaleWhileRevalidate",
-            options: { cacheName: "tables-cache" },
+            handler: "NetworkFirst",
+            options: { cacheName: "tables-cache", networkTimeoutSeconds: 2 },
           },
         ],
       },

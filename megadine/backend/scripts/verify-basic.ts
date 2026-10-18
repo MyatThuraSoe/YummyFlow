@@ -154,6 +154,18 @@ async function main() {
     ok("KDS advances ticket QUEUED -> PREPARING -> READY");
 
     // ── MEGA-2: shift + payment ─────────────────────────
+    // Normalize: close any shift left open by an interrupted run or manual
+    // testing so the cashier can open a fresh one.
+    const leftOpen = await api<{ shift: { id: string } | null; summary?: { expectedCash: number } }>("/shifts/current", { token: cashier.token });
+    if (leftOpen.data.shift) {
+      const closeOld = await api(`/shifts/${leftOpen.data.shift.id}/close`, {
+        method: "POST",
+        token: cashier.token,
+        body: { actualCash: (leftOpen.data.summary?.expectedCash ?? 0) / 100, notes: "verify normalization" },
+      });
+      assert.ok(closeOld.status >= 200 && closeOld.status < 300, JSON.stringify(closeOld.data));
+      ok("leftover open shift normalized before opening a new one");
+    }
     const shift = await api<{ shift: { id: string } }>("/shifts/open", { method: "POST", token: cashier.token, body: { openingFloat: 100 } });
     assert.equal(shift.status, 201, JSON.stringify(shift.data));
     const shiftId = shift.data.shift.id;

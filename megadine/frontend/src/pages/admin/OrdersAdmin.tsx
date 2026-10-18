@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert,
+  Box,
   Button,
   Chip,
   CircularProgress,
@@ -43,11 +44,33 @@ interface OrderLine {
   modifiers: { id: string; nameSnapshot: string; priceSnapshot: string }[];
 }
 
+interface Refund {
+  id: string;
+  amount: string;
+  reason?: string | null;
+  createdAt?: string;
+}
+
 interface Payment {
   id: string;
   method: string;
   amount: string;
-  refunds?: { id: string; amount: string }[];
+  refunds?: Refund[];
+}
+
+interface KitchenTicketLine {
+  id: string;
+  itemName: string;
+  quantity: number;
+  status: string;
+}
+
+interface KitchenTicket {
+  id: string;
+  station: string;
+  status: string;
+  sentAt: string;
+  lines: KitchenTicketLine[];
 }
 
 interface Order {
@@ -55,6 +78,8 @@ interface Order {
   orderNumber: number;
   channel: string;
   status: string;
+  paymentStatus: string;
+  amountPaid: string;
   subtotal: string;
   taxAmount: string;
   serviceCharge: string;
@@ -67,6 +92,13 @@ interface Order {
   tableSession?: { table: { number: number; name: string | null } } | null;
   lines: OrderLine[];
   payments: Payment[];
+  kitchenTickets?: KitchenTicket[];
+}
+
+interface Envelope<T> {
+  success: boolean;
+  message: string;
+  data: T;
 }
 
 const STATUSES = ["DRAFT", "SENT_TO_KITCHEN", "IN_PROGRESS", "READY", "COMPLETED", "CANCELLED"];
@@ -99,11 +131,18 @@ export default function OrdersAdmin() {
   const [date, setDate] = useState(today());
   const [status, setStatus] = useState("ALL");
   const [channel, setChannel] = useState("ALL");
+  const [cashierId, setCashierId] = useState("ALL");
+  const [tableId, setTableId] = useState("ALL");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
   const [managerPin, setManagerPin] = useState("");
   const [receiptOpen, setReceiptOpen] = useState(false);
+  const [refundOpen, setRefundOpen] = useState(false);
+  const [refundAmount, setRefundAmount] = useState("");
+  const [refundReason, setRefundReason] = useState("");
+  const [refundPin, setRefundPin] = useState("");
+  const [refundRestock, setRefundRestock] = useState(false);
 
   const { data: settings } = useQuery({
     queryKey: ["settings"],
@@ -112,13 +151,30 @@ export default function OrdersAdmin() {
   });
   const currency = settings?.restaurant.currency ?? "USD";
 
+  const { data: usersData } = useQuery({
+    queryKey: ["users"],
+    queryFn: () => apiGet<Envelope<{ users: { id: string; name: string; role: string }[] }>>("/users"),
+    enabled: can("staff.manage"),
+    staleTime: 5 * 60_000,
+    retry: 0,
+  });
+
+  const { data: tablesData } = useQuery({
+    queryKey: ["tables"],
+    queryFn: () => apiGet<{ tables: { id: string; number: number; status: string }[] }>("/tables"),
+    staleTime: 60_000,
+    retry: 0,
+  });
+
   const { data, isLoading } = useQuery({
-    queryKey: ["orders", "admin", date, status, channel],
+    queryKey: ["orders", "admin", date, status, channel, cashierId, tableId],
     queryFn: () =>
       apiGet<{ orders: Order[] }>("/orders", {
         businessDate: date || undefined,
         status: status === "ALL" ? undefined : status,
         channel: channel === "ALL" ? undefined : channel,
+        cashierId: cashierId === "ALL" ? undefined : cashierId,
+        tableId: tableId === "ALL" ? undefined : tableId,
         limit: 200,
       }),
     refetchInterval: 30_000,
@@ -155,18 +211,43 @@ export default function OrdersAdmin() {
     onError: (e) => push(errorMessage(e, t), "error"),
   });
 
+  const refundMut = useMutation({
+    mutationFn: () => apiPost("/payments/refund", { orderId: selectedId, amount: Number(refundAmount), reason: refundReason, managerPin: refundPin, restock: refundRestock }),
+    onSuccess: () => {
+      push(`Refunded ${formatMoney(Math.round(Number(refundAmount) * 100), currency)}`, "ok");
+      setRefundOpen(false);
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (e) => push(errorMessage(e, t), "error"),
+  });
+
   const orders = data?.orders ?? [];
   const order = detail?.order;
   const cancellable = !!order && order.status !== "COMPLETED" && order.status !== "CANCELLED" && can("pos.use");
+  const paidCents = order ? toCents(order.amountPaid) : 0;
+  const refundedCents = order ? order.payments.flatMap((p) => p.refunds ?? []).reduce((s, r) => s + toCents(r.amount), 0) : 0;
+  const refundableCents = Math.max(0, paidCents - refundedCents);
+  const canRefund = can("order.refund") && refundableCents > 0;
+  const refundValid = Number(refundAmount) > 0 && Math.round(Number(refundAmount) * 100) <= refundableCents && refundReason.trim().length >= 2 && /^\d{4,6}$/.test(refundPin);
 
   function closeDetail() {
     setSelectedId(null);
     setReceiptOpen(false);
+    setRefundOpen(false);
+  }
+
+  function openRefund() {
+    setRefundAmount((refundableCents / 100).toFixed(2));
+    setRefundReason("");
+    setRefundPin("");
+    setRefundRestock(false);
+    setRefundOpen(true);
   }
 
   return (
     <Stack spacing={2}>
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ alignItems: { sm: "center" } }}>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ alignItems: { sm: "center" }, flexWrap: "wrap", rowGap: 2 }}>
         <Typography variant="h5" sx={{ flex: 1 }}>
           {t("nav:orders")}
         </Typography>
@@ -184,6 +265,24 @@ export default function OrdersAdmin() {
           {CHANNELS.map((c) => (
             <MenuItem key={c} value={c}>
               {CHANNEL_LABELS[c]}
+            </MenuItem>
+          ))}
+        </TextField>
+        {can("staff.manage") && (
+          <TextField select label="Cashier" value={cashierId} onChange={(e) => setCashierId(e.target.value)} size="small" sx={{ minWidth: 180 }}>
+            <MenuItem value="ALL">All cashiers</MenuItem>
+            {(usersData?.data.users ?? []).map((u) => (
+              <MenuItem key={u.id} value={u.id}>
+                {u.name} ({u.role})
+              </MenuItem>
+            ))}
+          </TextField>
+        )}
+        <TextField select label="Table" value={tableId} onChange={(e) => setTableId(e.target.value)} size="small" sx={{ minWidth: 130 }}>
+          <MenuItem value="ALL">All tables</MenuItem>
+          {(tablesData?.tables ?? []).map((tb) => (
+            <MenuItem key={tb.id} value={tb.id}>
+              #{tb.number}
             </MenuItem>
           ))}
         </TextField>
@@ -248,6 +347,14 @@ export default function OrdersAdmin() {
         <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
           {order ? `Order #${order.orderNumber}` : "Order"}
           {order && <Chip size="small" label={order.status.replace(/_/g, " ")} color={STATUS_COLORS[order.status] ?? "default"} variant="outlined" />}
+          {order && order.paymentStatus !== "SUCCEEDED" && (
+            <Chip
+              size="small"
+              label={order.paymentStatus.replace(/_/g, " ")}
+              color={order.paymentStatus === "REFUNDED" ? "error" : order.paymentStatus === "PARTIALLY_REFUNDED" ? "warning" : "default"}
+              variant="outlined"
+            />
+          )}
         </DialogTitle>
         <DialogContent dividers>
           {detailLoading || !order ? (
@@ -296,6 +403,9 @@ export default function OrdersAdmin() {
                 <SummaryRow label="Tax" value={formatMoney(toCents(order.taxAmount), currency)} />
                 {toCents(order.serviceCharge) > 0 && <SummaryRow label="Service" value={formatMoney(toCents(order.serviceCharge), currency)} />}
                 <SummaryRow label="Total" value={formatMoney(toCents(order.total), currency)} bold />
+                {paidCents > 0 && <SummaryRow label="Paid" value={formatMoney(paidCents, currency)} />}
+                {refundedCents > 0 && <SummaryRow label="Refunded" value={`−${formatMoney(refundedCents, currency)}`} />}
+                {canRefund && <SummaryRow label="Refundable" value={formatMoney(refundableCents, currency)} />}
               </Stack>
               {order.payments.length > 0 && (
                 <>
@@ -308,14 +418,44 @@ export default function OrdersAdmin() {
                     </Stack>
                   ))}
                   {order.payments.flatMap((p) => p.refunds ?? []).map((r) => (
-                    <Stack key={r.id} direction="row" sx={{ justifyContent: "space-between" }}>
+                    <Stack key={r.id} direction="row" sx={{ justifyContent: "space-between", alignItems: "baseline" }}>
                       <Typography variant="body2" color="error.main">
-                        Refund
+                        Refund{r.reason ? ` · ${r.reason}` : ""}
                       </Typography>
                       <Typography variant="body2" color="error.main">
                         −{formatMoney(Math.round(Number(r.amount) * 100), currency)}
                       </Typography>
                     </Stack>
+                  ))}
+                </>
+              )}
+              {(order.kitchenTickets ?? []).length > 0 && (
+                <>
+                  <Divider />
+                  <Typography variant="subtitle2">Kitchen tickets</Typography>
+                  {order.kitchenTickets!.map((tk) => (
+                    <Paper key={tk.id} variant="outlined" sx={{ p: 1.25 }}>
+                      <Stack spacing={0.5}>
+                        <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                          <Chip size="small" label={tk.station} variant="outlined" />
+                          <Chip
+                            size="small"
+                            label={tk.status.replace(/_/g, " ")}
+                            color={tk.status === "READY" ? "success" : tk.status === "PREPARING" ? "warning" : tk.status === "SERVED" ? "default" : "info"}
+                            variant="outlined"
+                          />
+                          <Box sx={{ flex: 1 }} />
+                          <Typography variant="caption" color="text.secondary">
+                            {new Date(tk.sentAt).toLocaleTimeString()}
+                          </Typography>
+                        </Stack>
+                        {tk.lines.map((tl) => (
+                          <Typography key={tl.id} variant="caption" color="text.secondary">
+                            {tl.quantity}× {tl.itemName} · {tl.status.replace(/_/g, " ")}
+                          </Typography>
+                        ))}
+                      </Stack>
+                    </Paper>
                   ))}
                 </>
               )}
@@ -346,6 +486,11 @@ export default function OrdersAdmin() {
               Reprint
             </Button>
           )}
+          {canRefund && (
+            <Button color="warning" onClick={openRefund} disabled={!order}>
+              Refund
+            </Button>
+          )}
           {cancellable && (
             <Button color="error" onClick={() => setCancelOpen(true)}>
               Cancel order
@@ -372,6 +517,48 @@ export default function OrdersAdmin() {
           <Button onClick={() => setCancelOpen(false)}>{t("common:cancel")}</Button>
           <Button color="error" variant="contained" disabled={cancelReason.trim().length < 2 || cancelMut.isPending} onClick={() => cancelMut.mutate()}>
             {cancelMut.isPending ? <CircularProgress size={18} color="inherit" /> : "Cancel order"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={refundOpen} onClose={() => setRefundOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Refund{order ? ` order #${order.orderNumber}` : ""}</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <Alert severity="info">
+              Refundable balance: {formatMoney(refundableCents, currency)}
+            </Alert>
+            <TextField
+              label={`Amount (${currency})`}
+              type="number"
+              value={refundAmount}
+              onChange={(e) => setRefundAmount(e.target.value)}
+              fullWidth
+              autoFocus
+              error={Number(refundAmount) > 0 && Math.round(Number(refundAmount) * 100) > refundableCents}
+              helperText={Number(refundAmount) > 0 && Math.round(Number(refundAmount) * 100) > refundableCents ? "Exceeds refundable balance" : " "}
+            />
+            <TextField label="Reason" value={refundReason} onChange={(e) => setRefundReason(e.target.value)} fullWidth multiline minRows={2} />
+            <TextField
+              label="Manager PIN"
+              value={refundPin}
+              onChange={(e) => setRefundPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              fullWidth
+              slotProps={{ htmlInput: { inputMode: "numeric", maxLength: 6 } }}
+              helperText="A manager or owner other than you must approve"
+            />
+            <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+              <input id="refund-restock" type="checkbox" checked={refundRestock} onChange={(e) => setRefundRestock(e.target.checked)} />
+              <Typography component="label" htmlFor="refund-restock" variant="body2">
+                Restock refunded items to inventory
+              </Typography>
+            </Stack>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRefundOpen(false)}>{t("common:cancel")}</Button>
+          <Button color="warning" variant="contained" disabled={!refundValid || refundMut.isPending} onClick={() => refundMut.mutate()}>
+            {refundMut.isPending ? <CircularProgress size={18} color="inherit" /> : `Refund ${refundAmount ? formatMoney(Math.round(Number(refundAmount) * 100), currency) : ""}`}
           </Button>
         </DialogActions>
       </Dialog>

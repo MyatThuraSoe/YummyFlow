@@ -196,6 +196,11 @@ async function main() {
     assert.equal(x1.data.report.safeDrops, 1000);
     assert.equal(x1.data.report.paidOut, 0);
     ok("cash movements (PAID_IN / SAFE_DROP) reconcile in the X-report");
+    const movList = await api<{ movements: { id: string; type: string; direction: string }[] }>(`/shifts/${shiftId}/movements`, { token: cashier.token });
+    assert.equal(movList.status, 200, JSON.stringify(movList.data));
+    assert.ok(movList.data.movements.some((m) => m.id === paidIn.data.movement.id && m.direction === "IN"));
+    assert.ok(movList.data.movements.some((m) => m.id === safeDrop.data.movement.id && m.direction === "OUT"));
+    ok("shift movements list is available for the shift report");
     await prisma.cashMovement.delete({ where: { id: paidIn.data.movement.id } });
     await prisma.cashMovement.delete({ where: { id: safeDrop.data.movement.id } });
 
