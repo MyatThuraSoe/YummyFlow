@@ -24,6 +24,7 @@ interface ZReport {
   expenses: { total: number }; closed: { id: string; variance: number } | null;
 }
 interface Movement { id: string; type: string; direction: string; amount: string; reason: string | null; createdAt: string }
+interface DayClose { id: string; businessDate: string; closedAt: string; expectedCash: string; actualCash: string; variance: string; notes: string | null }
 
 const today = () => new Date().toISOString().slice(0, 10);
 const signed = (cents: number, currency: string) => `${cents > 0 ? "+" : ""}${formatMoney(cents, currency)}`;
@@ -37,6 +38,11 @@ export default function ShiftsAdmin() {
   const tolCents = settings?.restaurant?.cashVarianceTolerance != null ? toCents(settings.restaurant.cashVarianceTolerance) : null;
   const { data: current } = useQuery({ queryKey: ["shift"], queryFn: () => apiGet<Current>("/shifts/current") });
   const { data: shifts } = useQuery({ queryKey: ["shifts"], queryFn: () => apiGet<{ shifts: (Shift & { cashier: { name: string } })[] }>("/shifts") });
+  const { data: dayCloses } = useQuery({
+    queryKey: ["day-closes"],
+    queryFn: () => apiGet<{ closes: DayClose[] }>("/reports/day-closes"),
+    enabled: can("report.z"),
+  });
   const [report, setReport] = useState<ZReport | null>(null);
   const [date, setDate] = useState(today());
   const [openShiftModal, setOpenShiftModal] = useState<{ openingFloat: string } | null>(null);
@@ -60,6 +66,7 @@ export default function ShiftsAdmin() {
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["shift"] });
     qc.invalidateQueries({ queryKey: ["shifts"] });
+    qc.invalidateQueries({ queryKey: ["day-closes"] });
     qc.invalidateQueries({ queryKey: ["dashboard"] });
   };
 
@@ -230,6 +237,36 @@ export default function ShiftsAdmin() {
           </tbody>
         </table>
       </div>
+
+      {can("report.z") && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <h3>Business day closes</h3>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Business date</th><th>Closed at</th>
+                <th style={{ textAlign: "right" }}>Expected</th>
+                <th style={{ textAlign: "right" }}>Actual</th>
+                <th style={{ textAlign: "right" }}>Variance</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(dayCloses?.closes ?? []).map((c) => (
+                <tr key={c.id}>
+                  <td>{new Date(c.businessDate).toLocaleDateString()}</td>
+                  <td className="small muted">{new Date(c.closedAt).toLocaleString()}</td>
+                  <td className="mono" style={{ textAlign: "right" }}>{formatMoney(toCents(c.expectedCash), currency)}</td>
+                  <td className="mono" style={{ textAlign: "right" }}>{formatMoney(toCents(c.actualCash), currency)}</td>
+                  <td style={{ textAlign: "right" }}>{varianceBadge(c.variance)}</td>
+                  <td className="small muted">{c.notes ?? "—"}</td>
+                </tr>
+              ))}
+              {(dayCloses?.closes ?? []).length === 0 && <tr><td colSpan={6} className="muted">No business days closed yet.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {openShiftModal && (
         <Modal

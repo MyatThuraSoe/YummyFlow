@@ -35,7 +35,11 @@ export default function Dashboard() {
     { l: "Low stock items", v: dash?.lowStockCount ?? 0 },
     { l: "Avg ticket", v: formatMoney(r?.avgTicket ?? 0, currency) },
     { l: "Net sales", v: formatMoney(r?.netSales ?? 0, currency) },
+    { l: "Gross sales", v: formatMoney(r?.grossSales ?? 0, currency) },
+    { l: "Discounts", v: formatMoney(r?.discounts ?? 0, currency) },
+    { l: "Tax", v: formatMoney(r?.tax ?? 0, currency) },
     { l: "Refunds", v: formatMoney(r?.refundTotal ?? 0, currency) },
+    { l: "Cancelled orders", v: r?.cancelledOrders ?? 0 },
   ];
 
   return (
