@@ -670,6 +670,49 @@ async function main() {
     assert.equal(close2.data.varianceExceedsTolerance, true);
     ok("variance one cent over tolerance IS flagged");
 
+    // Card-only refunds never touch the drawer (PRD §6.2 exclusion).
+    const open3 = await api<{ shift: { id: string } }>("/shifts/open", { method: "POST", token: cashier.token, body: { openingFloat: 0 } });
+    assert.equal(open3.status, 201, JSON.stringify(open3.data));
+    const cardOrder = await api<{ order: { id: string; total: string } }>("/orders", {
+      method: "POST",
+      token: cashier.token,
+      body: { channel: "TAKEAWAY", items: [{ menuItemId: coke.id, quantity: 1 }] },
+    });
+    assert.equal(cardOrder.status, 201, JSON.stringify(cardOrder.data));
+    const cardTotal = Number(cardOrder.data.order.total);
+    const cardPay = await api("/payments", {
+      method: "POST",
+      token: cashier.token,
+      body: {
+        orderId: cardOrder.data.order.id,
+        shiftId: open3.data.shift.id,
+        idempotencyKey: `var-card-${cardOrder.data.order.id}`,
+        payments: [{ method: "CARD", amount: cardTotal }],
+      },
+    });
+    assert.equal(cardPay.status, 201, JSON.stringify(cardPay.data));
+    const cardRefund = await api("/payments/refund", {
+      method: "POST",
+      token: admin.token,
+      body: { orderId: cardOrder.data.order.id, amount: cardTotal, reason: "card-only verify", managerPin: PIN_OWNER },
+    });
+    assert.equal(cardRefund.status, 200, JSON.stringify(cardRefund.data));
+    const xCard = await api<{ report: { cashSales: number; refundsInWindow: number; expectedCash: number } }>(
+      `/shifts/${open3.data.shift.id}/x-report`,
+      { token: cashier.token },
+    );
+    assert.equal(xCard.data.report.cashSales, 0);
+    assert.equal(xCard.data.report.refundsInWindow, 0);
+    assert.equal(xCard.data.report.expectedCash, 0);
+    ok("card-only refunds are excluded from the cash drawer expectation");
+    const close3 = await api<{ varianceExceedsTolerance: boolean }>(`/shifts/${open3.data.shift.id}/close`, {
+      method: "POST",
+      token: cashier.token,
+      body: { actualCash: 0 },
+    });
+    assert.equal(close3.status, 200, JSON.stringify(close3.data));
+    assert.equal(close3.data.varianceExceedsTolerance, false);
+
     // ── Receipt customization (spec: receipt config, preview, per-order) ──
     const rc = await api<{ success: boolean; data: { config: { paperWidth: number; showTax: boolean; fontSize: string } } }>("/receipts/config", { token: cashier.token });
     assert.equal(rc.status, 200);

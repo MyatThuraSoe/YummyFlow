@@ -6,6 +6,7 @@ import { computeOrderTotals, lineTotalCents, toDb } from "../src/lib/calculation
 import { addDays, businessDateFor, endOfDay, isSameDay, startOfDay } from "../src/lib/businessDay.js";
 import { assertWithinLimit, getFeatures, getLimits } from "../src/lib/license.js";
 import { expectedCash, varianceExceedsTolerance } from "../src/lib/cashVariance.js";
+import { releaseUnique } from "../src/lib/userGuards.js";
 
 // ── money ───────────────────────────────────────────────
 test("toCents rounds to nearest cent without float drift", () => {
@@ -140,4 +141,20 @@ test("variance tolerance boundary: strictly greater fails, equal passes", () => 
   assert.equal(varianceExceedsTolerance(-500, 500), false);
   assert.equal(varianceExceedsTolerance(501, 500), true);
   assert.equal(varianceExceedsTolerance(-501, 500), true);
+});
+
+test("PRD §6.8 worked example: a cross-shift refund drives the drawer expectation negative", () => {
+  const expected = expectedCash({ openingFloat: 0, cashSales: 0, refundsInWindow: 10_000, paidIn: 0, paidOut: 0, safeDrops: 0 });
+  assert.equal(expected, -10_000);
+  assert.equal(0 - expected, 10_000);
+});
+
+// ── user guards (PRD platform §5.3) ─────────────────────
+test("releaseUnique appends a deletion suffix and respects max length", () => {
+  assert.equal(releaseUnique(null, "abcdef123456"), null);
+  assert.equal(releaseUnique("cashier", "abcdef123456"), "cashier#del-abcdef12");
+  const freed = releaseUnique("u".repeat(400), "12345678", 255)!;
+  assert.equal(freed, "u".repeat(242) + "#del-12345678");
+  assert.equal(freed.length, 255);
+  assert.equal(releaseUnique("ab", "12345678", 10), "#del-12345678");
 });
