@@ -12,6 +12,8 @@ import {
   pickOverdueTickets,
   pickReservationReminders,
 } from "../src/services/notifications.service.js";
+import { computeSplitShares } from "../src/services/splitMath.js";
+import { computeLineRefundAmount, planLineRefund, priorRefundedQtyByLine } from "../src/services/refundMath.js";
 
 // ── money ───────────────────────────────────────────────
 test("toCents rounds to nearest cent without float drift", () => {
@@ -209,4 +211,92 @@ test("pickReservationReminders fires once inside the 15 minute window", () => {
 
   const boundary = pickReservationReminders(now, [res("edge", 15)], new Set());
   assert.deepEqual(boundary.map((n) => n.reservationId), ["edge"]);
+});
+
+// ── split bill math (Phase 3) ───────────────────────────────
+test("computeSplitShares distributes discount, service and tax proportionally", () => {
+  const shares = computeSplitShares(
+    { subtotal: 3000, discountAmount: 300, serviceCharge: 150, taxAmount: 315 },
+    [1000, 2000],
+  );
+  assert.deepEqual(shares, [
+    { subtotal: 1000, discount: 100, serviceCharge: 50, tax: 105, total: 1055 },
+    { subtotal: 2000, discount: 200, serviceCharge: 100, tax: 210, total: 2110 },
+  ]);
+  assert.equal(
+    shares.reduce((s, sh) => s + sh.total, 0),
+    3000 - 300 + 150 + 315,
+    "shares must reconcile to the order total",
+  );
+});
+
+test("computeSplitShares assigns rounding remainder to the largest group", () => {
+  const shares = computeSplitShares(
+    { subtotal: 1000, discountAmount: 0, serviceCharge: 0, taxAmount: 100 },
+    [333, 333, 334],
+  );
+  assert.equal(shares.reduce((s, sh) => s + sh.tax, 0), 100);
+  assert.deepEqual(shares.map((sh) => sh.tax), [33, 33, 34], "largest group absorbs the drift");
+});
+
+test("computeSplitShares handles zero base and zero amounts", () => {
+  const zeroBase = computeSplitShares({ subtotal: 0, discountAmount: 100, serviceCharge: 50, taxAmount: 25 }, [0, 0]);
+  assert.deepEqual(zeroBase.map((sh) => sh.total), [0, 0]);
+  const zeroAmounts = computeSplitShares({ subtotal: 1000, discountAmount: 0, serviceCharge: 0, taxAmount: 0 }, [400, 600]);
+  assert.deepEqual(zeroAmounts.map((sh) => sh.discount), [0, 0]);
+});
+
+// ── line-level refund math (Phase 3) ────────────────────────
+test("computeLineRefundAmount prorates per unit and is exact for the full line", () => {
+  assert.equal(computeLineRefundAmount(1000, 3, 1), 333);
+  assert.equal(computeLineRefundAmount(1000, 3, 2), 667);
+  assert.equal(computeLineRefundAmount(1000, 3, 3), 1000);
+  assert.equal(computeLineRefundAmount(1000, 3, 0), 0);
+  assert.equal(computeLineRefundAmount(1000, 0, 1), 0);
+});
+
+test("priorRefundedQtyByLine merges snapshots and ignores malformed entries", () => {
+  const map = priorRefundedQtyByLine([
+    { lineId: "a", quantity: 1, amountCents: 100 },
+    { lineId: "a", quantity: 2, amountCents: 200 },
+    { lineId: "b", quantity: 1, amountCents: 50 },
+    null,
+    "junk",
+    { lineId: 7, quantity: 1 },
+    { lineId: "c", quantity: Number.NaN },
+    {},
+  ]);
+  assert.equal(map.get("a"), 3);
+  assert.equal(map.get("b"), 1);
+  assert.equal(map.has("c"), false);
+  assert.equal(priorRefundedQtyByLine(null).size, 0);
+});
+
+test("planLineRefund validates remaining quantities and totals each line", () => {
+  const lines = [
+    { id: "a", quantity: 3, lineTotalCents: 1000 },
+    { id: "b", quantity: 1, lineTotalCents: 500 },
+  ];
+  const plan = planLineRefund(lines, new Map([["a", 1]]), [
+    { lineId: "a", quantity: 2 },
+    { lineId: "b", quantity: 1 },
+  ]);
+  assert.equal(plan.ok, true);
+  if (plan.ok) {
+    assert.deepEqual(plan.snapshot, [
+      { lineId: "a", quantity: 2, amountCents: 667 },
+      { lineId: "b", quantity: 1, amountCents: 500 },
+    ]);
+    assert.equal(plan.amountCents, 1167);
+  }
+});
+
+test("planLineRefund rejects unknown lines and over-refunds", () => {
+  const lines = [{ id: "a", quantity: 2, lineTotalCents: 1000 }];
+  const unknown = planLineRefund(lines, new Map(), [{ lineId: "zz", quantity: 1 }]);
+  assert.equal(unknown.ok, false);
+  const over = planLineRefund(lines, new Map(), [{ lineId: "a", quantity: 3 }]);
+  assert.equal(over.ok, false);
+  const exhausted = planLineRefund(lines, new Map([["a", 2]]), [{ lineId: "a", quantity: 1 }]);
+  assert.equal(exhausted.ok, false, "a fully refunded line cannot be refunded again");
 });

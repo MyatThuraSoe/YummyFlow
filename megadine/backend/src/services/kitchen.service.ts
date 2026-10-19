@@ -2,6 +2,7 @@ import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
 import { audit } from "../lib/audit.js";
 import { EVENTS, emitToRole, emitToWorkspace } from "../lib/socket.js";
+import { consumeForOrder } from "./inventory.service.js";
 import type { KitchenItemStatus, Station } from "@prisma/client";
 
 const NEXT: Record<KitchenItemStatus, KitchenItemStatus | null> = {
@@ -72,18 +73,25 @@ export async function updateTicketStatus(
   const allServed = active.length > 0 && active.every((t) => t.status === "SERVED");
   const justBecameReady = allReady && !["READY", "SERVED"].includes(ticket.order.status);
   if (allReady && rollable) {
-    await prisma.order.update({
-      where: { id: ticket.orderId },
-      data: allServed
-        ? { status: "SERVED", servedAt: now }
-        : { status: "READY" },
-    });
-    if (justBecameReady && !allServed) {
-      emitToWorkspace(EVENTS.ORDER_ALL_READY, {
-        orderId: ticket.orderId,
-        orderNumber: ticket.order.orderNumber,
-        tableId: ticket.order.tableId,
+    if (allServed) {
+      // Kitchen confirmed everything reached the table: mark the order served
+      // and deduct recipe ingredients exactly once.
+      await prisma.$transaction(async (tx) => {
+        await tx.order.update({
+          where: { id: ticket.orderId },
+          data: { status: "SERVED", servedAt: now },
+        });
+        await consumeForOrder(tx, ticket.orderId);
       });
+    } else {
+      await prisma.order.update({ where: { id: ticket.orderId }, data: { status: "READY" } });
+      if (justBecameReady) {
+        emitToWorkspace(EVENTS.ORDER_ALL_READY, {
+          orderId: ticket.orderId,
+          orderNumber: ticket.order.orderNumber,
+          tableId: ticket.order.tableId,
+        });
+      }
     }
   } else if (siblings.some((t) => t.status === "PREPARING") && rollable) {
     await prisma.order.update({ where: { id: ticket.orderId }, data: { status: "IN_PROGRESS" } });

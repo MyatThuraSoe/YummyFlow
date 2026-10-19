@@ -255,9 +255,15 @@ export default function DashboardLayout() {
       qc.invalidateQueries({ queryKey: ["reservations"] });
       qc.invalidateQueries({ queryKey: ["tables"] });
     };
+    const onInventoryLow = (p: { name: string; stock: number; unit: string }) => {
+      push(t("ops:inv_low_toast", { name: p.name, stock: Number(p.stock).toFixed(2), unit: p.unit }), "error");
+      qc.invalidateQueries({ queryKey: ["ingredients"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    };
     s.on(EVENTS.ORDER_ALL_READY, onAllReady);
     s.on(EVENTS.KITCHEN_OVERDUE, onOverdue);
     s.on(EVENTS.RESERVATION_REMINDER, onReminder);
+    s.on(EVENTS.INVENTORY_LOW, onInventoryLow);
     const onConnect = () => setSocketUp(true);
     const onDisconnect = () => setSocketUp(false);
     s.on("connect", onConnect);
@@ -269,6 +275,7 @@ export default function DashboardLayout() {
       s.off(EVENTS.ORDER_ALL_READY, onAllReady);
       s.off(EVENTS.KITCHEN_OVERDUE, onOverdue);
       s.off(EVENTS.RESERVATION_REMINDER, onReminder);
+      s.off(EVENTS.INVENTORY_LOW, onInventoryLow);
       s.off("connect", onConnect);
       s.off("disconnect", onDisconnect);
     };

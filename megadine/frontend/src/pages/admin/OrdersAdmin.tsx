@@ -49,6 +49,7 @@ interface Refund {
   amount: string;
   reason?: string | null;
   createdAt?: string;
+  refundedLines?: { lineId: string; quantity: number; amountCents: number }[] | null;
 }
 
 interface Payment {
@@ -378,7 +379,13 @@ export default function OrdersAdmin() {
               </Typography>
               {order.cancelReason && <Alert severity="error">{t("admin:ord_cancel_reason_alert", { reason: order.cancelReason })}</Alert>}
               <Divider />
-              {order.lines.map((l) => (
+              {order.lines.map((l) => {
+                const refundedQty = order.payments
+                  .flatMap((p) => p.refunds ?? [])
+                  .flatMap((r) => r.refundedLines ?? [])
+                  .filter((e) => e.lineId === l.id)
+                  .reduce((s, e) => s + e.quantity, 0);
+                return (
                 <Stack key={l.id} direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
                   <Typography variant="body2" sx={{ fontWeight: 700, minWidth: 28 }}>
                     {l.quantity}×
@@ -400,11 +407,15 @@ export default function OrdersAdmin() {
                     )}
                   </Stack>
                   {l.isVoided && <Chip size="small" label={t("admin:ord_void_chip")} color="error" variant="outlined" />}
+                  {refundedQty > 0 && (
+                    <Chip size="small" label={t("admin:ord_refunded_chip", { qty: refundedQty })} color="warning" variant="outlined" />
+                  )}
                   <Typography variant="body2" sx={{ textDecoration: l.isVoided ? "line-through" : "none", opacity: l.isVoided ? 0.6 : 1 }}>
                     {formatMoney(toCents(l.lineTotal), currency)}
                   </Typography>
                 </Stack>
-              ))}
+                );
+              })}
               <Divider />
               <Stack spacing={0.5}>
                 <SummaryRow label={t("admin:col_subtotal")} value={formatMoney(toCents(order.subtotal), currency)} />

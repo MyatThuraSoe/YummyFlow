@@ -153,9 +153,31 @@ export async function wastageReport(restaurantId: string, range: Range) {
     unit: m.ingredient.stockUnit,
     cost: Math.abs(Number(m.quantity)) * Number(m.unitCost ?? m.ingredient.costPerUnit),
     reason: m.reason,
+    note: m.note,
     at: m.createdAt,
   }));
-  return { rows, totalCost: rows.reduce((s, r) => s + r.cost, 0) };
+
+  const byReasonMap = new Map<string, { reason: string; quantity: number; cost: number }>();
+  for (const r of rows) {
+    const key = r.reason ?? "unspecified";
+    const entry = byReasonMap.get(key) ?? { reason: key, quantity: 0, cost: 0 };
+    entry.quantity += r.quantity;
+    entry.cost += r.cost;
+    byReasonMap.set(key, entry);
+  }
+
+  const byDayMap = new Map<string, number>();
+  for (const r of rows) {
+    const key = `${r.at.getFullYear()}-${String(r.at.getMonth() + 1).padStart(2, "0")}-${String(r.at.getDate()).padStart(2, "0")}`;
+    byDayMap.set(key, (byDayMap.get(key) ?? 0) + r.cost);
+  }
+
+  return {
+    rows,
+    totalCost: rows.reduce((s, r) => s + r.cost, 0),
+    byReason: [...byReasonMap.values()].sort((a, b) => b.cost - a.cost),
+    byDay: [...byDayMap.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, cost]) => ({ date, cost })),
+  };
 }
 
 export async function dashboard(restaurantId: string) {
@@ -171,16 +193,18 @@ export async function dashboard(restaurantId: string) {
       _count: true,
     }),
     prisma.cashShift.count({ where: { restaurantId, status: "OPEN" } }),
-    prisma.ingredient.count({
-      where: { restaurantId, isActive: true, reorderLevel: { not: null }, currentStock: { lte: 0 } },
+    prisma.ingredient.findMany({
+      where: { restaurantId, isActive: true, reorderLevel: { not: null } },
+      select: { currentStock: true, reorderLevel: true },
     }),
     prisma.order.count({ where: { restaurantId, status: { in: ["DRAFT", "SENT_TO_KITCHEN", "IN_PROGRESS", "READY"] } } }),
   ]);
+  const lowStockCount = lowStock.filter((i) => Number(i.currentStock) <= Number(i.reorderLevel)).length;
   return {
     todaySales: toCents(_sum.total ?? 0),
     todayOrders: _count,
     openShifts,
-    lowStockCount: lowStock,
+    lowStockCount,
     activeOrders,
   };
 }

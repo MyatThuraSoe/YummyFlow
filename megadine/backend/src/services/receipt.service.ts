@@ -309,6 +309,46 @@ export async function printOrderReceipt(orderId: string): Promise<{ result: Prin
   return { result, order, text };
 }
 
+/** Per-person receipt for a bill split (Phase 3): only that person's items and amounts. */
+export async function receiptTextForSplit(orderId: string, splitId: string) {
+  const split = await prisma.orderSplit.findUnique({ where: { id: splitId } });
+  if (!split || split.orderId !== orderId) throw ApiError.notFound("Split not found");
+  const order = await prisma.order.findUnique({ where: { id: orderId }, include: orderInclude });
+  if (!order) throw ApiError.notFound("Order not found");
+
+  const configRow = await ensureReceiptConfig(order.restaurantId);
+  const base = await dataForOrder(order, configShapeFromRow(configRow), true);
+  const splitLines = order.lines.filter((l) => !l.isVoided && split.lineIds.includes(l.id));
+
+  const data: ReceiptData = {
+    ...base,
+    lines: splitLines.map((l) => ({
+      name: l.itemNameSnapshot,
+      quantity: l.quantity,
+      unitPrice: toCents(l.unitPriceSnapshot),
+      lineTotal: toCents(l.lineTotal),
+      modifiers: l.modifiers.map((m) => ({ name: m.nameSnapshot, price: toCents(m.priceSnapshot) })),
+      notes: l.notes,
+    })),
+    subtotal: toCents(split.subtotal),
+    serviceCharge: toCents(split.serviceCharge),
+    taxAmount: toCents(split.tax),
+    discountAmount: toCents(split.discount),
+    total: toCents(split.total),
+    amountPaid: split.paid ? toCents(split.total) : 0,
+    changeGiven: 0,
+    paymentMethod: split.paid ? "Split" : null,
+    splitLabel: split.personName,
+  };
+  return { text: renderReceiptText(data), order, split };
+}
+
+export async function printSplitReceipt(orderId: string, splitId: string) {
+  const { text, order } = await receiptTextForSplit(orderId, splitId);
+  const result = await sendToPrinter(env.RECEIPT_PRINTER_IP || null, text);
+  return { result, order, text };
+}
+
 /**
  * Fire-and-forget receipt print after a completed payment (spec §6.5).
  * Failures are logged and audited but never surface to the cashier.

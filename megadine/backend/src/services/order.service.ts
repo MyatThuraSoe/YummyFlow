@@ -8,6 +8,7 @@ import { verifyManagerPin } from "../lib/approval.js";
 import { EVENTS, emitToWorkspace, emitToRole } from "../lib/socket.js";
 import { sendToPrinter, buildKitchenTicketText } from "../lib/printers.js";
 import { env } from "../lib/env.js";
+import { consumeForOrder } from "./inventory.service.js";
 import type { OrderChannel, OrderPriority, Prisma, Station } from "@prisma/client";
 
 export interface NewLineInput {
@@ -476,6 +477,7 @@ export async function markOrderServed(orderId: string, actorId: string) {
         data: { servedAt: now },
       });
     }
+    await consumeForOrder(tx, orderId);
     return o;
   });
 
@@ -546,6 +548,7 @@ export async function serveOrderLines(
           data: { servedAt: now },
         });
       }
+      await consumeForOrder(tx, orderId);
     }
     return { order: o, becameServed };
   });

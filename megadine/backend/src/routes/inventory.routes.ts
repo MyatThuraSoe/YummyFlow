@@ -5,7 +5,7 @@ import { ApiError, asyncHandler } from "../lib/errors.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/requirePermission.js";
 import { validate } from "../middleware/validate.js";
-import { adjustStock } from "../services/inventory.service.js";
+import { adjustStock, recordWastage, WASTAGE_REASONS } from "../services/inventory.service.js";
 
 export const inventoryRouter = Router();
 inventoryRouter.use(requireAuth);
@@ -96,6 +96,31 @@ inventoryRouter.post(
       actorId: req.auth!.userId,
     });
     res.json({ ingredient });
+  }),
+);
+
+const wastageSchema = z.object({
+  ingredientId: z.string().uuid(),
+  quantity: z.number().positive().max(100000),
+  reason: z.enum(WASTAGE_REASONS),
+  note: z.string().max(200).optional(),
+});
+
+inventoryRouter.post(
+  "/wastage",
+  requirePermission("inventory.manage"),
+  validate({ body: wastageSchema }),
+  asyncHandler(async (req, res) => {
+    const b = req.body as z.infer<typeof wastageSchema>;
+    const result = await recordWastage({
+      restaurantId: req.auth!.restaurantId,
+      ingredientId: b.ingredientId,
+      quantity: b.quantity,
+      reason: b.reason,
+      note: b.note,
+      actorId: req.auth!.userId,
+    });
+    res.status(201).json(result);
   }),
 );
 

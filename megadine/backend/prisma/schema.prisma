@@ -440,6 +440,8 @@ model Order {
   servedAt       DateTime?
   servedBy       String?
   completedAt    DateTime?
+  // Set (once) when recipe ingredients were deducted for this order.
+  inventoryConsumedAt DateTime?
   cancelledAt    DateTime?
   cancelReason   String?
 
@@ -447,6 +449,7 @@ model Order {
   payments       Payment[]
   kitchenTickets KitchenTicket[]
   tableSession   TableSession?
+  splits         OrderSplit[]
 
   @@unique([restaurantId, orderNumber])
   @@index([restaurantId, businessDate])
@@ -523,7 +526,30 @@ model Refund {
   reason     String
   approvedBy String?
   restockItems Boolean @default(false)
+  // Line-level refund snapshot: [{ lineId, quantity, amountCents }]
+  refundedLines Json?
   createdAt  DateTime @default(now())
+
+  @@index([orderId])
+}
+
+// Per-person bill splits (Phase 3). Whole order lines are assigned to people;
+// amounts are snapshotted when the split set is saved.
+model OrderSplit {
+  id            String   @id @default(uuid())
+  orderId       String
+  order         Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  personName    String
+  lineIds       String[]
+  subtotal      Decimal  @db.Decimal(12, 2)
+  discount      Decimal  @db.Decimal(12, 2) @default(0)
+  serviceCharge Decimal  @db.Decimal(12, 2) @default(0)
+  tax           Decimal  @db.Decimal(12, 2) @default(0)
+  total         Decimal  @db.Decimal(12, 2)
+  paid          Boolean  @default(false)
+  paidAt        DateTime?
+  paymentId     String?
+  createdAt     DateTime @default(now())
 
   @@index([orderId])
 }
@@ -661,7 +687,8 @@ model StockMovement {
   quantity     Decimal           @db.Decimal(12, 4) // positive = in, negative = out
   unitCost     Decimal?          @db.Decimal(10, 4)
   reference    String?
-  reason       String?
+  reason       String? // reason code for wastage (burned, dropped, ...) or free text
+  note         String? // optional free-text detail
   actorId      String
   createdAt    DateTime          @default(now())
 

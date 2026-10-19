@@ -9,8 +9,15 @@ interface Movement { id: string; type: string; quantity: string; reason: string 
 interface MenuItemLite { id: string; name: string }
 interface MenuCat { id: string; name: string; items: MenuItemLite[] }
 interface RecipeLine { id: string; quantity: string; ingredient: { id: string; name: string; stockUnit: string; costPerUnit: string } }
+interface WastageReport {
+  rows: { ingredientName: string; quantity: number; unit: string; cost: number; reason: string | null; note: string | null; at: string }[];
+  totalCost: number;
+  byReason: { reason: string; quantity: number; cost: number }[];
+  byDay: { date: string; cost: number }[];
+}
 
 const ADJ_TYPES = ["PURCHASE_RECEIPT", "WASTAGE", "STOCKTAKE_ADJUSTMENT", "RETURN"];
+export const WASTAGE_REASONS = ["burned", "dropped", "expired", "over-prepared", "other"];
 
 export default function InventoryAdmin() {
   const qc = useQueryClient();
@@ -19,14 +26,24 @@ export default function InventoryAdmin() {
   const typeLabel = (s: string) => t(`admin:mt_${s.toLowerCase()}`, { defaultValue: s.replace(/_/g, " ") });
   const { data } = useQuery({ queryKey: ["ingredients"], queryFn: () => apiGet<{ ingredients: Ingredient[] }>("/inventory/ingredients") });
   const { data: movements } = useQuery({ queryKey: ["movements"], queryFn: () => apiGet<{ movements: Movement[] }>("/inventory/movements", { limit: 50 }) });
+  const { data: wastage } = useQuery({
+    queryKey: ["wastage-report"],
+    queryFn: () => {
+      const to = new Date();
+      const from = new Date(to.getTime() - 6 * 24 * 60 * 60 * 1000);
+      return apiGet<WastageReport>("/reports/wastage", { from: from.toISOString(), to: to.toISOString() });
+    },
+  });
   const [adjust, setAdjust] = useState<Ingredient | null>(null);
   const [open, setOpen] = useState(false);
   const [showRecipe, setShowRecipe] = useState(false);
+  const [showWastage, setShowWastage] = useState(false);
   const [form, setForm] = useState({ name: "", stockUnit: "unit", currentStock: "0", reorderLevel: "", costPerUnit: "0" });
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["ingredients"] });
     qc.invalidateQueries({ queryKey: ["movements"] });
+    qc.invalidateQueries({ queryKey: ["wastage-report"] });
   };
 
   const create = useMutation({
@@ -47,6 +64,7 @@ export default function InventoryAdmin() {
       <div className="row" style={{ marginBottom: 14 }}>
         <button className="btn primary" onClick={() => setOpen(true)}>{t("admin:inv_add")}</button>
         <button className="btn" onClick={() => setShowRecipe(true)}>{t("admin:inv_recipe_editor")}</button>
+        <button className="btn" onClick={() => setShowWastage(true)}>{t("admin:inv_record_wastage")}</button>
       </div>
 
       <div className="grid cols-2">
@@ -113,9 +131,103 @@ export default function InventoryAdmin() {
         </Modal>
       )}
 
+      <div className="card" style={{ marginTop: 14 }}>
+        <div className="row">
+          <h3 style={{ flex: 1 }}>{t("admin:inv_wastage_report")}</h3>
+          <span className="badge danger">{t("admin:inv_wastage_total")}: {Number(wastage?.totalCost ?? 0).toFixed(2)}</span>
+        </div>
+        {wastage && wastage.byReason.length > 0 ? (
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>{t("admin:inv_wastage_reason_col")}</th>
+                <th style={{ textAlign: "right" }}>{t("admin:inv_wastage_qty_col")}</th>
+                <th style={{ textAlign: "right" }}>{t("admin:inv_wastage_cost_col")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {wastage.byReason.map((r) => (
+                <tr key={r.reason}>
+                  <td>{t(`admin:waste_${r.reason.replace(/-/g, "_")}`, { defaultValue: r.reason })}</td>
+                  <td className="mono" style={{ textAlign: "right" }}>{r.quantity.toFixed(2)}</td>
+                  <td className="mono" style={{ textAlign: "right" }}>{r.cost.toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p className="muted small">{t("admin:inv_wastage_none")}</p>
+        )}
+      </div>
+
       {adjust && <AdjustModal ingredient={adjust} onClose={() => setAdjust(null)} onDone={() => { setAdjust(null); invalidate(); }} />}
       {showRecipe && <RecipeModal ingredients={data?.ingredients ?? []} onClose={() => setShowRecipe(false)} />}
+      {showWastage && (
+        <WastageModal
+          ingredients={data?.ingredients ?? []}
+          onClose={() => setShowWastage(false)}
+          onDone={() => { setShowWastage(false); invalidate(); }}
+        />
+      )}
     </div>
+  );
+}
+
+function WastageModal({ ingredients, onClose, onDone }: { ingredients: Ingredient[]; onClose: () => void; onDone: () => void }) {
+  const { push } = useToast();
+  const { t } = useTranslation(["admin", "common"]);
+  const [ingredientId, setIngredientId] = useState("");
+  const [quantity, setQuantity] = useState("");
+  const [reason, setReason] = useState("burned");
+  const [note, setNote] = useState("");
+
+  const mut = useMutation({
+    mutationFn: () => apiPost("/inventory/wastage", { ingredientId, quantity: Number(quantity), reason, note: note || undefined }),
+    onSuccess: () => { push(t("admin:inv_wastage_saved"), "ok"); onDone(); },
+    onError: (e) => push(e instanceof Error ? e.message : t("admin:tba_failed"), "error"),
+  });
+
+  const selected = ingredients.find((i) => i.id === ingredientId);
+  const reasonLabel = (r: string) => t(`admin:waste_${r.replace(/-/g, "_")}`, { defaultValue: r });
+
+  return (
+    <Modal
+      title={t("admin:inv_wastage_title")}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn ghost" onClick={onClose}>{t("common:cancel")}</button>
+          <button className="btn danger" disabled={!ingredientId || !(Number(quantity) > 0) || mut.isPending} onClick={() => mut.mutate()}>
+            {mut.isPending ? "…" : t("admin:inv_wastage_save")}
+          </button>
+        </>
+      }
+    >
+      <Field label={t("admin:inv_wastage_ingredient")}>
+        <select className="input" value={ingredientId} onChange={(e) => setIngredientId(e.target.value)}>
+          <option value="">{t("admin:inv_wastage_pick_ingredient")}</option>
+          {ingredients.map((i) => (
+            <option key={i.id} value={i.id}>{i.name} ({Number(i.currentStock).toFixed(2)} {i.stockUnit})</option>
+          ))}
+        </select>
+      </Field>
+      <Field label={t("admin:inv_wastage_quantity")}>
+        <input className="input" type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} min="0" />
+      </Field>
+      <Field label={t("admin:inv_wastage_reason")}>
+        <select className="input" value={reason} onChange={(e) => setReason(e.target.value)}>
+          {WASTAGE_REASONS.map((r) => <option key={r} value={r}>{reasonLabel(r)}</option>)}
+        </select>
+      </Field>
+      <Field label={t("admin:inv_wastage_notes")}>
+        <input className="input" value={note} onChange={(e) => setNote(e.target.value)} maxLength={200} />
+      </Field>
+      {selected && Number(quantity) > 0 && (
+        <p className="muted small">
+          {t("admin:inv_wastage_cost_hint", { amount: (Number(quantity) * Number(selected.costPerUnit)).toFixed(2) })}
+        </p>
+      )}
+    </Modal>
   );
 }
 
