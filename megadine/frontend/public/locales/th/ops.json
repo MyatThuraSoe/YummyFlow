@@ -233,5 +233,18 @@
   "split_offline": "การชำระบิลแยกต้องมีการเชื่อมต่ออินเทอร์เน็ต",
   "refund_select_hint": "เลือกรายการที่ต้องการคืนเงิน หรือกรอกจำนวนเงินด้านล่าง",
   "refund_line_refunded": "คืนเงินแล้ว {{qty}}/{{total}}",
-  "inv_low_toast": "สต็อกต่ำ: {{name}} — เหลือ {{stock}} {{unit}}"
+  "inv_low_toast": "สต็อกต่ำ: {{name}} — เหลือ {{stock}} {{unit}}",
+  "pos_search_ph": "ค้นหาเมนูหรือสแกนบาร์โค้ด…",
+  "pos_search_none": "ไม่พบรายการที่ตรงกับ “{{query}}”",
+  "pos_search_added": "เพิ่ม {{name}} แล้ว",
+  "pos_cart_hide": "ย่อตะกร้า",
+  "pos_cart_show": "ขยายตะกร้า",
+  "kds_merge": "รวมตั๋ว",
+  "kds_merge_badge": "{{count}} สถานี",
+  "floor_timeline_title": "กิจกรรมล่าสุด",
+  "floor_timeline_empty": "ยังไม่มีบันทึกเซสชัน",
+  "floor_timeline_no_order": "เซสชันวอล์กอิน",
+  "floor_timeline_open": "เปิดอยู่",
+  "floor_timeline_closed": "ปิดแล้ว",
+  "floor_timeline_items": "{{count}} รายการ"
 }

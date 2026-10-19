@@ -51,6 +51,52 @@ tablesRouter.get(
   }),
 );
 
+/** Recent sessions with their orders — powers the floor timeline (Phase 4). */
+tablesRouter.get(
+  "/:id/sessions",
+  asyncHandler(async (req, res) => {
+    const table = await prisma.restaurantTable.findFirst({
+      where: { id: String(req.params.id), restaurantId: req.auth!.restaurantId },
+      select: { id: true },
+    });
+    if (!table) throw ApiError.notFound("Table not found");
+    const sessions = await prisma.tableSession.findMany({
+      where: { tableId: table.id },
+      orderBy: { openedAt: "desc" },
+      take: 8,
+      include: {
+        order: {
+          select: {
+            id: true,
+            orderNumber: true,
+            status: true,
+            total: true,
+            lines: { where: { isVoided: false }, select: { quantity: true } },
+          },
+        },
+      },
+    });
+    res.json({
+      sessions: sessions.map((s) => ({
+        id: s.id,
+        openedAt: s.openedAt,
+        closedAt: s.closedAt,
+        clearedAt: s.clearedAt,
+        status: s.status,
+        order: s.order
+          ? {
+              id: s.order.id,
+              orderNumber: s.order.orderNumber,
+              status: s.order.status,
+              total: s.order.total,
+              itemCount: s.order.lines.reduce((sum, l) => sum + l.quantity, 0),
+            }
+          : null,
+      })),
+    });
+  }),
+);
+
 const createSchema = z.object({
   number: z.number().int().min(1),
   name: z.string().max(40).optional().nullable(),

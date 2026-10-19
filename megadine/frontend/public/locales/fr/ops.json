@@ -233,5 +233,18 @@
   "split_offline": "Le paiement partagé nécessite une connexion",
   "refund_select_hint": "Sélectionnez les articles à rembourser, ou saisissez un montant ci-dessous",
   "refund_line_refunded": "remboursé {{qty}}/{{total}}",
-  "inv_low_toast": "Stock faible : {{name}} — {{stock}} {{unit}} restant"
+  "inv_low_toast": "Stock faible : {{name}} — {{stock}} {{unit}} restant",
+  "pos_search_ph": "Rechercher un plat ou scanner un code-barres…",
+  "pos_search_none": "Aucun article pour « {{query}} »",
+  "pos_search_added": "{{name}} ajouté",
+  "pos_cart_hide": "Réduire le panier",
+  "pos_cart_show": "Développer le panier",
+  "kds_merge": "Fusionner les tickets",
+  "kds_merge_badge": "{{count}} postes",
+  "floor_timeline_title": "Activité récente",
+  "floor_timeline_empty": "Aucune session enregistrée",
+  "floor_timeline_no_order": "Session sans compte",
+  "floor_timeline_open": "Ouverte",
+  "floor_timeline_closed": "Fermée",
+  "floor_timeline_items": "{{count}} articles"
 }

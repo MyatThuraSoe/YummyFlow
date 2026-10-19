@@ -233,5 +233,18 @@
   "split_offline": "ဘေလ်ခွဲပေးချေမှုအတွက် အင်တာနက် လိုအပ်ပါသည်",
   "refund_select_hint": "ပြန်အမ်းလိုသော ပစ္စည်းများကို ရွေးပါ၊ သို့မဟုတ် အောက်တွင် ပမာဏ ရိုက်ထည့်ပါ",
   "refund_line_refunded": "ပြန်အမ်းပြီး {{qty}}/{{total}}",
-  "inv_low_toast": "လက်ကျန်နည်း: {{name}} — {{stock}} {{unit}} ကျန်"
+  "inv_low_toast": "လက်ကျန်နည်း: {{name}} — {{stock}} {{unit}} ကျန်",
+  "pos_search_ph": "မီနူး ရှာရန် သို့မဟုတ် ဘားကုဒ် စကန်ဖတ်ပါ…",
+  "pos_search_none": "“{{query}}” နှင့် ကိုက်ညီသော အစားအစာ မရှိပါ",
+  "pos_search_added": "{{name}} ထည့်ပြီးပါပြီ",
+  "pos_cart_hide": "စျေးခြင်းကို ခေါက်သိမ်းရန်",
+  "pos_cart_show": "စျေးခြင်းကို ဖွင့်ရန်",
+  "kds_merge": "လက်မှတ်များ ပေါင်းရန်",
+  "kds_merge_badge": "{{count}} ဌာန",
+  "floor_timeline_title": "မကြာသေးမီ လုပ်ဆောင်ချက်များ",
+  "floor_timeline_empty": "မှတ်တမ်း မရှိသေးပါ",
+  "floor_timeline_no_order": "ဧည့်သည် တိုက်ရိုက်လာပွဲ",
+  "floor_timeline_open": "ဖွင့်ထားသည်",
+  "floor_timeline_closed": "ပိတ်ပြီး",
+  "floor_timeline_items": "ပစ္စည်း {{count}} ခု"
 }

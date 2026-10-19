@@ -49,6 +49,8 @@ export default function Pos() {
   const [notes, setNotes] = useState("");
   const [pickupName, setPickupName] = useState("");
   const [receipt, setReceipt] = useState<{ orderId: string; orderNumber: number; preview: string; changeGiven: string | null } | null>(null);
+  const [search, setSearch] = useState("");
+  const [cartCollapsed, setCartCollapsed] = useState(() => localStorage.getItem("pos_cart_collapsed") === "1");
 
   const { data: menu } = useQuery({ queryKey: ["menu"], queryFn: () => apiGet<{ categories: Category[] }>("/menu") });
   const { data: tables } = useQuery({ queryKey: ["tables"], queryFn: () => apiGet<{ tables: TableRow[] }>("/tables") });
@@ -63,6 +65,10 @@ export default function Pos() {
   };
   const categories = menu?.categories ?? [];
   const current = categories.find((c) => c.id === activeCat) ?? categories[0];
+  const searchTerm = search.trim().toLowerCase();
+  const searchResults = searchTerm ? categories.flatMap((c) => c.items).filter((i) => i.name.toLowerCase().includes(searchTerm)) : null;
+  const gridItems = searchResults ?? current?.items ?? [];
+  const cartCount = (order?.lines.filter((l) => !l.isVoided).length ?? 0) + cart.lines.length;
   const availableTables = (tables?.tables ?? []).filter((t) => t.status === "AVAILABLE" || t.status === "OCCUPIED");
   const shiftOpen = !!shiftRes?.shift;
   const locked = !!cart.orderId;
@@ -131,6 +137,23 @@ export default function Pos() {
     const needsModal = item.variants.length > 0 || item.modifierGroups.some((g) => g.options.length > 0);
     if (needsModal) return setModItem(item);
     cart.addLine({ menuItemId: item.id, name: item.name, unitPrice: toCents(item.price), modifiers: [], quantity: 1, variantId: null, variantName: null });
+  }
+
+  function onSearchKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key !== "Enter" || !searchTerm) return;
+    const all = categories.flatMap((c) => c.items);
+    const target = all.find((i) => i.name.toLowerCase() === searchTerm) ?? (searchResults?.length === 1 ? searchResults[0] : null);
+    if (!target || !target.isAvailable) return;
+    addItem(target);
+    setSearch("");
+    push(t("ops:pos_search_added", { name: target.name }), "ok");
+  }
+
+  function toggleCart() {
+    setCartCollapsed((c) => {
+      localStorage.setItem("pos_cart_collapsed", c ? "0" : "1");
+      return !c;
+    });
   }
 
   function cartToItems() {
@@ -346,23 +369,32 @@ export default function Pos() {
   }
 
   return (
-    <div className="pos">
+    <div className={`pos ${cartCollapsed ? "cart-min" : ""}`}>
       <section className="pos-menu">
         <div className="row" style={{ marginBottom: 8 }}>
           <button className="btn" onClick={() => setShowOrders(true)}>
             {t("ops:pos_held_orders")}{queued > 0 ? ` · ${t("ops:pos_queued_count", { count: queued })}` : ""}
           </button>
           {queued > 0 && <span className="badge warn">{t("ops:pos_offline_queued", { count: queued })}</span>}
+          <div className="spacer" />
+          <input
+            className="input pos-search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={onSearchKey}
+            placeholder={t("ops:pos_search_ph")}
+            aria-label={t("ops:pos_search_ph")}
+          />
         </div>
         <div className="cat-tabs">
           {categories.map((c) => (
-            <button key={c.id} className={`cat-tab ${current?.id === c.id ? "active" : ""}`} onClick={() => setActiveCat(c.id)}>
+            <button key={c.id} className={`cat-tab ${!searchTerm && current?.id === c.id ? "active" : ""}`} onClick={() => { setSearch(""); setActiveCat(c.id); }}>
               {c.name}
             </button>
           ))}
         </div>
         <div className="item-grid">
-          {(current?.items ?? []).map((item) => (
+          {gridItems.map((item) => (
             <button
               key={item.id}
               className={`item-card ${!item.isAvailable ? "unavailable" : ""}`}
@@ -373,12 +405,17 @@ export default function Pos() {
               <span className="price">{formatMoney(toCents(item.price), currency)}</span>
             </button>
           ))}
-          {current?.items.length === 0 && <p className="muted">{t("ops:pos_no_items_category")}</p>}
+          {gridItems.length === 0 && <p className="muted">{searchTerm ? t("ops:pos_search_none", { query: search.trim() }) : t("ops:pos_no_items_category")}</p>}
         </div>
       </section>
 
-      <aside className="pos-cart">
-        <div style={{ padding: 12, borderBottom: "1px solid var(--line)" }}>
+      <aside className={`pos-cart ${cartCollapsed ? "collapsed" : ""}`}>
+        <button className="cart-toggle" onClick={toggleCart} title={cartCollapsed ? t("ops:pos_cart_show") : t("ops:pos_cart_hide")}>
+          <span className="cart-toggle-icon">🛒</span>
+          {cartCount > 0 && <span className="cart-toggle-count">{cartCount}</span>}
+          <span className="cart-toggle-chevron">{cartCollapsed ? "‹" : "›"}</span>
+        </button>
+        <div className="cart-config" style={{ padding: 12, borderBottom: "1px solid var(--line)" }}>
           <div className="row">
             <select className="input" value={cart.channel} onChange={(e) => cart.setChannel(e.target.value as never)} disabled={locked}>
               <option value="DINE_IN">{t("ops:channel_dine_in")}</option>
@@ -505,37 +542,37 @@ export default function Pos() {
             </>
           )}
 
-          <div className="row" style={{ marginTop: 12, gap: 8 }}>
+          <div className="row pos-fab-row" style={{ marginTop: 12, gap: 8 }}>
             <button
               className="btn primary"
               style={{ flex: 1 }}
               disabled={(!cart.lines.length && !order) || busy || (cart.channel === "DINE_IN" && !cart.tableId && !order)}
               onClick={() => sendMut.mutate()}
             >
-              {sendMut.isPending ? t("ops:pos_sending") : t("ops:pos_send_kitchen")}
+              🍳 {sendMut.isPending ? t("ops:pos_sending") : t("ops:pos_send_kitchen")}
             </button>
-            <button className="btn" disabled={(!cart.lines.length && !order) || busy} onClick={() => setShowDiscount(true)}>{t("ops:pos_discount_btn")}</button>
+            <button className="btn" disabled={(!cart.lines.length && !order) || busy} onClick={() => setShowDiscount(true)}>🏷 {t("ops:pos_discount_btn")}</button>
           </div>
-          <div className="row" style={{ marginTop: 8, gap: 8 }}>
-            <button className="btn" style={{ flex: 1 }} disabled={(!cart.lines.length && !order) || busy} onClick={holdOrder}>{t("ops:pos_hold")}</button>
-            {order && <button className="btn" onClick={() => reprint(order.id)}>{t("ops:pos_reprint")}</button>}
+          <div className="row pos-fab-row" style={{ marginTop: 8, gap: 8 }}>
+            <button className="btn" style={{ flex: 1 }} disabled={(!cart.lines.length && !order) || busy} onClick={holdOrder}>⏸ {t("ops:pos_hold")}</button>
+            {order && <button className="btn" onClick={() => reprint(order.id)}>🖨 {t("ops:pos_reprint")}</button>}
             {canServe && (
-              <button className="btn ok" onClick={() => setShowServe(true)}>{t("ops:pos_mark_served")}</button>
+              <button className="btn ok" onClick={() => setShowServe(true)}>✅ {t("ops:pos_mark_served")}</button>
             )}
             {order && order.status !== "COMPLETED" && order.status !== "CANCELLED" && cart.lines.length === 0 && (
-              <button className="btn" onClick={() => setShowSplit(true)}>{t("ops:split_btn")}</button>
+              <button className="btn" onClick={() => setShowSplit(true)}>👥 {t("ops:split_btn")}</button>
             )}
             {order && (
-              <button className="btn ghost" onClick={() => { cart.reset(); setOrder(null); setNotes(""); setPickupName(""); }}>{t("ops:pos_new")}</button>
+              <button className="btn ghost" onClick={() => { cart.reset(); setOrder(null); setNotes(""); setPickupName(""); }}>➕ {t("ops:pos_new")}</button>
             )}
           </div>
           <button
-            className="btn primary block"
+            className="btn primary block fab-charge"
             style={{ marginTop: 8, padding: "14px" }}
             disabled={(!cart.lines.length && !order) || busy || !shiftOpen || (cart.channel === "DINE_IN" && !cart.tableId && !order)}
             onClick={() => setShowPay(true)}
           >
-            {t("ops:pos_charge", { amount: formatMoney(chargeTotal, currency) })}
+            💳 {t("ops:pos_charge", { amount: formatMoney(chargeTotal, currency) })}
           </button>
         </div>
       </aside>

@@ -4,7 +4,7 @@ import { asyncHandler } from "../lib/errors.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/requirePermission.js";
 import { validate } from "../middleware/validate.js";
-import { closeBusinessDay, dailySales, dashboard, hourlyReport, itemsReport, stockMovementReport, wastageReport, zReport } from "../services/report.service.js";
+import { activeAlerts, closeBusinessDay, dailySales, dashboard, hourlyReport, itemsReport, salesTrend, stockMovementReport, wastageReport, zReport } from "../services/report.service.js";
 import { foodCostPercent } from "../services/inventory.service.js";
 import { prisma } from "../lib/prisma.js";
 import { fromCents, toCents } from "../lib/money.js";
@@ -25,6 +25,21 @@ reportsRouter.get(
   asyncHandler(async (req, res) => {
     const data = await dashboard(req.auth!.restaurantId);
     res.json(data);
+  }),
+);
+
+reportsRouter.get(
+  "/alerts",
+  asyncHandler(async (req, res) => {
+    res.json(await activeAlerts(req.auth!.restaurantId));
+  }),
+);
+
+reportsRouter.get(
+  "/trend",
+  asyncHandler(async (req, res) => {
+    const days = Math.min(30, Math.max(2, Number((req.query as { days?: string }).days ?? 7) || 7));
+    res.json(await salesTrend(req.auth!.restaurantId, days));
   }),
 );
 

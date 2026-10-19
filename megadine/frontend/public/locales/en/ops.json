@@ -233,5 +233,18 @@
   "split_offline": "Split payments need an internet connection",
   "refund_select_hint": "Select items to refund, or enter an amount below",
   "refund_line_refunded": "refunded {{qty}}/{{total}}",
-  "inv_low_toast": "Low stock: {{name}} — {{stock}} {{unit}} left"
+  "inv_low_toast": "Low stock: {{name}} — {{stock}} {{unit}} left",
+  "pos_search_ph": "Search menu or scan barcode…",
+  "pos_search_none": "No items match “{{query}}”",
+  "pos_search_added": "Added {{name}}",
+  "pos_cart_hide": "Collapse cart",
+  "pos_cart_show": "Expand cart",
+  "kds_merge": "Merge tickets",
+  "kds_merge_badge": "{{count}} stations",
+  "floor_timeline_title": "Recent activity",
+  "floor_timeline_empty": "No sessions recorded yet",
+  "floor_timeline_no_order": "Walk-in session",
+  "floor_timeline_open": "Open",
+  "floor_timeline_closed": "Closed",
+  "floor_timeline_items": "{{count}} items"
 }

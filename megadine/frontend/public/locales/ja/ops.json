@@ -233,5 +233,18 @@
   "split_offline": "分割支払いには接続が必要です",
   "refund_select_hint": "返金する商品を選択するか、下に金額を入力してください",
   "refund_line_refunded": "返金済 {{qty}}/{{total}}",
-  "inv_low_toast": "在庫僅少: {{name}} — 残り {{stock}} {{unit}}"
+  "inv_low_toast": "在庫僅少: {{name}} — 残り {{stock}} {{unit}}",
+  "pos_search_ph": "メニュー検索またはバーコードをスキャン…",
+  "pos_search_none": "「{{query}}」に一致する商品はありません",
+  "pos_search_added": "{{name}} を追加しました",
+  "pos_cart_hide": "カートをたたむ",
+  "pos_cart_show": "カートを展開",
+  "kds_merge": "チケットを統合",
+  "kds_merge_badge": "{{count}} ステーション",
+  "floor_timeline_title": "最近の履歴",
+  "floor_timeline_empty": "まだセッション記録がありません",
+  "floor_timeline_no_order": "ウォークイン",
+  "floor_timeline_open": "進行中",
+  "floor_timeline_closed": "終了",
+  "floor_timeline_items": "{{count}} 点"
 }

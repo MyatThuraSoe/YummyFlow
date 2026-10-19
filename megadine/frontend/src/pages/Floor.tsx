@@ -24,6 +24,8 @@ interface Reservation {
   status: string;
   notes: string | null;
 }
+interface SessionOrder { id: string; orderNumber: number; status: string; total: string; itemCount: number }
+interface SessionRow { id: string; openedAt: string; closedAt: string | null; clearedAt: string | null; status: string; order: SessionOrder | null }
 
 const timeLabel = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -63,6 +65,11 @@ export default function Floor() {
   const [selected, setSelected] = useState<TableRow | null>(null);
   const [bill, setBill] = useState<string | null>(null);
   const [resTarget, setResTarget] = useState<TableRow | null>(null);
+  const { data: sessionData } = useQuery({
+    queryKey: ["table-sessions", selected?.id],
+    queryFn: () => apiGet<{ sessions: SessionRow[] }>(`/tables/${selected!.id}/sessions`),
+    enabled: !!selected,
+  });
 
   const reservations = resData?.reservations ?? [];
   const reservationsFor = (tableId: string) => reservations.filter((r) => r.tableId === tableId);
@@ -275,6 +282,30 @@ export default function Floor() {
               ))}
             </div>
           </Field>
+          <div className="card" style={{ marginTop: 12 }}>
+            <div className="small muted" style={{ marginBottom: 6 }}>{t("ops:floor_timeline_title")}</div>
+            {(sessionData?.sessions ?? []).length === 0 && <p className="muted small">{t("ops:floor_timeline_empty")}</p>}
+            <div className="timeline">
+              {(sessionData?.sessions ?? []).map((s) => (
+                <div className="timeline-item" key={s.id}>
+                  <div className="timeline-time">{timeLabel(s.openedAt)}</div>
+                  <div className="timeline-content">
+                    <div className="timeline-title">
+                      {s.order ? t("ops:order_number", { number: s.order.orderNumber }) : t("ops:floor_timeline_no_order")}{" "}
+                      <Badge kind={s.closedAt ? "muted" : "ok"}>
+                        {t(s.closedAt ? "ops:floor_timeline_closed" : "ops:floor_timeline_open")}
+                      </Badge>
+                    </div>
+                    <div className="timeline-meta">
+                      {s.order
+                        ? `${t("ops:floor_timeline_items", { count: s.order.itemCount })} · ${formatMoney(toCents(s.order.total), currency)}`
+                        : "—"}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
           {selected.current?.orderId && (
             <button className="btn block" onClick={() => { setSelected(null); nav(`/pos?tableId=${selected.id}`); }}>
               {t("ops:floor_add_items")}

@@ -1372,6 +1372,49 @@ async function main() {
     );
     ok("reports: wastage report includes the movement and aggregates by reason");
 
+    // ── Phase 4: dashboard alerts, sales trend, floor timeline ───────────────
+    const ingLowName = `Verify Low ${Date.now()}`;
+    const ingLowRes = await api<{ ingredient: { id: string } }>("/inventory/ingredients", {
+      method: "POST",
+      token: admin.token,
+      body: { name: ingLowName, stockUnit: "pc", currentStock: 0, reorderLevel: 999, costPerUnit: 1 },
+    });
+    assert.equal(ingLowRes.status, 201, JSON.stringify(ingLowRes.data));
+    const ingLowId = ingLowRes.data.ingredient.id;
+
+    const alerts = await api<{ alerts: { kind: string; severity: string; name?: string }[] }>("/reports/alerts", {
+      token: admin.token,
+    });
+    assert.equal(alerts.status, 200, JSON.stringify(alerts.data));
+    assert.ok(
+      alerts.data.alerts.some((a) => a.kind === "LOW_STOCK" && a.name === ingLowName),
+      "alerts must flag the low-stock ingredient",
+    );
+    assert.ok(
+      alerts.data.alerts.every((a) => ["LOW_STOCK", "KDS_OVERDUE", "RESERVATION_SOON"].includes(a.kind)),
+      "alerts must only use known kinds",
+    );
+
+    const trend = await api<{ days: { date: string; orders: number; sales: number }[] }>("/reports/trend?days=7", {
+      token: admin.token,
+    });
+    assert.equal(trend.status, 200, JSON.stringify(trend.data));
+    assert.equal(trend.data.days.length, 7, "trend must return one bucket per day");
+    assert.ok(trend.data.days[6].orders >= 1, "today's bucket must count completed orders");
+    assert.ok(trend.data.days.every((d) => typeof d.date === "string" && typeof d.orders === "number" && typeof d.sales === "number"));
+
+    const sessions = await api<{ sessions: { id: string; openedAt: string; order: unknown }[] }>(
+      `/tables/${resTable!.id}/sessions`,
+      { token: admin.token },
+    );
+    assert.equal(sessions.status, 200, JSON.stringify(sessions.data));
+    assert.ok(sessions.data.sessions.some((s) => s.id === seatSession!.id), "floor timeline must include the seated session");
+
+    const dash = await api<{ activeTables: number; activeOrders: number }>("/reports/dashboard", { token: admin.token });
+    assert.equal(dash.status, 200, JSON.stringify(dash.data));
+    assert.equal(typeof dash.data.activeTables, "number");
+    ok("dashboard: alerts flag low stock, 7-day trend buckets orders, floor timeline lists sessions");
+
     // Clean up every Phase 3 artifact (orders, ingredient, recipe).
     const phase3OrderIds = [splitOrderId, refundOrderId, invOrderId];
     const ticketsForCleanup = await prisma.kitchenTicket.findMany({
@@ -1397,6 +1440,9 @@ async function main() {
     // historical rows for this verify-only ingredient first.
     await prisma.recipeLine.deleteMany({ where: { ingredientId: ingId } });
     await prisma.ingredient.delete({ where: { id: ingId } });
+    await prisma.stockMovement.deleteMany({ where: { ingredientId: ingLowId } });
+    await prisma.recipeLine.deleteMany({ where: { ingredientId: ingLowId } });
+    await prisma.ingredient.delete({ where: { id: ingLowId } });
 
     console.log(`\n\u2705 MegaDine Basic extended verification passed: ${passed} checks\n`);
   } finally {
