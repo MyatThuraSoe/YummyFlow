@@ -5,6 +5,7 @@ import { applyRate, fromCents, round2, toCents } from "../src/lib/money.js";
 import { computeOrderTotals, lineTotalCents, toDb } from "../src/lib/calculations.js";
 import { addDays, businessDateFor, endOfDay, isSameDay, startOfDay } from "../src/lib/businessDay.js";
 import { assertWithinLimit, getFeatures, getLimits } from "../src/lib/license.js";
+import { expectedCash, varianceExceedsTolerance } from "../src/lib/cashVariance.js";
 
 // ── money ───────────────────────────────────────────────
 test("toCents rounds to nearest cent without float drift", () => {
@@ -120,4 +121,23 @@ test("assertWithinLimit allows below the cap and rejects at/over it", () => {
   assert.throws(() => assertWithinLimit("tables", 15), /Plan limit reached/);
   assert.throws(() => assertWithinLimit("terminals", 2));
   assert.throws(() => assertWithinLimit("menuItems", 50));
+});
+
+// ── cash variance (PRD platform §6) ─────────────────────
+test("expectedCash combines float, cash sales, refunds and movements", () => {
+  assert.equal(
+    expectedCash({ openingFloat: 10_000, cashSales: 25_000, refundsInWindow: 3_000, paidIn: 1_000, paidOut: 2_000, safeDrops: 5_000 }),
+    26_000,
+  );
+  assert.equal(
+    expectedCash({ openingFloat: 0, cashSales: 0, refundsInWindow: 0, paidIn: 0, paidOut: 0, safeDrops: 0 }),
+    0,
+  );
+});
+
+test("variance tolerance boundary: strictly greater fails, equal passes", () => {
+  assert.equal(varianceExceedsTolerance(500, 500), false);
+  assert.equal(varianceExceedsTolerance(-500, 500), false);
+  assert.equal(varianceExceedsTolerance(501, 500), true);
+  assert.equal(varianceExceedsTolerance(-501, 500), true);
 });

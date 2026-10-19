@@ -1,0 +1,705 @@
+
+
+# MegaDine POS — Back-Office Platform Build Specification
+**Audience:** Autonomous coding agent
+**Scope:** User management, authentication, i18n, admin shell, settings, license activation, audit, and cash-shift reconciliation.
+**Non-scope:** Retail modules (products, suppliers, purchases, AR/AP), receipt WYSIWYG editor, Google Drive backup, printing pipeline changes.
+
+---
+
+## 0. How to use this document
+
+Work through sections **1 → 13 in order**. Each section lists: the files to create or modify, the exact logic, the exact data shapes, and acceptance checks. Do not skip the constraints in §1 — violating them breaks the existing offline-first POS and is a failed task.
+
+Before coding, read these existing files to understand conventions (imports use `.js` suffix, ESM, `asyncHandler`, `ApiError`, Zod validation, Prisma, capability RBAC):
+
+- Backend: `megadine/backend/src/app.ts`, `src/lib/errors.ts`, `src/lib/auth.ts`, `src/lib/env.ts`, `src/lib/permissions.ts`, `src/middleware/auth.ts`, `src/middleware/requirePermission.ts`, `src/routes/auth.routes.ts`, `src/routes/admin.routes.ts`, `src/routes/shifts.routes.ts`, `src/services/shift.service.ts`, `src/lib/license.ts`, `src/lib/machine.ts`, `prisma/schema.prisma`, `prisma/seed.ts`.
+- Frontend: `megadine/frontend/src/main.tsx`, `src/App.tsx`, `src/store/auth.ts`, `src/lib/api.ts`, `src/lib/format.ts`, `src/components/Layout.tsx`, `src/components/ProtectedRoute.tsx`, `src/pages/Admin.tsx`, `src/pages/admin/*.tsx`, `src/index.css`, `package.json`, `vite.config.ts`.
+
+---
+
+## 1. System baseline and hard constraints
+
+### 1.1 What exists today (do not regress)
+
+- **Backend** (`megadine/backend`): Express 5 + TypeScript ESM, Prisma + PostgreSQL, optional Redis, Socket.IO. Auth uses an **httpOnly cookie** named `md_session`; the raw token is stored server-side only as a SHA-256 hash in the `Session` table (see `middleware/auth.ts`). Passwords/PINs hashed with bcrypt (`lib/auth.ts` exposes `hashPassword`, `verifyPassword`, `hashPin`, `verifyPin`, `newSessionToken`, `hashToken`, `isValidPinFormat`). Errors use `ApiError` (`lib/errors.ts`). Async handlers use `asyncHandler`. Route validation uses Zod via `validate({ body })` middleware.
+- **RBAC**: `lib/permissions.ts` defines a `Capability` union and `ROLE_CAPABILITIES: Record<Role, Capability[]>`, with helper `can(role, capability)`. Routes guard with `requirePermission(capability)`.
+- **Frontend** (`megadine/frontend`): React 19 + Vite 7 + TypeScript, Zustand (`store/auth.ts`), TanStack Query, socket.io-client. Styling is **hand-rolled CSS** in `src/index.css` (classes: `.app`, `.sidebar`, `.topbar`, `.content`, `.card`, `.btn`, `.input`, `.tbl`, `.badge`, `.modal`, `.overlay`, `.stat`, `.grid`, `.row`, `.cat-tabs`). API wrapper in `src/lib/api.ts` exposes `api`, `apiGet`, `apiPost`, `apiPatch`, `apiPut`, `apiDel` and an `ApiError` class; it dispatches a `md:unauthorized` window event on 401. Auth store `useAuth` exposes `user`, `ready`, `loginPin`, `loginPassword`, `logout`, `hydrate`, `can`.
+- **Routes today**: `/login`, `/pos`, `/floor`, `/kds`, `/admin/*`. `App.tsx` wraps the authenticated area in `Layout`. `Admin.tsx` renders a horizontal tab bar (`.cat-tabs`) and nested `<Routes>`.
+
+### 1.2 Hard constraints (violating any = failure)
+
+1. **Keep the cookie session.** Do **not** switch to JWT/localStorage tokens. The `md_session` httpOnly cookie with sliding renewal must remain the auth transport.
+2. **Keep the offline-first POS intact.** Do not modify `src/lib/outbox.ts`, `src/lib/socket.ts`, or the socket/outbox behavior of `Pos.tsx`, `Floor.tsx`, `Kds.tsx`. Terminals must still queue orders when the LAN drops and flush on reconnect.
+3. **UI kit boundary.** Introduce **MUI v5** only for the back-office (admin workspace, auth pages, settings, license). **Do not** apply MUI components or MUI global resets to `Pos.tsx`, `Floor.tsx`, `Kds.tsx` — those must keep the existing CSS. Do **not** add `<CssBaseline/>` globally; it would fight `index.css`. If you need a reset for MUI pages, scope it inside the new layout component only.
+4. **Do not build retail features.** No products, suppliers, purchase orders, customers/AR, or accounting modules. This build is the platform layer only.
+5. **All backend inputs validated with Zod.** All new routes wrapped in `asyncHandler`. All new mutations audited via the existing `audit()` helper.
+6. **TypeScript strict.** `npm run typecheck` and `npm run lint` must pass in both `backend` and `frontend` when you finish.
+
+### 1.3 New dependencies
+
+Backend: none required (bcrypt, zod, prisma already present).
+
+Frontend:
+```bash
+cd megadine/frontend
+npm install @mui/material @emotion/react @emotion/styled @mui/icons-material \
+  i18next react-i18next i18next-http-backend i18next-browser-languagedetector
+```
+
+---
+
+## 2. Database changes (Prisma)
+
+File: `megadine/backend/prisma/schema.prisma`. Apply, then run `npx prisma migrate dev --name platform_users` and `npx prisma generate`.
+
+### 2.1 `Role` enum — add `MANAGER`
+```prisma
+enum Role {
+  OWNER
+  ADMIN
+  MANAGER
+  CASHIER
+  WAITER
+  KITCHEN
+}
+```
+
+### 2.2 `User` model — extend
+Add these fields (keep all existing fields and relations):
+```prisma
+model User {
+  // ...existing fields (id, restaurantId, restaurant, name, email, pinHash,
+  //    passwordHash, role, isActive, failedPinAttempts, lockoutUntil, lastLoginAt, createdAt)...
+
+  username          String?    @unique
+  firstName         String?
+  lastName          String?
+  phone             String?
+  passwordChangedAt DateTime?
+  preferredLanguage String     @default("en")
+  deletedAt         DateTime?
+  updatedAt         DateTime   @updatedAt
+  // ...existing relations (orders, shifts, auditLogs, sessions)...
+
+  @@index([restaurantId, role])
+  @@index([isActive, deletedAt])
+}
+```
+Note: `username` is nullable+unique. PostgreSQL permits multiple NULLs in a unique column, so existing seeded users (who have no username) are unaffected.
+
+### 2.3 `Restaurant` model — extend for Shop Info and cash tolerance
+Add:
+```prisma
+model Restaurant {
+  // ...existing fields...
+  address            String?
+  phone              String?
+  email              String?
+  taxId              String?
+  logo               String?                       // data URL or path
+  cashVarianceTolerance Decimal @db.Decimal(12, 2) @default(10.00)
+  // ...existing relations...
+}
+```
+
+### 2.4 Seed note
+Update `prisma/seed.ts` so the default users get a `username` (e.g. `owner`, `admin`, `cashier`) and a default `passwordHash` derived from their existing demo PIN, so both PIN and password login work out of the box. Keep PIN seeding intact.
+
+---
+
+## 3. Roles and capability matrix
+
+File: `megadine/backend/src/lib/permissions.ts`. Replace `ROLE_CAPABILITIES` with this authoritative matrix and add `MANAGER`. Keep the existing `Capability` union (do not rename capabilities).
+
+| Capability | OWNER | ADMIN | MANAGER | CASHIER | WAITER | KITCHEN |
+|---|---|---|---|---|---|---|
+| pos.use | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| order.discount.small | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| order.discount.large | ✓ | ✓ | ✓ | — | — | — |
+| order.void | ✓ | ✓ | ✓ | — | — | — |
+| order.refund | ✓ | ✓ | ✓ | — | — | — |
+| table.manage | ✓ | ✓ | ✓ | — | ✓ | — |
+| kds.view | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| kds.update | ✓ | ✓ | ✓ | — | — | ✓ |
+| shift.open | ✓ | ✓ | ✓ | ✓ | — | — |
+| shift.close | ✓ | ✓ | ✓ | ✓ | — | — |
+| shift.manage | ✓ | ✓ | ✓ | — | — | — |
+| report.view | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| report.z | ✓ | ✓ | ✓ | — | — | — |
+| menu.manage | ✓ | ✓ | ✓ | — | — | — |
+| inventory.view | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| inventory.manage | ✓ | ✓ | ✓ | — | — | — |
+| expense.manage | ✓ | ✓ | ✓ | — | — | — |
+| staff.manage | ✓ | ✓ | — | — | — | — |
+| settings.manage | ✓ | ✓ | — | — | — | — |
+| audit.view | ✓ | ✓ | — | — | — | — |
+| backup.manage | ✓ | ✓ | — | — | — | — |
+| hardware.manage | ✓ | ✓ | — | — | — | — |
+
+Also update `ADMIN_ROLES` to `["OWNER", "ADMIN"]` (used for last-admin guards, §5.2). Keep `MANAGER_ROLES` as `["OWNER", "ADMIN"]` for approvals.
+
+Frontend mirror: `store/auth.ts` already receives `capabilities` from `/auth/me` and `/auth/login`; no change needed beyond the interface extension in §8.1.
+
+---
+
+## 4. Authentication system
+
+Files: `backend/src/routes/auth.routes.ts`, `backend/src/lib/auth.ts` (no new helpers needed), and a new guard module in §5.
+
+### 4.1 Login endpoint — extend
+`POST /api/v1/auth/login`. Extend the Zod schema to accept three credential shapes (one must be present):
+```ts
+const loginSchema = z.object({
+  pin: z.string().regex(/^\d{4,6}$/).optional(),
+  userId: z.string().uuid().optional(),
+  username: z.string().min(2).max(64).optional(),
+  email: z.string().email().optional(),
+  password: z.string().min(8).optional(),
+  terminalId: z.string().uuid().optional(),
+});
+```
+Resolution order:
+1. If `pin` present → existing PIN flow (unchanged).
+2. Else if `username` or `email` + `password` → look up user by `username` OR lowercased `email` (case-insensitive), `deletedAt: null`. Verify `passwordHash` with `verifyPassword`.
+3. Else → `400`.
+
+**Lockout (password path):** on wrong password, increment `failedPinAttempts`. Lock threshold for password is **5 attempts** and lockout **15 minutes**. (PIN path keeps its existing `MAX_PIN_ATTEMPTS`/`LOCKOUT_MINUTES`.) Add two env vars in `lib/env.ts`: `MAX_PASSWORD_ATTEMPTS` (default 5) and `PASSWORD_LOCKOUT_MINUTES` (default 15). Reuse the existing `failedPinAttempts` and `lockoutUntil` columns for both paths. When locked, respond `423` with message key `auth.login.locked`.
+
+**Inactive/deleted account:** if credentials are correct but `isActive === false` or `deletedAt != null`, respond `403` with message key `auth.login.inactive`. **Do not** increment the failure counter for this case (so a deactivated user can't lock themselves out). Write an audit event `LOGIN_BLOCKED_INACTIVE` (see §11).
+
+**Success:** clear failure counters, set `lastLoginAt`, create a session exactly as today, set the cookie, audit `AUTH_LOGIN`, and respond with the user payload from §4.5.
+
+### 4.2 First-run setup status
+`GET /api/v1/auth/setup-status` (public). Returns `{ needsSetup: boolean }` where `needsSetup = (count of users with deletedAt null) === 0`.
+
+### 4.3 Register first admin
+`POST /api/v1/auth/register-first-admin` (public). Guard against concurrent calls (serialize with a module-level promise/mutex so two simultaneous calls cannot both pass the count check).
+Body:
+```ts
+z.object({
+  username: z.string().min(3).max(64).regex(/^[a-zA-Z0-9._-]+$/),
+  email: z.string().email(),
+  password: z.string().min(8),
+  firstName: z.string().min(1),
+  lastName: z.string().min(1),
+  phone: z.string().max(32).optional(),
+  restaurantName: z.string().min(1).max(80).optional(),
+})
+```
+Logic:
+- If any active user exists → `403` `auth.firstadmin.notallowed`.
+- If `username` or `email` already used by a non-deleted user → `409` (`validation.duplicate.username` / `validation.duplicate.email`).
+- Find the oldest `Restaurant`; if none, create one with `name: restaurantName ?? "My Restaurant"` and defaults from `env` (`DEFAULT_CURRENCY`, `DEFAULT_TAX_RATE`, `DEFAULT_SERVICE_CHARGE`, `DEFAULT_BUSINESS_DAY_CUTOFF`).
+- Create a user with `role: "OWNER"`, `isActive: true`, `passwordHash = await hashPassword(password)`, `passwordChangedAt: now`, `name = firstName + " " + lastName`.
+- Audit `USER_REGISTER`. Respond `201` with the envelope in §4.5.
+
+### 4.4 Change own password
+`POST /api/v1/auth/change-password` (requires auth). Body: `{ currentPassword: string, newPassword: string(min 8) }`.
+- Load current user. If `passwordHash` missing or `verifyPassword(currentPassword)` fails → `403` `auth.current.password.incorrect`.
+- Set new `passwordHash` and `passwordChangedAt`.
+- Delete all other sessions for this user (keep the current `sessionId`) so stale sessions are invalidated.
+- Audit `PASSWORD_CHANGE`. Respond `{ success: true, message: "Password changed" }`.
+
+Keep the existing `/change-pin` endpoint unchanged.
+
+### 4.5 Standard user payload
+Every auth/user response that returns a user must use this shape (helper `toUserResponse(user)`):
+```ts
+{
+  id, name, username, email, firstName, lastName, phone,
+  role, restaurantId, preferredLanguage,
+  isActive, lastLoginAt, createdAt, updatedAt,
+  capabilities: ROLE_CAPABILITIES[user.role] ?? []
+}
+```
+`/auth/me`, `/auth/login` must return this shape (they currently return a subset — extend them).
+
+### 4.6 Envelope for new endpoints
+All **new** endpoints introduced in this spec respond with:
+```json
+{ "success": true, "message": "…", "data": { … } }
+```
+On error, use the existing `ApiError` mechanism (the global error handler already serializes `{ error: { code, message } }`). Existing endpoints keep their current shapes; do not refactor them.
+
+---
+
+## 5. User management
+
+Files: new `backend/src/routes/users.routes.ts`, new `backend/src/lib/userGuards.ts`. Register in `app.ts`: `app.use("/api/v1/users", usersRouter);` and apply `usersRouter.use(requireAuth)`.
+
+All user endpoints require `requirePermission("staff.manage")` except `/me/language` (any authenticated user).
+
+### 5.1 Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/users` | List non-deleted users of the caller's restaurant |
+| GET | `/users/:id` | Get one user (404 if not in restaurant or deleted) |
+| POST | `/users` | Create |
+| PUT | `/users/:id` | Update |
+| DELETE | `/users/:id` | Soft delete |
+| GET | `/users/:id/stats` | Sales performance stats |
+| PATCH | `/users/me/language?lang=xx` | Set own preferred language |
+
+**Create body:**
+```ts
+z.object({
+  username: z.string().min(3).max(64).regex(/^[a-zA-Z0-9._-]+$/),
+  email: z.string().email(),
+  password: z.string().min(8),
+  firstName: z.string().min(1),
+  lastName: z.string().min(1),
+  phone: z.string().max(32).optional().nullable(),
+  role: z.enum(["OWNER","ADMIN","MANAGER","CASHIER","WAITER","KITCHEN"]),
+  pin: z.string().regex(/^\d{4,6}$/).optional(),
+  isActive: z.boolean().optional(),
+})
+```
+Enforce global uniqueness of `username` and lowercased `email` among non-deleted users → `409` on clash. Store `name = firstName + " " + lastName`. Hash `password` and optional `pin`. Audit `USER_CREATE`.
+
+**Update body:** same as create but all fields optional, `username` **not** updatable (ignore it if sent), `password` optional (only change if provided and non-blank), `pin` optional (allow `null` to clear). Apply guards from §5.2 when `role` changes away from an admin role or when `isActive` becomes `false`. Audit `USER_UPDATE` with `before`/`after` snapshots of `{ role, isActive }`.
+
+**Delete:** soft delete per §5.3. Audit `USER_DELETE`.
+
+**Stats:** for the target user, aggregate `Order` records where `cashierId = id`, `restaurantId` matches, and `status = "COMPLETED"`:
+```ts
+{
+  totalSales, totalRevenue,      // all time
+  todaySales, todayRevenue       // createdAt >= local start of today
+}
+```
+`…Sales` = count, `…Revenue` = sum of `total` (convert Decimal to number). Respond in the envelope.
+
+**Language:** validate `lang ∈ ["en","my","ja","th","fr"]` (drive from a shared constant; also add `SUPPORTED_LANGUAGES` to `lib/env.ts`). Update `preferredLanguage`. Respond with the updated user in the envelope.
+
+### 5.2 Last-admin guards (`userGuards.ts`)
+Define `ADMIN_GUARD_ROLES = ["OWNER","ADMIN"]`. Implement:
+- `assertNotLastAdmin(restaurantId, userId, action)`: load target (must exist, non-deleted, same restaurant). If target's role is in `ADMIN_GUARD_ROLES` and the count of *other* active, non-deleted users with a role in `ADMIN_GUARD_ROLES` is `0`, throw `409` with code:
+  - `action === "demote"` → `auth.lastadmin.demote`
+  - `action === "deactivate"` → `auth.lastadmin.deactivate`
+  - `action === "delete"` → `auth.lastadmin.delete`
+- `assertNotSelfDeactivate(actorId, targetId)`: if equal, throw `409` `auth.user.self.deactivate`.
+
+Call `assertNotLastAdmin(...,"demote")` when an update changes `role` away from an admin-guard role. Call `assertNotLastAdmin(...,"deactivate")` and `assertNotSelfDeactivate` when `isActive` becomes `false`. Call both `assertNotSelfDeactivate` and `assertNotLastAdmin(...,"delete")` on delete.
+
+### 5.3 Soft delete
+On delete:
+- Call guards.
+- Free the unique handles so a future account can reuse them: `username = releaseUnique(username, id)`, `email = releaseUnique(email, id)` where:
+```ts
+function releaseUnique(value: string | null, id: string, maxLen = 255): string | null {
+  if (!value) return value;
+  const suffix = `#del-${id.slice(0, 8)}`;
+  const keep = Math.max(0, maxLen - suffix.length);
+  return value.slice(0, keep) + suffix;
+}
+```
+- Set `deletedAt = now()`, `isActive = false`.
+- Delete all sessions for that user (force logout).
+- Never physically delete the row (audit history depends on it).
+
+All list/get queries must filter `deletedAt: null`.
+
+---
+
+## 6. Cash-shift reconciliation (critical business logic)
+
+File: `megadine/backend/src/services/shift.service.ts`. Refactor `shiftSummary` and `closeShift`. Add a pure helper module `backend/src/lib/cashVariance.ts`.
+
+### 6.1 Definitions
+For a shift `S`:
+- `windowStart = S.openedAt`
+- `windowEnd = S.closedAt ?? now`
+- `openingFloat` = declared float (may be `0.00`)
+- `cashSales` = sum of `Payment.amount` where `payment.shiftId = S.id`, `payment.status = "SUCCEEDED"`, `payment.method = "CASH"`
+- `paidIn`, `paidOut`, `safeDrops` = sums from `CashMovement` by `type`/`direction` (keep existing logic)
+
+### 6.2 Refund attribution rule (the key fix)
+A refund reduces the expected cash of **the shift during which the refund was processed**, not the shift of the original sale. Cash physically leaves the drawer at refund time.
+
+`refundsInWindow(S)` = sum of `Refund.amount` where **all** of:
+1. `refund.createdAt >= windowStart` and `refund.createdAt <= windowEnd`
+2. the refund's original order had at least one `Payment` with `method = "CASH"` and `status = "SUCCEEDED"` (cash was actually in the drawer). Exclude refunds of credit/unpaid sales and card-only sales because no cash moved.
+
+Do **not** match refunds by `payment.shiftId == S.id` (that is the old, buggy behavior).
+
+### 6.3 Expected drawer formula
+```
+expectedCash = openingFloat + cashSales − refundsInWindow + paidIn − paidOut − safeDrops
+```
+All arithmetic in integer cents (use the existing `toCents`/`fromCents` helpers).
+
+### 6.4 Tolerance
+- Read `Restaurant.cashVarianceTolerance` (default `10.00`).
+- On close: `variance = actualCash − expectedCash`.
+- `varianceExceedsTolerance = Math.abs(variance) > toleranceCents`. The boundary (`abs == tolerance`) is **within** tolerance.
+- Include in the shift summary and close response: `varianceTolerance` (number, major units) and `varianceExceedsTolerance` (boolean). Frontend must use these instead of any hardcoded threshold.
+
+### 6.5 Open shift allows zero float
+`POST /shifts/open` already uses `z.number().nonnegative()` — keep it. Ensure nothing rejects `0`.
+
+### 6.6 Audit annotations
+- `openShift`: audit `SHIFT_OPENED` with `after: { openingFloat }` (already present — keep).
+- `closeShift`: audit `SHIFT_CLOSED` with `after: { expectedCash, actualCash, variance, varianceExceedsTolerance }`. If `varianceExceedsTolerance` is true, set `reason: "variance_exceeds_tolerance"`.
+
+### 6.7 Concurrency
+- `openShift`: keep the existing check that rejects an open shift for the same cashier or terminal.
+- `closeShift`: reject if `status !== "OPEN"` (`409`). This prevents double-close.
+
+### 6.8 Worked example (test this)
+Shift A opens 09:00 float 0. Cashier sells $100 cash (order #1) at 09:30. Shift A closes 10:00.
+Shift B opens 10:30 float 0. At 11:00 cashier refunds the full $100 for order #1 (a sale from Shift A).
+Expected: Shift B `expectedCash = 0 + 0 − 100 + 0 − 0 − 0 = −100`. If the cashier's drawer counts 0, `variance = 0 − (−100) = +100`. The refund must reduce Shift B's drawer expectation — **not** alter closed Shift A.
+
+---
+
+## 7. License and machine activation
+
+Backend already exists (`lib/license.ts`, `lib/machine.ts`, `scripts/make-license.ts`). Do not rewrite the crypto. You will build the **activation API endpoints** and the **Activate page**.
+
+### 7.1 Activation endpoints
+New file `backend/src/routes/license.routes.ts`, register `app.use("/api/v1/license", licenseRouter)`; require auth + `requirePermission("settings.manage")` for activate.
+
+- `GET /license/status` (any authenticated): return, in envelope:
+```ts
+{
+  machineId,                     // from getMachineId()
+  edition,                       // getLimits().edition
+  licensed: boolean,             // edition !== "BASIC" or a valid key present
+  limits: getLimits(),
+  features: getFeatures(),
+  usage: (await limitUsage(restaurantId)).usage,
+  expiresAt: string | null,      // from decoded license if present
+  daysLeft: number | null,       // ceil((expiresAt − now)/day), null if no expiry/key
+  reason: "none" | "no_license" | "wrong_machine" | "expired" | "invalid"
+}
+```
+Compute `reason` by attempting `decodeLicense(env.LICENSE_KEY)` and mapping the thrown error: no key → `no_license`; `LICENSE_MACHINE_MISMATCH` → `wrong_machine`; `LICENSE_EXPIRED` → `expired`; `LICENSE_INVALID`/parse error → `invalid`; success → `none`. Wrap in try/catch.
+
+- `POST /license/activate` (settings.manage): body `{ licenseKey: string }`. Validate by calling `decodeLicense(licenseKey)`. On success, persist the key. Because the current design reads the key from `env.LICENSE_KEY`, persist it by writing to the runtime config store: add a `Restaurant.licenseKey` field (already exists in schema) — set `restaurant.licenseKey = licenseKey`, and update `getLimits()`/`decodeLicense` call sites to prefer `restaurant.licenseKey` over `env.LICENSE_KEY` when present. If validation fails, return `400` with code matching the reason (`LICENSE_INVALID`, `LICENSE_EXPIRED`, `LICENSE_MACHINE_MISMATCH`). Audit `LICENSE_ACTIVATED`. Respond with the same shape as `/license/status`.
+
+> If wiring `restaurant.licenseKey` into `getLimits()` is too invasive, an acceptable fallback is to keep the env-based key and have `/license/activate` validate + echo status, with a note that the operator sets `LICENSE_KEY` in `.env`. But prefer persisting to `Restaurant.licenseKey`.
+
+### 7.2 Frontend Activate page (§9.6) uses these endpoints.
+
+---
+
+## 8. Frontend state, API, and i18n foundation
+
+### 8.1 `store/auth.ts`
+Extend `AuthUser` interface with: `username`, `firstName`, `lastName`, `phone`, `preferredLanguage` (all optional-safe). Add action:
+```ts
+loginCredentials: async (handle: string, password: string) => {
+  const isEmail = handle.includes("@");
+  const body = isEmail ? { email: handle, password } : { username: handle, password };
+  const data = await api<{ user: AuthUser; token: string }>("/auth/login", { method: "POST", body });
+  setToken(data.token);
+  connectSocket();
+  set({ user: data.user, ready: true });
+  return data.user;
+},
+```
+On hydrate/login success, if `user.preferredLanguage` is a supported lang, call `i18n.changeLanguage(user.preferredLanguage)` (import the i18n instance from §8.3).
+
+### 8.2 API helper note
+`lib/api.ts` already throws `ApiError` with `.code` and `.message`. New pages read `err.code` to map to i18n error keys (see §10). No change needed to `api.ts` unless you add response-envelope unwrapping; if you do, keep backward compatibility.
+
+### 8.3 i18n setup
+Create `frontend/src/lib/i18n.ts`:
+```ts
+import i18n from "i18next";
+import { initReactI18next } from "react-i18next";
+import HttpBackend from "i18next-http-backend";
+import LanguageDetector from "i18next-browser-languagedetector";
+
+export const SUPPORTED_LANGS = ["en","my","ja","th","fr"];
+
+i18n.use(HttpBackend).use(LanguageDetector).use(initReactI18next).init({
+  fallbackLng: "en",
+  supportedLngs: SUPPORTED_LANGS,
+  ns: ["common","nav","auth","users","settings","cash","errors"],
+  defaultNS: "common",
+  backend: { loadPath: "/locales/{{lng}}/{{ns}}.json" },
+  detection: { order: ["localStorage","navigator"], caches: ["localStorage"], lookupLocalStorage: "md_language" },
+  interpolation: { escapeValue: false },
+  react: { useSuspense: true },
+});
+i18n.loadNamespaces(["errors"]).catch(()=>{});
+export default i18n;
+```
+Import this module once in `main.tsx` before rendering.
+
+Create `frontend/public/locales/{en,my,ja,th,fr}/*.json` for the namespaces above. Fully author **English** (keys in §10). For `my/ja/th/fr`, you may copy the English files as a starting point; fallback to `en` will cover any missing keys. Do not block on translating all four — correctness of the wiring matters more.
+
+Add a `LanguageSwitcher` component (`frontend/src/components/LanguageSwitcher.tsx`): an MUI `Select` listing the five languages (labels: English, မြန်မာ, 日本語, ไทย, Français). On change: `i18n.changeLanguage(lang)` and, if a user is logged in, `apiPatch("/users/me/language?lang=" + lang)` (ignore errors).
+
+### 8.4 Theme
+Create `frontend/src/lib/theme.ts` with the exact MUI theme:
+```ts
+import { createTheme } from "@mui/material";
+
+const SYSTEM_FONTS = "'Segoe UI','Noto Sans Myanmar UI','Leelawadee UI','Noto Sans Thai UI','Noto Sans','Meiryo','Yu Gothic UI','Microsoft YaHei','PingFang SC','Helvetica Neue',Arial,sans-serif";
+const HEAD = '"Fraunces", Georgia, serif';
+
+export const theme = createTheme({
+  palette: {
+    primary:   { main:"#2B6E4F", light:"#4A8A6C", dark:"#1F5239" },
+    secondary: { main:"#B8862E", light:"#CBA054", dark:"#96701F" },
+    error:     { main:"#B23A2E" },
+    background:{ default:"#F3F5F1", paper:"#FFFFFF" },
+    text:      { primary:"#1C2620", secondary:"#5B655D" },
+    divider:   "#DEDFD6",
+  },
+  typography: {
+    fontFamily: SYSTEM_FONTS,
+    h1:{fontFamily:HEAD,fontWeight:600}, h2:{fontFamily:HEAD,fontWeight:600},
+    h3:{fontFamily:HEAD,fontWeight:600}, h4:{fontFamily:HEAD,fontWeight:600},
+    h5:{fontFamily:HEAD,fontWeight:600}, h6:{fontFamily:HEAD,fontWeight:600},
+    button:{ fontFamily:SYSTEM_FONTS, fontWeight:600, textTransform:"none" },
+  },
+  shape: { borderRadius: 10 },
+  components: {
+    MuiDialog:{ defaultProps:{ fullWidth:true, maxWidth:"sm" } },
+    MuiButton:{ styleOverrides:{ root:{ borderRadius:8, paddingTop:10, paddingBottom:10 }, sizeLarge:{ paddingTop:14, paddingBottom:14, fontSize:"1rem" } } },
+    MuiChip:{ styleOverrides:{ root:{ borderRadius:999, fontWeight:500 } } },
+    MuiPaper:{ styleOverrides:{ root:{ backgroundImage:"none" } } },
+  },
+});
+```
+In `main.tsx`, wrap `<App/>` in `<ThemeProvider theme={theme}>`. Do **not** add `CssBaseline` globally.
+
+---
+
+## 9. Application shell and pages (MUI)
+
+### 9.1 Routing restructure (`App.tsx`)
+Final route tree:
+- `/login` → `Login` (standalone, MUI)
+- `/setup` → `SetupFirstAdmin` (standalone, MUI)
+- `/activate` → `Activate` (standalone, MUI)
+- `/pos`, `/floor`, `/kds` → existing `Layout` + existing pages (UNCHANGED)
+- `/admin/*` → new `DashboardLayout` (MUI) wrapping nested admin routes
+- `/` → role-based redirect (keep existing `homeForRole`)
+
+Lazy-load all admin pages with `React.lazy` + a `<Suspense>` fallback skeleton. Keep `Login`/`Setup` eager.
+
+### 9.2 `DashboardLayout` (new file `frontend/src/components/DashboardLayout.tsx`)
+Persistent MUI shell used only by `/admin/*`. Structure:
+- **Collapsible sidebar (permanent `Drawer` on ≥sm, temporary on mobile):**
+  - Brand header.
+  - Grouped nav (render a group label in small caps, then its items). Each item: icon + label, navigates via React Router, highlights when active. Filter items by the user's capabilities (`can(cap)` from the auth store).
+  - Collapse toggle (shrinks to icon-only ~68px with tooltips; expands to ~240px).
+  - Groups and items (label → route → required capability → icon):
+    - **Overview:** Dashboard → `/admin` → `report.view`
+    - **Operations:** POS → `/pos` → `pos.use`; Floor → `/floor` → `table.manage`; Kitchen → `/kds` → `kds.view`
+    - **Catalog:** Menu → `/admin/menu` → `menu.manage`; Tables → `/admin/tables` → `table.manage`; Inventory → `/admin/inventory` → `inventory.view`
+    - **Sales:** Orders/Shifts → `/admin/shifts` → `report.view`; Reports → `/admin/reports` → `report.view`; Expenses → `/admin/expenses` → `expense.manage`
+    - **Administration:** Users → `/admin/users` → `staff.manage`; Settings → `/admin/settings` → `settings.manage`; Backup → `/admin/backup` → `backup.manage`; Audit Logs → `/admin/audit` → `audit.view`; License → `/admin/license` → `settings.manage`
+    - **App Info:** About → `/admin/about` → (any)
+  - For `/pos`, `/floor`, `/kds` items, navigate to those top-level routes (they render in the old layout).
+- **App bar:**
+  - Left: current page title (derive from route).
+  - Center/right: shop name (from settings query), an open-shift chip (green, showing "Shift open · HH:MM" if there is a current open shift; poll `/shifts/current` every 30s), fullscreen toggle, `LanguageSwitcher`, user avatar menu.
+  - **Avatar menu items:** (disabled) username/role; Change password → opens dialog; Logout → `logout()` then `/login`.
+- **Change password dialog:** fields current/new/confirm; validate new===confirm and length≥8; call `POST /auth/change-password`; show success/error `Alert`.
+- **Fullscreen toggle:** use `document.documentElement.requestFullscreen()` and `document.exitFullscreen()`; track state via `fullscreenchange` listener.
+- **Trial/license banner:** query `/license/status`; if `licensed === false` OR (`edition === "BASIC"` and you want to nudge), show a dismissible MUI `Alert` at top of content: "You're on the Basic plan. Activate a license to raise limits." Link to `/admin/license`.
+- **Content area:** `<Suspense fallback={<ContentSkeleton/>}><Outlet/></Suspense>`. `ContentSkeleton` = a few MUI `Skeleton` blocks.
+
+Move the existing admin tab pages to be children of this layout. Remove the old `.cat-tabs` bar from `Admin.tsx` (the sidebar replaces it). Keep each page component's internal logic; you may gradually restyle them with MUI, but at minimum Users/UserForm must be MUI.
+
+### 9.3 `Login` page (`frontend/src/pages/Login.tsx`) — rewrite with MUI
+- Centered `Paper` on a light background with a subtle dot pattern.
+- Logo square + title "Sign in" + subtitle "Enter your credentials to continue".
+- A session-expired notice (`Alert warning`) if `sessionStorage.md_session_expired_message` exists (then clear it). Listen for `md:unauthorized` in `App.tsx` to set this message and redirect to `/login`.
+- Error `Alert` on failure. Map `err.code` → i18n `errors` key; fallback to `err.message`.
+- **Tabs:** "Password" and "PIN".
+  - Password tab: `TextField` Username/Email + Password; submit calls `loginCredentials(handle, password)`.
+  - PIN tab: numeric `TextField` (password type, centered); submit calls `loginPin(pin)`.
+- Submit button shows a spinner while loading; disabled until valid.
+- Footer: "First time? Set up your account" → `/setup` (only show if `needsSetup` is true; fetch `/auth/setup-status` on mount, and if true, auto-redirect to `/setup`).
+- Top-right: `LanguageSwitcher`.
+- On success navigate to role home (`homeForRole`).
+
+### 9.4 `SetupFirstAdmin` page (`frontend/src/pages/SetupFirstAdmin.tsx`)
+- Same visual framing as Login.
+- Fields: First name, Last name, Username, Email, Password, Confirm password.
+- Client-side: require all; password === confirm; show `Alert error` on mismatch or API error.
+- Submit `POST /auth/register-first-admin`. On success show `Alert success` ("First admin registered. You can now sign in.") and navigate to `/login` after ~1.5s.
+
+### 9.5 Users pages
+**`frontend/src/pages/admin/UsersAdmin.tsx`** (list):
+- Header row: title "User Management" + "Add User" button → `/admin/users/new`.
+- MUI `Table`: columns Username, Email, Name, Phone, Role, Status, Actions.
+- Role shown as a colored `Chip` (OWNER/ADMIN=error, MANAGER=warning, CASHIER=info, WAITER=success, KITCHEN=default). Status chip Active=success / Inactive=default.
+- Row click → `/admin/users/:id`. Actions cell: Edit icon → `/admin/users/:id`; Delete icon → opens confirm `Dialog`.
+- Delete confirm dialog: "Are you sure you want to delete user "{username}"? This action cannot be undone." Cancel / Delete. On confirm `apiDel("/users/"+id)`, invalidate `["users"]`, show toast. On error show the message (e.g. last-admin).
+- Data from `GET /users` (envelope `.data`).
+
+**`frontend/src/pages/admin/UserFormAdmin.tsx`** (create + edit, driven by presence of `:id`):
+- Title "Add User" / "Edit User".
+- If editing, fetch `GET /users/:id` and `GET /users/:id/stats`. Render a "Sales Performance" card with four stat tiles: Total Sales, Total Revenue, Today's Sales, Today's Revenue (use `formatMoney` from `lib/format.ts` for revenue).
+- Form fields (MUI `Grid`): Username (disabled when editing), Email, Password (helper text "Leave blank to keep current" when editing), Role (Select of the six roles), First name, Last name, Phone, Status (Active/Inactive Select).
+- Client validation with i18n messages (see `users` keys §10). Show field errors + a top `Alert error` for API errors.
+- Submit: create → `POST /users`; edit → `PUT /users/:id`. Omit `password` if blank; omit `username` on edit. Invalidate `["users"]`, navigate back to `/admin/users`.
+
+### 9.6 `Activate` page (`frontend/src/pages/admin/Activate.tsx`) — also reachable at `/activate`
+- Fetch `GET /license/status`.
+- Section 1 "Your Machine ID": show `machineId` in a monospace box with a Copy button (use `navigator.clipboard`).
+- Section 2 "License key": a multiline `TextField` to paste the key + "Activate" button → `POST /license/activate`. Show result: success (`Alert success` "Activated!") or an error message mapped from the reason code:
+  - `no_license` → "No license installed. Paste your key to unlock."
+  - `wrong_machine` → "This key is bound to a different machine."
+  - `expired` → "This license has expired. Paste a renewed key."
+  - `invalid` → "The key did not verify. Check you pasted the full key."
+- Section 3 "Current plan": show `edition`, a usage table (terminals/tables/menuItems used vs limit), and `daysLeft`/`expiresAt` if present.
+- If already licensed, show a success state and the plan details.
+
+### 9.7 `About` page (`frontend/src/pages/admin/About.tsx`)
+- Show: app name "MegaDine", version (read from `package.json` via Vite `import.meta` or hardcode a constant), edition (from `/license/status`), machine ID, and the LAN URL (`window.location.origin`).
+- Optionally render a QR code of the LAN URL using a small dependency (`qrcode.react`) — if adding it is friction, display the URL as copyable text instead. Do not block on QR.
+
+### 9.8 `AuditAdmin` page — enhance
+- Add filters: Action (text or select), User (select of users), date range (from/to date inputs).
+- Pass filters to `GET /admin/audit` (extend the backend route to accept `userId`, `from`, `to` query params in addition to existing `action`).
+- Row click opens a `Dialog` showing the full `before`/`after` JSON pretty-printed, plus reason, entity, IP.
+- Keep the existing table columns; add IP if available.
+
+### 9.9 `SettingsAdmin` page — turn into a hub + Shop Info
+Split into:
+- **Settings hub** (`/admin/settings`): cards linking to sub-sections: Shop Info, System (tax/currency/cutoff), Receipt (header/footer — keep existing simple fields for now), Backup, License, Language, About. Each card: icon, title, short description.
+- **System settings** stays as the existing form (name, currency, business day cutoff, tax %, service %, tax-inclusive, receipt header/footer) — keep current behavior, restyle with MUI.
+- **Add cash variance tolerance** field (number, default 10) to the system settings form; persist via `PATCH /admin/settings` (extend the backend settings schema/route to accept `cashVarianceTolerance`).
+- **Shop Info** (`/admin/shop-info`, capability `settings.manage`): fields Name, Address, Phone, Email, Tax ID, Currency, logo upload (optional — if file upload is complex, provide a text field for a logo URL and note it). Extend `PATCH /admin/settings` to accept these new Restaurant fields and update the backend `settingsSchema` accordingly.
+
+---
+
+## 10. i18n key inventory (author English JSON)
+
+Create these keys (values in English). Namespaces:
+
+**`auth.json`**: `sign_in`, `sign_in_title`, `username`, `password`, `enter_credentials`, `first_time`, `setup_account`, `login_failed`, `setup_title`, `setup_subtitle`, `first_name`, `last_name`, `email`, `confirm_password`, `create_admin_account`, `passwords_not_match`, `first_admin_registered`, `failed_to_register_admin`, `pin_tab` ("PIN"), `password_tab` ("Password").
+
+**`users.json`**: `title` ("User Management"), `add_user`, `edit_user`, `username`, `email`, `name`, `phone`, `role`, `status`, `actions`, `active`, `inactive`, `loading`, `failed_to_load_users`, `showing_users`, `delete_title`, `delete_confirm`, `cancel`, `delete`, `password`, `first_name`, `last_name`, `password_keep_current`, `update`, `create`, `username_required`, `email_required`, `email_invalid`, `password_required`, `password_min_length`, `first_name_required`, `last_name_required`, `role_required`, `failed_to_save_user`, `sales_performance`, `sales_performance_total_sales`, `sales_performance_total_revenue`, `sales_performance_today_sales`, `sales_performance_today_revenue`.
+
+**`nav.json`**: `group_overview`, `group_operations`, `group_catalog`, `group_sales`, `group_administration`, `app_info`, `dashboard`, `pos`, `floor`, `kitchen`, `menu`, `tables`, `inventory`, `shifts`, `reports`, `expenses`, `users`, `settings`, `backup`, `audit_logs`, `license`, `about`, `change_password`, `logout`, `current_password`, `new_password`, `fullscreen`, `exit_fullscreen`, `shop_name_fallback`.
+
+**`common.json`**: `save`, `cancel`, `loading`, `error`, `success`, `passwords_not_match`, `password_min`, `password_changed`, `failed_to_change_password`, `copy`, `copied`, `basic_plan_banner`.
+
+**`settings.json`**: `title`, `shop_info`, `system`, `receipt`, `backup`, `language`, `license`, `cash_variance_tolerance`, `address`, `phone`, `tax_id`, `currency`, `business_day_cutoff`, `tax_rate`, `service_charge`, `tax_inclusive`, `receipt_header`, `receipt_footer`, `save_settings`.
+
+**`cash.json`**: `shift_open`, `opened_at`, `expected_cash`, `actual_cash`, `variance`, `variance_warning`, `close_shift`, `open_shift`, `opening_float`, `tolerance`.
+
+**`errors.json`** (map from backend codes): `auth.login.failed`, `auth.login.inactive`, `auth.login.locked`, `auth.firstadmin.notallowed`, `auth.lastadmin.demote`, `auth.lastadmin.deactivate`, `auth.lastadmin.delete`, `auth.user.self.deactivate`, `auth.current.password.incorrect`, `validation.duplicate.username`, `validation.duplicate.email`, `cannot_reach_server`, `session_expired`, `forbidden`, `generic`. Provide human English messages.
+
+When showing an API error: prefer `errors[err.code]` if present, else `err.message`, else `errors.generic`.
+
+---
+
+## 11. Audit event catalog
+
+Use the existing `audit()` helper. Emit these `action` values (keep entityType/entityId consistent):
+- `AUTH_LOGIN`, `AUTH_LOGOUT`, `AUTH_PIN_CHANGED`, `PASSWORD_CHANGE`
+- `LOGIN_BLOCKED_INACTIVE` (entityType `User`, entityId = blocked user id)
+- `USER_REGISTER` (first admin), `USER_CREATE`, `USER_UPDATE`, `USER_DELETE`
+- `SHIFT_OPENED`, `SHIFT_CLOSED`, `SHIFT_PAID_IN`, `SHIFT_PAID_OUT`, `SHIFT_SAFE_DROP`
+- `SETTINGS_UPDATED`, `LICENSE_ACTIVATED`
+- Existing `BACKUP_*`, `STAFF_*` remain.
+
+Include `before`/`after` JSON for updates where meaningful (at least `{ role, isActive }` for user updates and `{ expectedCash, actualCash, variance, varianceExceedsTolerance }` for shift close).
+
+---
+
+## 12. Error code catalog (backend `ApiError`)
+
+Use these codes (throw via `new ApiError(status, code, message)` or helpers):
+| Code | HTTP | Meaning |
+|---|---|---|
+| `auth.login.failed` | 401 | Bad username/password |
+| `auth.login.inactive` | 403 | Account deactivated/deleted |
+| `auth.login.locked` | 423 | Too many attempts |
+| `auth.firstadmin.notallowed` | 403 | Setup already done |
+| `auth.lastadmin.demote` | 409 | Can't demote last admin |
+| `auth.lastadmin.deactivate` | 409 | Can't deactivate last admin |
+| `auth.lastadmin.delete` | 409 | Can't delete last admin |
+| `auth.user.self.deactivate` | 409 | Can't deactivate self |
+| `auth.current.password.incorrect` | 403 | Wrong current password |
+| `validation.duplicate.username` | 409 | Username taken |
+| `validation.duplicate.email` | 409 | Email taken |
+| `LICENSE_INVALID` | 400 | Key fails verification |
+| `LICENSE_EXPIRED` | 400 | Key expired |
+| `LICENSE_MACHINE_MISMATCH` | 400 | Key bound to another machine |
+
+The global error handler already serializes `{ error: { code, message } }`; frontend reads `.code`.
+
+---
+
+## 13. Verification and acceptance criteria
+
+Run and pass all of these before declaring done.
+
+### 13.1 Build hygiene
+```bash
+cd megadine/backend && npm run typecheck && npm run lint && npm test
+cd ../frontend && npm run typecheck && npm run lint && npm run build
+```
+Zero errors. Then `docker compose up -d --build` and confirm the app boots.
+
+### 13.2 Backend unit tests (`backend/test/unit.test.ts` or new test files)
+Add tests (Node built-in test runner) for:
+1. `releaseUnique` frees a handle (appends suffix, respects max length).
+2. Last-admin guard: with one active ADMIN, demote/deactivate/delete all throw `409`; with two active admins, they succeed.
+3. Self-deactivate guard throws.
+4. Cash variance: reproduce §6.8 worked example — assert `expectedCash === -10000` cents and `variance === +10000` when counted is 0.
+5. Tolerance: `abs(variance) == tolerance` → `varianceExceedsTolerance === false`; `abs(variance) == tolerance+1` → `true`.
+6. Refunds of a card-only sale are NOT subtracted from the drawer.
+
+### 13.3 API integration checks (manual or via the existing `scripts/verify-extended.ts`)
+1. Empty DB → `GET /auth/setup-status` returns `needsSetup: true`.
+2. `POST /auth/register-first-admin` succeeds once; second call → `403 auth.firstadmin.notallowed`.
+3. Login with the new username/password succeeds; wrong password 5× → `423`.
+4. Create a second ADMIN, then delete the first → allowed. Delete the last remaining admin → `409`.
+5. Deactivate own account → `409`.
+6. Soft-deleted user cannot log in; their username can be reused by a new user.
+7. `PATCH /users/me/language?lang=my` updates `preferredLanguage`.
+8. `GET /users/:id/stats` returns correct counts for a cashier with completed orders.
+
+### 13.4 Frontend acceptance
+1. `/setup` appears on empty DB; creating the admin lands on `/login`.
+2. Login works via both the Password tab and the PIN tab.
+3. `/admin/users` lists users in an MUI table; add/edit/delete work; deleting the last admin shows the 409 message.
+4. Editing a user shows the Sales Performance card with real numbers.
+5. The sidebar shows grouped navigation filtered by role (log in as CASHIER → Administration group hidden).
+6. Change-password dialog works and logs the user out of other sessions.
+7. Language switcher changes UI language and persists across reload.
+8. `/admin/license` (and `/activate`) shows the Machine ID, accepts a key from `npm run make-license`, and reflects the new edition.
+9. `/pos`, `/floor`, `/kds` still render with the original CSS and the outbox/offline behavior is unchanged (queue an order while offline, reconnect, confirm it syncs).
+10. No MUI classes (`.Mui*`) appear in the rendered POS/Floor/KDS screens.
+
+### 13.5 Update CI gates
+Extend `scripts/verify-basic.ts`/`verify-extended.ts` to call the new auth/user/license endpoints and assert the guard behaviors, so CI enforces them on every push.
+
+---
+
+## 14. Suggested implementation order
+
+1. Prisma schema + migration + seed updates (§2). Run migrate/generate.
+2. `permissions.ts` matrix incl. MANAGER (§3).
+3. `userGuards.ts`, then `users.routes.ts` (§5). Wire in `app.ts`.
+4. Auth route extensions: username login, lockout, setup-status, register-first-admin, change-password (§4).
+5. Cash variance module + shift service refactor (§6). Write unit tests now.
+6. License routes (§7).
+7. Frontend foundation: deps, theme, i18n, store updates (§8).
+8. `DashboardLayout` shell + routing restructure (§9.1–9.2).
+9. Auth pages: Login, SetupFirstAdmin (§9.3–9.4).
+10. Users pages (§9.5).
+11. Activate + About (§9.6–9.7).
+12. Audit + Settings hub + Shop Info (§9.8–9.9).
+13. i18n JSON authoring (§10) and error mapping.
+14. Full verification pass (§13).
+
+**Definition of done:** every item in §13 passes, the existing POS/Floor/KDS and offline outbox behave exactly as before, and the back-office renders in the new MUI shell with working user management, login, i18n, license activation, and corrected cash-shift reconciliation.
+
+---
+
+Save this as `AGENT_SPEC.md`. It is fully self-contained — the agent does not need any knowledge of the reference application. If you'd like, I can next produce a **per-file change list** (exact filenames + short diffs) derived from this spec, or a **smaller Phase-1-only slice** if you want the agent to land auth + users first before the shell.

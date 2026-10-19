@@ -2,6 +2,7 @@ import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
 import { fromCents, toCents } from "../lib/money.js";
 import { businessDateFor } from "../lib/businessDay.js";
+import { expectedCash as computeExpectedCash, varianceExceedsTolerance } from "../lib/cashVariance.js";
 import { audit } from "../lib/audit.js";
 import { EVENTS, emitToWorkspace } from "../lib/socket.js";
 import { getSettings } from "./order.service.js";
@@ -86,30 +87,67 @@ export async function addCashMovement(input: MovementInput) {
 export async function shiftSummary(shiftId: string) {
   const shift = await prisma.cashShift.findUnique({ where: { id: shiftId } });
   if (!shift) throw ApiError.notFound("Shift not found");
-  const movements = await prisma.cashMovement.findMany({ where: { shiftId } });
-  const payments = await prisma.payment.findMany({
-    where: { shiftId, status: "SUCCEEDED" },
-    include: { order: { select: { orderNumber: true, channel: true } } },
+
+  const [movements, payments, restaurant] = await Promise.all([
+    prisma.cashMovement.findMany({ where: { shiftId } }),
+    prisma.payment.findMany({
+      where: { shiftId, status: "SUCCEEDED" },
+      include: { order: { select: { orderNumber: true, channel: true } } },
+    }),
+    prisma.restaurant.findUnique({
+      where: { id: shift.restaurantId },
+      select: { cashVarianceTolerance: true },
+    }),
+  ]);
+
+  const windowStart = shift.openedAt;
+  const windowEnd = shift.closedAt ?? new Date();
+  const toleranceCents = toCents(restaurant?.cashVarianceTolerance ?? 10);
+
+  // Refunds are attributed by time window, not by the original payment's shift
+  // (PRD §6.2): a refund only counts when the refunded order had at least one
+  // SUCCEEDED CASH payment — otherwise no cash actually left the drawer.
+  const refundsInWindowRaw = await prisma.refund.findMany({
+    where: { createdAt: { gte: windowStart, lte: windowEnd } },
+    select: { orderId: true, amount: true },
   });
-  const refunds = await prisma.refund.findMany({
-    where: { payment: { shiftId } },
-  });
+  const cashOrderIds = new Set(
+    (
+      await prisma.order.findMany({
+        where: {
+          id: { in: [...new Set(refundsInWindowRaw.map((r) => r.orderId))] },
+          payments: { some: { method: "CASH", status: "SUCCEEDED" } },
+        },
+        select: { id: true },
+      })
+    ).map((o) => o.id),
+  );
 
   const sum = (type: string, dir: "IN" | "OUT") =>
     movements.filter((m) => m.type === type && m.direction === dir).reduce((s, m) => s + toCents(m.amount), 0);
 
-  const cashSales = sum("CASH_SALE", "IN");
-  const cashRefunds = sum("CASH_REFUND", "OUT");
+  const cashSales = payments
+    .filter((p) => p.method === "CASH")
+    .reduce((s, p) => s + toCents(p.amount), 0);
+  const refundsInWindow = refundsInWindowRaw
+    .filter((r) => cashOrderIds.has(r.orderId))
+    .reduce((s, r) => s + toCents(r.amount), 0);
   const paidIn = sum("PAID_IN", "IN");
   const paidOut = sum("PAID_OUT", "OUT");
   const safeDrops = sum("SAFE_DROP", "OUT");
-  const expectedCash =
-    toCents(shift.openingFloat) + cashSales - cashRefunds + paidIn - paidOut - safeDrops;
+  const expectedCash = computeExpectedCash({
+    openingFloat: toCents(shift.openingFloat),
+    cashSales,
+    refundsInWindow,
+    paidIn,
+    paidOut,
+    safeDrops,
+  });
 
   const byMethod: Record<string, number> = {};
   for (const p of payments) byMethod[p.method] = (byMethod[p.method] ?? 0) + toCents(p.amount);
 
-  const refundTotal = refunds.reduce((s, r) => s + toCents(r.amount), 0);
+  const refundTotal = refundsInWindow;
   const orderIds = new Set(payments.map((p) => p.orderId));
   const orders = await prisma.order.findMany({
     where: { id: { in: [...orderIds] } },
@@ -126,12 +164,15 @@ export async function shiftSummary(shiftId: string) {
     { gross: 0, subtotal: 0, tax: 0, discounts: 0, service: 0 },
   );
 
+  const storedVarianceCents = shift.variance != null ? toCents(shift.variance) : null;
+
   return {
     shift,
     orderCount: orderIds.size,
     openingFloat: toCents(shift.openingFloat),
     cashSales,
-    cashRefunds,
+    refundsInWindow,
+    cashRefunds: refundsInWindow,
     paidIn,
     paidOut,
     safeDrops,
@@ -140,6 +181,9 @@ export async function shiftSummary(shiftId: string) {
     refundTotal,
     totals,
     payments: payments.length,
+    varianceTolerance: Number(fromCents(toleranceCents)),
+    varianceExceedsTolerance:
+      storedVarianceCents != null ? varianceExceedsTolerance(storedVarianceCents, toleranceCents) : false,
   };
 }
 
@@ -156,6 +200,7 @@ export async function closeShift(input: CloseShiftInput) {
   if (summary.shift.status !== "OPEN") throw ApiError.conflict("Shift is already closed");
 
   const variance = input.actualCash - summary.expectedCash;
+  const exceeds = varianceExceedsTolerance(variance, toCents(summary.varianceTolerance ?? 0));
   const updated = await prisma.cashShift.update({
     where: { id: input.shiftId },
     data: {
@@ -173,10 +218,23 @@ export async function closeShift(input: CloseShiftInput) {
     action: "SHIFT_CLOSED",
     entityType: "CashShift",
     entityId: input.shiftId,
-    after: { expectedCash: fromCents(summary.expectedCash), actualCash: fromCents(input.actualCash), variance: fromCents(variance) },
+    after: {
+      expectedCash: fromCents(summary.expectedCash),
+      actualCash: fromCents(input.actualCash),
+      variance: fromCents(variance),
+      varianceTolerance: summary.varianceTolerance,
+      varianceExceedsTolerance: exceeds,
+    },
+    reason: exceeds ? input.notes ?? "Cash variance exceeds tolerance" : input.notes ?? null,
   });
   emitToWorkspace(EVENTS.SHIFT_UPDATED, { shiftId: input.shiftId, status: "CLOSED" });
-  return { shift: updated, summary, variance };
+  return {
+    shift: updated,
+    summary,
+    variance,
+    varianceTolerance: summary.varianceTolerance,
+    varianceExceedsTolerance: exceeds,
+  };
 }
 
 export async function currentOpenShift(restaurantId: string, cashierId?: string, terminalId?: string | null) {

@@ -1,0 +1,17 @@
+{
+  "auth.login.failed": "Nom d'utilisateur/e-mail ou mot de passe invalide",
+  "auth.login.inactive": "Ce compte est désactivé",
+  "auth.login.locked": "Trop de tentatives. Réessayez plus tard.",
+  "auth.firstadmin.notallowed": "La configuration est déjà terminée",
+  "auth.lastadmin.demote": "Vous ne pouvez pas rétrograder le dernier administrateur",
+  "auth.lastadmin.deactivate": "Vous ne pouvez pas désactiver le dernier administrateur",
+  "auth.lastadmin.delete": "Vous ne pouvez pas supprimer le dernier administrateur",
+  "auth.user.self.deactivate": "Vous ne pouvez pas désactiver votre propre compte",
+  "auth.current.password.incorrect": "Le mot de passe actuel est incorrect",
+  "validation.duplicate.username": "Ce nom d'utilisateur est déjà pris",
+  "validation.duplicate.email": "Cet e-mail est déjà enregistré",
+  "cannot_reach_server": "Impossible de joindre le serveur. Vérifiez votre connexion.",
+  "session_expired": "Votre session a expiré. Veuillez vous reconnecter.",
+  "forbidden": "Vous n'avez pas la permission d'effectuer cette action",
+  "generic": "Une erreur est survenue. Veuillez réessayer."
+}

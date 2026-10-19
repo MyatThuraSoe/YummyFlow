@@ -12,8 +12,8 @@ export default defineConfig({
         name: "MegaDine POS",
         short_name: "MegaDine",
         description: "Offline-first restaurant point of sale",
-        theme_color: "#0f172a",
-        background_color: "#0f172a",
+        theme_color: "#ffffff",
+        background_color: "#ffffff",
         display: "fullscreen",
         start_url: "/",
         icons: [
@@ -25,13 +25,13 @@ export default defineConfig({
         runtimeCaching: [
           {
             urlPattern: ({ url }) => url.pathname.startsWith("/api/v1/menu"),
-            handler: "StaleWhileRevalidate",
-            options: { cacheName: "menu-cache" },
+            handler: "NetworkFirst",
+            options: { cacheName: "menu-cache", networkTimeoutSeconds: 2 },
           },
           {
             urlPattern: ({ url }) => url.pathname.startsWith("/api/v1/tables"),
-            handler: "StaleWhileRevalidate",
-            options: { cacheName: "tables-cache" },
+            handler: "NetworkFirst",
+            options: { cacheName: "tables-cache", networkTimeoutSeconds: 2 },
           },
         ],
       },

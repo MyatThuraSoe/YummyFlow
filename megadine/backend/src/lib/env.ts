@@ -32,6 +32,8 @@ export const env = {
   PRINTER_MODE: process.env.PRINTER_MODE ?? "simulate",
   RECEIPT_PRINTER_IP: process.env.RECEIPT_PRINTER_IP ?? "",
   KITCHEN_PRINTER_IP: process.env.KITCHEN_PRINTER_IP ?? "",
+  // Print a receipt automatically when an order is fully paid (spec §6.5).
+  AUTO_PRINT_RECEIPT: bool(process.env.AUTO_PRINT_RECEIPT, true),
   LICENSE_KEY: process.env.LICENSE_KEY ?? "",
   MEGACODE_LICENSE_PUBLIC_KEY: process.env.MEGACODE_LICENSE_PUBLIC_KEY ?? "",
   // Pin the machine id explicitly (e.g. inside Docker) so the hardware-bound
@@ -43,6 +45,8 @@ export const env = {
   SESSION_TTL_HOURS: num(process.env.SESSION_TTL_HOURS, 12),
   MAX_PIN_ATTEMPTS: num(process.env.MAX_PIN_ATTEMPTS, 3),
   LOCKOUT_MINUTES: num(process.env.LOCKOUT_MINUTES, 5),
+  MAX_PASSWORD_ATTEMPTS: num(process.env.MAX_PASSWORD_ATTEMPTS, 5),
+  PASSWORD_LOCKOUT_MINUTES: num(process.env.PASSWORD_LOCKOUT_MINUTES, 15),
   // Set true only when serving over HTTPS; LAN installs run plain HTTP and a
   // Secure cookie would be dropped by the browser.
   COOKIE_SECURE: bool(process.env.COOKIE_SECURE, false),
@@ -50,3 +54,7 @@ export const env = {
 };
 
 export const isProd = env.NODE_ENV === "production";
+
+/** Languages the back-office UI ships with (PRD platform §5.1). */
+export const SUPPORTED_LANGUAGES = ["en", "my", "ja", "th", "fr"] as const;
+export type SupportedLanguage = (typeof SUPPORTED_LANGUAGES)[number];

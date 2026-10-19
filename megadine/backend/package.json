@@ -18,12 +18,14 @@
     "seed": "tsx prisma/seed.ts",
     "verify": "tsx scripts/verify-basic.ts",
     "verify:extended": "tsx scripts/verify-extended.ts",
+    "verify:fresh": "tsx scripts/verify-fresh-install.ts",
     "make-license": "tsx scripts/make-license.ts",
     "rotate-pins": "tsx scripts/rotate-pins.ts",
-    "test": "node --import tsx --test test/unit.test.ts"
+    "test": "node --import tsx --test test/unit.test.ts test/receipt.test.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.0",
+    "@types/qrcode": "^1.5.6",
     "bcryptjs": "^3.0.2",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
@@ -31,6 +33,7 @@
     "express": "^5.2.1",
     "helmet": "^8.1.0",
     "morgan": "^1.10.1",
+    "qrcode": "^1.5.4",
     "socket.io": "^4.8.3",
     "zod": "^4.4.3"
   },

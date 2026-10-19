@@ -5,9 +5,7 @@ import { audit } from "../lib/audit.js";
 import { verifyManagerPin } from "../lib/approval.js";
 import { EVENTS, emitToWorkspace } from "../lib/socket.js";
 import { consumeForOrder } from "./inventory.service.js";
-import { sendToPrinter, buildReceiptText } from "../lib/printers.js";
-import { getSettings } from "./order.service.js";
-import { env } from "../lib/env.js";
+import { autoPrintReceipt, receiptTextForOrder } from "./receipt.service.js";
 import type { PaymentMethod } from "@prisma/client";
 
 export interface TenderInput {
@@ -42,7 +40,6 @@ export async function payOrder(input: PayOrderInput) {
   if (order.status === "CANCELLED") throw ApiError.conflict("Order is cancelled");
   if (order.paymentStatus === "SUCCEEDED") throw ApiError.conflict("Order already paid");
 
-  const settings = await getSettings(order.restaurantId);
   const total = toCents(order.total);
   const alreadyPaid = order.payments
     .filter((p) => p.status === "SUCCEEDED")
@@ -121,40 +118,16 @@ export async function payOrder(input: PayOrderInput) {
     return updated;
   });
 
-  // Receipt printing (best-effort, after commit).
-  const full = await prisma.order.findUnique({
-    where: { id: order.id },
-    include: { payments: true, lines: { include: { modifiers: true } } },
-  });
+  // Receipt: rendered with the configurable template for the POS response;
+  // printing happens fire-and-forget so a printer failure never delays the
+  // cashier (spec §6.5).
   let receiptPreview = "";
-  if (full) {
-    receiptPreview = buildReceiptText({
-      restaurantName: settings.name,
-      currency: settings.currency,
-      header: settings.receiptHeader,
-      footer: settings.receiptFooter,
-      orderNumber: full.orderNumber,
-      channel: full.channel,
-      tableLabel: order.tableId ? full.tableId : null,
-      createdAt: full.createdAt,
-      lines: full.lines.map((l) => ({
-        name: l.itemNameSnapshot,
-        qty: l.quantity,
-        unit: fromCents(toCents(l.unitPriceSnapshot)),
-        total: fromCents(toCents(l.lineTotal)),
-        modifiers: l.modifiers.map((m) => m.nameSnapshot),
-        voided: l.isVoided,
-      })),
-      subtotal: fromCents(toCents(full.subtotal)),
-      discountAmount: fromCents(toCents(full.discountAmount)),
-      serviceCharge: fromCents(toCents(full.serviceCharge)),
-      taxAmount: fromCents(toCents(full.taxAmount)),
-      total: fromCents(toCents(full.total)),
-      payments: full.payments.map((p) => ({ method: p.method, amount: fromCents(toCents(p.amount)) })),
-      changeGiven: fromCents(toCents(full.changeGiven)),
-    });
-    await sendToPrinter(env.RECEIPT_PRINTER_IP || null, receiptPreview);
+  try {
+    receiptPreview = (await receiptTextForOrder(order.id)).text;
+  } catch (err) {
+    console.error("[payment] receipt render failed", err);
   }
+  if (completes) autoPrintReceipt(order.id, { restaurantId: order.restaurantId, actorId: input.actorId });
 
   await audit({
     restaurantId: order.restaurantId,
@@ -179,43 +152,6 @@ export interface RefundInput {
   managerPin: string;
   restock?: boolean;
   idempotencyKey?: string | null;
-}
-
-/** Rebuild a printable receipt for an order (optionally marked as a reprint). */
-export async function receiptTextForOrder(orderId: string, reprint = false) {
-  const full = await prisma.order.findUnique({
-    where: { id: orderId },
-    include: { payments: true, lines: { include: { modifiers: true } }, tableSession: { include: { table: true } } },
-  });
-  if (!full) throw ApiError.notFound("Order not found");
-  const settings = await getSettings(full.restaurantId);
-  const text = buildReceiptText({
-    restaurantName: settings.name,
-    currency: settings.currency,
-    header: settings.receiptHeader,
-    footer: settings.receiptFooter,
-    orderNumber: full.orderNumber,
-    channel: full.channel,
-    tableLabel: full.tableSession?.table ? `#${full.tableSession.table.number}` : null,
-    createdAt: full.createdAt,
-    lines: full.lines.map((l) => ({
-      name: l.itemNameSnapshot,
-      qty: l.quantity,
-      unit: fromCents(toCents(l.unitPriceSnapshot)),
-      total: fromCents(toCents(l.lineTotal)),
-      modifiers: l.modifiers.map((m) => m.nameSnapshot),
-      voided: l.isVoided,
-    })),
-    subtotal: fromCents(toCents(full.subtotal)),
-    discountAmount: fromCents(toCents(full.discountAmount)),
-    serviceCharge: fromCents(toCents(full.serviceCharge)),
-    taxAmount: fromCents(toCents(full.taxAmount)),
-    total: fromCents(toCents(full.total)),
-    payments: full.payments.map((p) => ({ method: p.method, amount: fromCents(toCents(p.amount)) })),
-    changeGiven: fromCents(toCents(full.changeGiven)),
-    reprint,
-  });
-  return { text, order: full };
 }
 
 export async function refundOrder(input: RefundInput) {

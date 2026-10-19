@@ -31,6 +31,7 @@ export async function updateTicketStatus(
   ticketId: string,
   status: KitchenItemStatus,
   actorId: string,
+  reason?: string,
 ) {
   const ticket = await prisma.kitchenTicket.findUnique({ where: { id: ticketId }, include: { order: true } });
   if (!ticket) throw ApiError.notFound("Ticket not found");
@@ -73,6 +74,7 @@ export async function updateTicketStatus(
     action: `KITCHEN_TICKET_${status}`,
     entityType: "KitchenTicket",
     entityId: ticketId,
+    reason: reason ?? null,
   });
   emitToRole("KITCHEN", EVENTS.KITCHEN_UPDATED, { ticketId, status });
   emitToWorkspace(EVENTS.KITCHEN_UPDATED, { ticketId, status, orderNumber: ticket.order.orderNumber });

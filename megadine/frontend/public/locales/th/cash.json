@@ -1,0 +1,12 @@
+{
+  "shift_open": "เปิดกะแล้ว",
+  "opened_at": "เปิดเมื่อ",
+  "expected_cash": "เงินสดที่คาดไว้",
+  "actual_cash": "เงินสดจริง",
+  "variance": "ส่วนต่าง",
+  "variance_warning": "ส่วนต่างเงินสดเกินค่าคลาดเคลื่อนที่กำหนด",
+  "close_shift": "ปิดกะ",
+  "open_shift": "เปิดกะ",
+  "opening_float": "เงินทอนเริ่มต้น",
+  "tolerance": "ค่าคลาดเคลื่อน"
+}

@@ -1,4 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <rect width="64" height="64" rx="14" fill="#0b1220"/>
-  <text x="32" y="43" font-family="Segoe UI, sans-serif" font-size="34" font-weight="800" text-anchor="middle" fill="#f4b23f">M</text>
+  <rect width="64" height="64" rx="14" fill="#ffffff"/>
+  <rect x="0.5" y="0.5" width="63" height="63" rx="13.5" fill="none" stroke="#6f4e37" stroke-width="1" opacity="0.35"/>
+  <text x="32" y="43" font-family="Segoe UI, sans-serif" font-size="34" font-weight="800" text-anchor="middle" fill="#6f4e37">M</text>
 </svg>

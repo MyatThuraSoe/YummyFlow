@@ -25,13 +25,15 @@ kitchenRouter.get(
   }),
 );
 
+const statusSchema = z.object({ status: statusEnum, reason: z.string().min(2).max(300).optional() });
+
 kitchenRouter.post(
   "/tickets/:id/status",
   requirePermission("kds.update"),
-  validate({ body: z.object({ status: statusEnum }) }),
+  validate({ body: statusSchema }),
   asyncHandler(async (req, res) => {
-    const { status } = req.body as { status: z.infer<typeof statusEnum> };
-    const ticket = await updateTicketStatus(String(req.params.id), status, req.auth!.userId);
+    const { status, reason } = req.body as z.infer<typeof statusSchema>;
+    const ticket = await updateTicketStatus(String(req.params.id), status, req.auth!.userId, reason);
     res.json({ ticket });
   }),
 );

@@ -1,5 +1,4 @@
 import net from "node:net";
-import { fromCents } from "./money.js";
 import { env } from "./env.js";
 
 const WIDTH = 32; // chars for a 58mm thermal printer
@@ -45,61 +44,6 @@ const cols = (left: string, right: string) => {
   return l + " ".repeat(Math.max(1, WIDTH - l.length - r.length)) + r;
 };
 
-export interface ReceiptData {
-  restaurantName: string;
-  currency: string;
-  header?: string | null;
-  footer?: string | null;
-  orderNumber: number;
-  channel: string;
-  tableLabel?: string | null;
-  cashier?: string | null;
-  createdAt: Date;
-  lines: { name: string; qty: number; unit: string; total: string; modifiers?: string[]; voided?: boolean }[];
-  subtotal: string;
-  discountAmount?: string;
-  serviceCharge?: string;
-  taxAmount: string;
-  total: string;
-  payments: { method: string; amount: string }[];
-  changeGiven?: string;
-  reprint?: boolean;
-}
-
-export function buildReceiptText(d: ReceiptData): string {
-  const out: string[] = [];
-  out.push(center(d.restaurantName));
-  if (d.header) out.push(center(d.header));
-  out.push(line());
-  if (d.reprint) out.push(center("*** REPRINT ***"));
-  out.push(cols(`Order #${d.orderNumber}`, d.channel.replace("_", "-")));
-  if (d.tableLabel) out.push(cols("Table", d.tableLabel));
-  out.push(cols("Date", d.createdAt.toLocaleString()));
-  if (d.cashier) out.push(cols("Cashier", d.cashier));
-  out.push(line());
-  for (const l of d.lines) {
-    const tag = l.voided ? "[VOID] " : "";
-    out.push(cols(`${tag}${l.qty}x ${l.name}`, l.total));
-    if (l.unit && l.qty > 1) out.push(`   @ ${l.unit}`);
-    for (const m of l.modifiers ?? []) out.push(`   + ${m}`);
-  }
-  out.push(line());
-  out.push(cols("Subtotal", `${d.currency} ${d.subtotal}`));
-  if (d.discountAmount && d.discountAmount !== "0.00") out.push(cols("Discount", `-${d.currency} ${d.discountAmount}`));
-  if (d.serviceCharge && d.serviceCharge !== "0.00") out.push(cols("Service", `${d.currency} ${d.serviceCharge}`));
-  out.push(cols("Tax", `${d.currency} ${d.taxAmount}`));
-  out.push(cols("TOTAL", `${d.currency} ${d.total}`));
-  out.push(line());
-  for (const p of d.payments) out.push(cols(p.method, `${d.currency} ${p.amount}`));
-  if (d.changeGiven && d.changeGiven !== "0.00") out.push(cols("Change", `${d.currency} ${d.changeGiven}`));
-  out.push(line());
-  out.push(center("Thank you! Please come again."));
-  if (d.footer) out.push(center(d.footer));
-  out.push("");
-  out.push("");
-  return out.map((l) => (l.length > WIDTH && !l.startsWith(" ") ? line(l) : l)).join("\n");
-}
-
 export function buildKitchenTicketText(t: {
   orderNumber: number;
   station: string;
@@ -124,9 +68,3 @@ export function buildKitchenTicketText(t: {
   out.push("");
   return out.join("\n");
 }
-
-export function receiptDataToText(preview: string): string {
-  return preview;
-}
-
-export { fromCents };

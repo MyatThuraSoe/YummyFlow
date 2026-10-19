@@ -1,10 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost } from "../lib/api";
 import { useCart, type CartLine } from "../store/cart";
 import { useAuth } from "../store/auth";
 import { computeTotals, formatMoney, fromCents, toCents } from "../lib/format";
 import { enqueueOrder, pendingCount, shouldQueue } from "../lib/outbox";
+import { printOrderReceipt } from "../lib/receipts";
 import { Field, Modal, useToast } from "../components/ui";
 
 interface MenuOption { id: string; name: string; price: string; isAvailable: boolean }
@@ -17,16 +20,20 @@ interface Settings { restaurant: { currency: string; taxRate: string; taxInclusi
 
 interface ServerLine { id: string; menuItemId: string; itemNameSnapshot: string; variantSnapshot: string | null; unitPriceSnapshot: string; quantity: number; lineTotal: string; isVoided: boolean; notes: string | null; modifiers: { id: string; nameSnapshot: string; priceSnapshot: string }[] }
 interface OrderShape {
-  id: string; orderNumber: number; total: string; subtotal: string; taxAmount: string; serviceCharge: string; discountAmount: string;
+  id: string; orderNumber: number; total: string; subtotal: string; taxAmount: string; serviceCharge: string; discountAmount: string; amountPaid: string; paymentStatus: string;
   status: string; channel: string; tableId: string | null; lines: ServerLine[];
   tableSession?: { table: { number: number; name: string | null } } | null;
 }
+
+type Tender = { method: string; amount: number; cashReceived?: number; reference?: string | null };
 
 export default function Pos() {
   const qc = useQueryClient();
   const { push } = useToast();
   const { can } = useAuth();
+  const { t } = useTranslation(["ops", "common"]);
   const cart = useCart();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [activeCat, setActiveCat] = useState<string | null>(null);
   const [modItem, setModItem] = useState<MenuItem | null>(null);
   const [showPay, setShowPay] = useState(false);
@@ -36,6 +43,9 @@ export default function Pos() {
   const [voidTarget, setVoidTarget] = useState<ServerLine | null>(null);
   const [busy] = useState(false);
   const [queued, setQueued] = useState(pendingCount());
+  const [notes, setNotes] = useState("");
+  const [pickupName, setPickupName] = useState("");
+  const [receipt, setReceipt] = useState<{ orderId: string; orderNumber: number; preview: string; changeGiven: string | null } | null>(null);
 
   const { data: menu } = useQuery({ queryKey: ["menu"], queryFn: () => apiGet<{ categories: Category[] }>("/menu") });
   const { data: tables } = useQuery({ queryKey: ["tables"], queryFn: () => apiGet<{ tables: TableRow[] }>("/tables") });
@@ -55,14 +65,74 @@ export default function Pos() {
   const locked = !!cart.orderId;
 
   const lineTotals = cart.lineTotals();
-  const totals = useMemo(() => computeTotals(lineTotals, cart.orderDiscount, cfg), [lineTotals, cart.orderDiscount, cfg]);
-  const serverTotal = order ? toCents(order.total) : totals.total;
+  const totals = useMemo(() => computeTotals(lineTotals, 0, cfg), [lineTotals, cfg]);
+  const orderDue = order ? Math.max(0, toCents(order.total) - toCents(order.amountPaid ?? "0")) : 0;
+  const newItemsTotal = cart.lines.length ? totals.total : 0;
+  const chargeTotal = order ? orderDue + newItemsTotal : totals.total;
+
+  const channelLabel = (channel: string) => t(`ops:channel_${String(channel).toLowerCase()}`, { defaultValue: String(channel).replace("_", " ") });
+  const statusLabel = (status: string) => t(`ops:order_status_${String(status).toLowerCase()}`, { defaultValue: String(status).replaceAll("_", " ") });
+
+  function recallOrder(o: OrderShape) {
+    cart.loadFromServer({
+      channel: o.channel as never,
+      tableId: o.tableId,
+      tableLabel: o.tableSession?.table ? `#${o.tableSession.table.number}` : null,
+      orderId: o.id,
+      orderNumber: o.orderNumber,
+      orderDiscount: 0,
+      lines: [],
+    });
+    setOrder(o);
+    setShowOrders(false);
+    push(t("ops:pos_recalled", { number: o.orderNumber }), "ok");
+  }
+
+  useEffect(() => {
+    const tid = searchParams.get("tableId");
+    if (!tid) return;
+    setSearchParams({}, { replace: true });
+    if (cart.orderId) return;
+    apiGet<{ orders: OrderShape[] }>("/orders/open", { tableId: tid })
+      .then((res) => {
+        if (res.orders[0]) recallOrder(res.orders[0]);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function pickTable(tableId: string) {
+    const tbl = availableTables.find((x) => x.id === tableId);
+    if (!tableId || !tbl) {
+      cart.setTable(null, null);
+      return;
+    }
+    cart.setTable(tbl.id, `#${tbl.number}`);
+    if (tbl.status === "OCCUPIED") {
+      try {
+        const res = await apiGet<{ orders: OrderShape[] }>("/orders/open", { tableId: tbl.id });
+        if (res.orders[0]) recallOrder(res.orders[0]);
+        else push(t("ops:pos_table_in_use_no_order", { number: tbl.number }), "info");
+      } catch {
+        /* keep the selection; creating a new order will surface any conflict */
+      }
+    }
+  }
 
   function addItem(item: MenuItem) {
-    if (locked) return;
     const needsModal = item.variants.length > 0 || item.modifierGroups.some((g) => g.options.length > 0);
     if (needsModal) return setModItem(item);
     cart.addLine({ menuItemId: item.id, name: item.name, unitPrice: toCents(item.price), modifiers: [], quantity: 1, variantId: null, variantName: null });
+  }
+
+  function cartToItems() {
+    return cart.lines.map((l) => ({
+      menuItemId: l.menuItemId,
+      quantity: l.quantity,
+      variantId: l.variantId || null,
+      modifierOptionIds: l.modifiers.map((m) => m.id),
+      notes: l.notes ?? null,
+    }));
   }
 
   function buildCreateBody() {
@@ -70,14 +140,9 @@ export default function Pos() {
       channel: cart.channel,
       tableId: cart.channel === "DINE_IN" ? cart.tableId : null,
       shiftId: shiftRes?.shift?.id ?? null,
-      items: cart.lines.map((l) => ({
-        menuItemId: l.menuItemId,
-        quantity: l.quantity,
-        variantId: l.variantId || null,
-        modifierOptionIds: l.modifiers.map((m) => m.id),
-        notes: l.notes ?? null,
-      })),
-      orderDiscount: cart.orderDiscount ? Number(fromCents(cart.orderDiscount)) : undefined,
+      items: cartToItems(),
+      notes: notes || null,
+      pickupName: cart.channel === "DINE_IN" ? null : pickupName || null,
     };
   }
 
@@ -85,45 +150,69 @@ export default function Pos() {
     if (order) return order;
     const res = await apiPost<{ order: OrderShape }>("/orders", buildCreateBody());
     cart.setOrder(res.order.id, res.order.orderNumber);
+    cart.clearLines();
     setOrder(res.order);
     qc.invalidateQueries({ queryKey: ["orders"] });
     return res.order;
   }
 
-  function queueOffline(sendToKitchen: boolean, payNow: boolean) {
+  /** Append not-yet-submitted cart lines to the server order (round 2+). */
+  async function pushPendingItems(o: OrderShape): Promise<OrderShape> {
+    if (!cart.lines.length) return o;
+    await apiPost(`/orders/${o.id}/items`, { items: cartToItems() });
+    cart.clearLines();
+    const fresh = await apiGet<{ order: OrderShape }>(`/orders/${o.id}`);
+    setOrder(fresh.order);
+    return fresh.order;
+  }
+
+  function queueOffline(o: OrderShape | null, opts: { sendToKitchen: boolean; payNow: boolean; tenders?: Tender[]; idemKey?: string }) {
     enqueueOrder({
-      label: `${cart.channel} · ${cart.lines.length} item(s)`,
-      create: buildCreateBody(),
-      sendToKitchen,
-      pay: payNow
+      label: o ? `${t("ops:order_number", { number: o.orderNumber })} · ${cart.lines.length}` : `${channelLabel(cart.channel)} · ${cart.lines.length}`,
+      orderId: o?.id ?? null,
+      addItems: cartToItems(),
+      create: o ? null : buildCreateBody(),
+      sendToKitchen: opts.sendToKitchen,
+      pay: opts.payNow
         ? {
             shiftId: shiftRes?.shift?.id ?? null,
-            idempotencyKey: `pay-${crypto.randomUUID()}`,
-            payments: [{ method: "CASH", amount: Number(fromCents(serverTotal)) }],
+            idempotencyKey: opts.idemKey ?? `pay-${crypto.randomUUID()}`,
+            payments: opts.tenders ?? [{ method: "CASH", amount: Number(fromCents(chargeTotal)) }],
           }
         : null,
     });
     setQueued(pendingCount());
-    cart.reset();
-    setOrder(null);
-    push("Offline — order queued and will sync automatically", "info");
     qc.invalidateQueries({ queryKey: ["outbox"] });
   }
 
   const sendMut = useMutation({
     mutationFn: async () => {
-      const o = await ensureOrder();
-      return apiPost<{ tickets: number }>(`/orders/${o.id}/send-to-kitchen`);
+      let o: OrderShape | null = null;
+      try {
+        o = await ensureOrder();
+        const withItems = await pushPendingItems(o);
+        return await apiPost<{ tickets: number }>(`/orders/${withItems.id}/send-to-kitchen`);
+      } catch (e) {
+        if (!shouldQueue(e)) throw e;
+        queueOffline(o, { sendToKitchen: true, payNow: false });
+        if (o) cart.clearLines();
+        else {
+          cart.reset();
+          setOrder(null);
+        }
+        return null;
+      }
     },
     onSuccess: (r) => {
-      push(`Sent to kitchen (${r.tickets} ticket${r.tickets === 1 ? "" : "s"})`, "ok");
+      if (!r) {
+        push(t("ops:pos_offline_queued_toast"), "info");
+        return;
+      }
+      push(t("ops:pos_sent_kitchen_toast", { count: r.tickets }), "ok");
       qc.invalidateQueries({ queryKey: ["tickets"] });
       qc.invalidateQueries({ queryKey: ["tables"] });
     },
-    onError: (e) => {
-      if (shouldQueue(e)) queueOffline(true, false);
-      else push(e instanceof Error ? e.message : "Failed", "error");
-    },
+    onError: (e) => push(e instanceof Error ? e.message : t("ops:failed"), "error"),
   });
 
   async function doDiscount(type: "PERCENT" | "ABSOLUTE", value: number, managerPin?: string) {
@@ -131,82 +220,86 @@ export default function Pos() {
     await apiPost(`/orders/${o.id}/discount`, { type, value, managerPin });
     const fresh = await apiGet<{ order: OrderShape }>(`/orders/${o.id}`);
     setOrder(fresh.order);
-    const discountCents = type === "PERCENT" ? Math.round(toCents(fresh.order.subtotal) * (value / 100)) : toCents(value);
-    cart.setOrderDiscount(discountCents);
     setShowDiscount(false);
-    push("Discount applied", "ok");
+    push(t("ops:pos_discount_applied"), "ok");
     qc.invalidateQueries({ queryKey: ["orders"] });
   }
 
-  async function pay(tenders: { method: string; amount: number; cashReceived?: number }[]) {
-    if (shouldQueue()) {
-      enqueueOrder({
-        label: `${cart.channel} · ${cart.lines.length} item(s)`,
-        create: buildCreateBody(),
-        sendToKitchen: false,
-        pay: { shiftId: shiftRes?.shift?.id ?? null, idempotencyKey: `pay-${crypto.randomUUID()}`, payments: tenders },
-      });
-      setQueued(pendingCount());
-      setShowPay(false);
-      setOrder(null);
-      cart.reset();
-      push("Offline — payment queued and will sync automatically", "info");
-      return;
-    }
+  async function pay(tenders: Tender[], idemKey: string) {
+    let o: OrderShape | null = order;
     try {
-      const o = await ensureOrder();
-      await apiPost("/payments", {
-        orderId: o.id,
-        shiftId: shiftRes?.shift?.id ?? null,
-        idempotencyKey: `pay-${o.id}`,
-        payments: tenders,
-      });
-      push(`Payment complete — order #${o.orderNumber}`, "ok");
-      setShowPay(false);
-      setOrder(null);
-      cart.reset();
-      qc.invalidateQueries({ queryKey: ["orders"] });
-      qc.invalidateQueries({ queryKey: ["tables"] });
-      qc.invalidateQueries({ queryKey: ["shift"] });
-    } catch (e) {
-      if (shouldQueue(e)) {
-        enqueueOrder({
-          label: `${cart.channel} · ${cart.lines.length} item(s)`,
-          create: buildCreateBody(),
-          sendToKitchen: false,
-          pay: { shiftId: shiftRes?.shift?.id ?? null, idempotencyKey: `pay-${crypto.randomUUID()}`, payments: tenders },
+      if (!shouldQueue()) {
+        o = await ensureOrder();
+        const withItems = await pushPendingItems(o);
+        // Anything not yet in the kitchen must still reach it before the sale
+        // completes (send-to-kitchen only creates tickets for unsent lines).
+        await apiPost(`/orders/${withItems.id}/send-to-kitchen`);
+        const res = await apiPost<{ order: { orderNumber: number; paymentStatus: string; receiptPreview: string; changeGiven: string | null } }>("/payments", {
+          orderId: withItems.id,
+          shiftId: shiftRes?.shift?.id ?? null,
+          idempotencyKey: idemKey,
+          payments: tenders,
         });
-        setQueued(pendingCount());
         setShowPay(false);
-        setOrder(null);
+        if (res.order.paymentStatus !== "SUCCEEDED") {
+          push(t("ops:pos_partial_payment"), "info");
+          const fresh = await apiGet<{ order: OrderShape }>(`/orders/${withItems.id}`);
+          setOrder(fresh.order);
+          cart.clearLines();
+          return;
+        }
+        push(t("ops:pos_payment_complete", { number: res.order.orderNumber }), "ok");
         cart.reset();
-        push("Offline — payment queued and will sync automatically", "info");
-      } else {
-        throw e;
+        setOrder(null);
+        setNotes("");
+        setPickupName("");
+        setReceipt({ orderId: withItems.id, orderNumber: res.order.orderNumber, preview: res.order.receiptPreview, changeGiven: res.order.changeGiven });
+        qc.invalidateQueries({ queryKey: ["orders"] });
+        qc.invalidateQueries({ queryKey: ["tables"] });
+        qc.invalidateQueries({ queryKey: ["shift"] });
+        return;
       }
+    } catch (e) {
+      if (!shouldQueue(e)) throw e;
     }
+    queueOffline(o, { sendToKitchen: true, payNow: true, tenders, idemKey });
+    setShowPay(false);
+    cart.reset();
+    setOrder(null);
+    setNotes("");
+    setPickupName("");
+    push(t("ops:pos_offline_payment_queued"), "info");
   }
 
   async function holdOrder() {
-    if (!cart.lines.length) return;
+    if (!cart.lines.length && !order) return;
+    let o: OrderShape | null = order;
     try {
-      await ensureOrder();
-      push(`Order #${cart.orderNumber} held`, "ok");
-      cart.reset();
-      setOrder(null);
-      setShowOrders(true);
+      o = await ensureOrder();
+      if (cart.lines.length) o = await pushPendingItems(o);
+      push(t("ops:pos_order_held", { number: o.orderNumber }), "ok");
     } catch (e) {
-      if (shouldQueue(e)) queueOffline(false, false);
-      else push(e instanceof Error ? e.message : "Failed", "error");
+      if (!shouldQueue(e)) {
+        push(e instanceof Error ? e.message : t("ops:failed"), "error");
+        return;
+      }
+      queueOffline(o, { sendToKitchen: false, payNow: false });
+      if (o) cart.clearLines();
+      push(t("ops:pos_offline_queued_toast"), "info");
     }
+    cart.reset();
+    setOrder(null);
+    setNotes("");
+    setPickupName("");
+    setShowOrders(true);
   }
 
   async function reprint(orderId: string) {
     try {
       await apiPost(`/orders/${orderId}/reprint`);
-      push("Receipt sent to printer", "ok");
+      push(t("ops:receipt_sent"), "ok");
     } catch (e) {
-      push(e instanceof Error ? e.message : "Reprint failed", "error");
+      push(e instanceof Error ? e.message : t("ops:reprint_failed"), "error");
     }
   }
 
@@ -216,16 +309,16 @@ export default function Pos() {
     const fresh = await apiGet<{ order: OrderShape }>(`/orders/${o.id}`);
     setOrder(fresh.order);
     setVoidTarget(null);
-    push("Line voided", "ok");
+    push(t("ops:pos_line_voided"), "ok");
   }
 
   async function openShift() {
     try {
       await apiPost("/shifts/open", { openingFloat: 0 });
       qc.invalidateQueries({ queryKey: ["shift"] });
-      push("Shift opened", "ok");
+      push(t("ops:pos_shift_opened"), "ok");
     } catch (e) {
-      push(e instanceof Error ? e.message : "Failed to open shift", "error");
+      push(e instanceof Error ? e.message : t("ops:pos_failed_open_shift"), "error");
     }
   }
 
@@ -234,9 +327,9 @@ export default function Pos() {
       <section className="pos-menu">
         <div className="row" style={{ marginBottom: 8 }}>
           <button className="btn" onClick={() => setShowOrders(true)}>
-            Held orders{queued > 0 ? ` · ${queued} queued` : ""}
+            {t("ops:pos_held_orders")}{queued > 0 ? ` · ${t("ops:pos_queued_count", { count: queued })}` : ""}
           </button>
-          {queued > 0 && <span className="badge warn">{queued} offline queued</span>}
+          {queued > 0 && <span className="badge warn">{t("ops:pos_offline_queued", { count: queued })}</span>}
         </div>
         <div className="cat-tabs">
           {categories.map((c) => (
@@ -250,85 +343,98 @@ export default function Pos() {
             <button
               key={item.id}
               className={`item-card ${!item.isAvailable ? "unavailable" : ""}`}
-              disabled={!item.isAvailable || locked}
+              disabled={!item.isAvailable}
               onClick={() => addItem(item)}
             >
               <span className="name">{item.name}</span>
               <span className="price">{formatMoney(toCents(item.price), currency)}</span>
             </button>
           ))}
-          {current?.items.length === 0 && <p className="muted">No items in this category.</p>}
+          {current?.items.length === 0 && <p className="muted">{t("ops:pos_no_items_category")}</p>}
         </div>
       </section>
 
       <aside className="pos-cart">
-        <div className="row" style={{ padding: 12, borderBottom: "1px solid var(--line)" }}>
-          <select className="input" value={cart.channel} onChange={(e) => cart.setChannel(e.target.value as never)} disabled={locked}>
-            <option value="DINE_IN">Dine-in</option>
-            <option value="TAKEAWAY">Takeaway</option>
-            <option value="PARCEL">Parcel</option>
-          </select>
-          {cart.channel === "DINE_IN" && (
-            <select
-              className="input"
-              value={cart.tableId ?? ""}
-              onChange={(e) => {
-                const t = availableTables.find((x) => x.id === e.target.value);
-                cart.setTable(e.target.value || null, t ? `#${t.number}` : null);
-              }}
-              disabled={locked}
-            >
-              <option value="">Table…</option>
-              {availableTables.map((t) => (
-                <option key={t.id} value={t.id}>
-                  #{t.number} {t.name ? `· ${t.name}` : ""} ({t.status === "OCCUPIED" ? "in use" : "free"})
-                </option>
-              ))}
+        <div style={{ padding: 12, borderBottom: "1px solid var(--line)" }}>
+          <div className="row">
+            <select className="input" value={cart.channel} onChange={(e) => cart.setChannel(e.target.value as never)} disabled={locked}>
+              <option value="DINE_IN">{t("ops:channel_dine_in")}</option>
+              <option value="TAKEAWAY">{t("ops:channel_takeaway")}</option>
+              <option value="PARCEL">{t("ops:channel_parcel")}</option>
             </select>
+            {cart.channel === "DINE_IN" && (
+              <select className="input" value={cart.tableId ?? ""} onChange={(e) => pickTable(e.target.value)} disabled={locked}>
+                <option value="">{t("ops:pos_table_placeholder")}</option>
+                {availableTables.map((tbl) => (
+                  <option key={tbl.id} value={tbl.id}>
+                    #{tbl.number} {tbl.name ? `· ${tbl.name}` : ""} ({tbl.status === "OCCUPIED" ? t("ops:pos_in_use") : t("ops:pos_free")})
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          {!locked && (
+            <div className="row" style={{ marginTop: 8 }}>
+              {cart.channel !== "DINE_IN" && (
+                <input className="input" placeholder={t("ops:pos_pickup_name")} value={pickupName} onChange={(e) => setPickupName(e.target.value)} />
+              )}
+              <input className="input" placeholder={t("ops:pos_order_notes")} value={notes} onChange={(e) => setNotes(e.target.value)} />
+            </div>
           )}
         </div>
 
         <div className="cart-lines">
-          {!locked && cart.lines.length === 0 && <p className="muted" style={{ padding: 12 }}>Tap items to build the order.</p>}
-          {!locked &&
-            cart.lines.map((l: CartLine) => (
-              <div className="cart-line" key={l.key}>
-                <div className="row">
-                  <div style={{ flex: 1 }}>
-                    <div className="lname">{l.name}</div>
-                    {l.variantName && <div className="small muted">{l.variantName}</div>}
-                    {l.modifiers.length > 0 && <div className="small muted">+ {l.modifiers.map((m) => m.name).join(", ")}</div>}
-                  </div>
-                  <div className="mono">{formatMoney(cart.lineTotal(l), currency)}</div>
-                </div>
-                <div className="row" style={{ marginTop: 6 }}>
-                  <button className="qty-btn" onClick={() => cart.decQty(l.key)}>−</button>
-                  <span className="mono" style={{ minWidth: 24, textAlign: "center" }}>{l.quantity}</span>
-                  <button className="qty-btn" onClick={() => cart.incQty(l.key)}>+</button>
-                  <div className="spacer" />
-                  <button className="btn ghost small" onClick={() => cart.removeLine(l.key)}>Remove</button>
-                </div>
-              </div>
-            ))}
-
-          {locked && order && (
+          {order && (
             <>
               <div className="row" style={{ padding: 12 }}>
-                <strong>Order #{order.orderNumber}</strong>
+                <strong>{t("ops:order_number", { number: order.orderNumber })}</strong>
                 <div className="spacer" />
-                <span className={`badge ${order.status === "DRAFT" ? "muted" : "ok"}`}>{order.status.replaceAll("_", " ")}</span>
+                <span className={`badge ${order.status === "DRAFT" ? "muted" : "ok"}`}>{statusLabel(order.status)}</span>
               </div>
-              {order.lines.map((l) => (
-                <div className="cart-line" key={l.id} style={l.isVoided ? { opacity: 0.5 } : undefined}>
+              {order.lines.filter((l) => !l.isVoided).map((l) => (
+                <div className="cart-line" key={l.id}>
                   <div className="row">
                     <div style={{ flex: 1 }}>
-                      <div className="lname">{l.quantity}× {l.itemNameSnapshot}{l.isVoided ? " (voided)" : ""}</div>
+                      <div className="lname">{l.quantity}× {l.itemNameSnapshot}</div>
                       {l.modifiers.length > 0 && <div className="small muted">+ {l.modifiers.map((m) => m.nameSnapshot).join(", ")}</div>}
+                      {l.notes && <div className="small muted">{l.notes}</div>}
                     </div>
                     <div className="mono">{formatMoney(toCents(l.lineTotal), currency)}</div>
-                    {!l.isVoided && order.status !== "COMPLETED" && (
-                      <button className="btn ghost small" onClick={() => setVoidTarget(l)}>Void</button>
+                    {order.status !== "COMPLETED" && order.status !== "CANCELLED" && (
+                      <button className="btn ghost small" onClick={() => setVoidTarget(l)}>{t("ops:pos_void")}</button>
                     )}
+                  </div>
+                </div>
+              ))}
+              {order.lines.some((l) => l.isVoided) && (
+                <p className="muted small" style={{ padding: "4px 12px" }}>
+                  {t("ops:pos_void_hidden", { count: order.lines.filter((l) => l.isVoided).length })}
+                </p>
+              )}
+            </>
+          )}
+
+          {!order && cart.lines.length === 0 && <p className="muted" style={{ padding: 12 }}>{t("ops:pos_tap_items")}</p>}
+
+          {cart.lines.length > 0 && (
+            <>
+              {order && <p className="muted small" style={{ padding: "10px 12px 0" }}>{t("ops:pos_new_items_pending")}</p>}
+              {cart.lines.map((l: CartLine) => (
+                <div className="cart-line" key={l.key}>
+                  <div className="row">
+                    <div style={{ flex: 1 }}>
+                      <div className="lname">{l.name}</div>
+                      {l.variantName && <div className="small muted">{l.variantName}</div>}
+                      {l.modifiers.length > 0 && <div className="small muted">+ {l.modifiers.map((m) => m.name).join(", ")}</div>}
+                    </div>
+                    <div className="mono">{formatMoney(cart.lineTotal(l), currency)}</div>
+                  </div>
+                  <div className="row" style={{ marginTop: 6 }}>
+                    <button className="qty-btn" onClick={() => cart.decQty(l.key)}>−</button>
+                    <span className="mono" style={{ minWidth: 24, textAlign: "center" }}>{l.quantity}</span>
+                    <button className="qty-btn" onClick={() => cart.incQty(l.key)}>+</button>
+                    <div className="spacer" />
+                    <button className="btn ghost small" onClick={() => cart.removeLine(l.key)}>{t("ops:remove")}</button>
                   </div>
                 </div>
               ))}
@@ -339,37 +445,57 @@ export default function Pos() {
         <div className="cart-footer">
           {!shiftOpen && (
             <div className="row" style={{ marginBottom: 10 }}>
-              <span className="badge warn">No open shift</span>
+              <span className="badge warn">{t("ops:pos_no_open_shift")}</span>
               <div className="spacer" />
-              <button className="btn" onClick={openShift}>Open shift</button>
+              <button className="btn" onClick={openShift}>{t("ops:pos_open_shift")}</button>
             </div>
           )}
-          <div className="totals-row"><span className="muted">Subtotal</span><span className="mono">{formatMoney(totals.subtotal, currency)}</span></div>
-          {totals.discountAmount > 0 && <div className="totals-row"><span className="muted">Discount</span><span className="mono">−{formatMoney(totals.discountAmount, currency)}</span></div>}
-          {totals.serviceCharge > 0 && <div className="totals-row"><span className="muted">Service</span><span className="mono">{formatMoney(totals.serviceCharge, currency)}</span></div>}
-          <div className="totals-row"><span className="muted">Tax</span><span className="mono">{formatMoney(totals.taxAmount, currency)}</span></div>
-          <div className="totals-row grand"><span>Total</span><span className="mono">{formatMoney(serverTotal, currency)}</span></div>
+          {order ? (
+            <>
+              <div className="totals-row"><span className="muted">{t("ops:pos_order_subtotal")}</span><span className="mono">{formatMoney(toCents(order.subtotal), currency)}</span></div>
+              {toCents(order.discountAmount) > 0 && <div className="totals-row"><span className="muted">{t("ops:pos_discount")}</span><span className="mono">−{formatMoney(toCents(order.discountAmount), currency)}</span></div>}
+              {toCents(order.serviceCharge) > 0 && <div className="totals-row"><span className="muted">{t("ops:pos_service")}</span><span className="mono">{formatMoney(toCents(order.serviceCharge), currency)}</span></div>}
+              <div className="totals-row"><span className="muted">{t("ops:pos_tax")}</span><span className="mono">{formatMoney(toCents(order.taxAmount), currency)}</span></div>
+              <div className="totals-row"><span className="muted">{t("ops:pos_order_total")}</span><span className="mono">{formatMoney(toCents(order.total), currency)}</span></div>
+              {toCents(order.amountPaid) > 0 && <div className="totals-row"><span className="muted">{t("ops:pos_paid_so_far")}</span><span className="mono">−{formatMoney(toCents(order.amountPaid), currency)}</span></div>}
+              {newItemsTotal > 0 && <div className="totals-row"><span className="muted">{t("ops:pos_new_items_est")}</span><span className="mono">+{formatMoney(newItemsTotal, currency)}</span></div>}
+              <div className="totals-row grand"><span>{t("ops:pos_due")}</span><span className="mono">{formatMoney(chargeTotal, currency)}</span></div>
+            </>
+          ) : (
+            <>
+              <div className="totals-row"><span className="muted">{t("ops:pos_subtotal")}</span><span className="mono">{formatMoney(totals.subtotal, currency)}</span></div>
+              {totals.discountAmount > 0 && <div className="totals-row"><span className="muted">{t("ops:pos_discount")}</span><span className="mono">−{formatMoney(totals.discountAmount, currency)}</span></div>}
+              {totals.serviceCharge > 0 && <div className="totals-row"><span className="muted">{t("ops:pos_service")}</span><span className="mono">{formatMoney(totals.serviceCharge, currency)}</span></div>}
+              <div className="totals-row"><span className="muted">{t("ops:pos_tax")}</span><span className="mono">{formatMoney(totals.taxAmount, currency)}</span></div>
+              <div className="totals-row grand"><span>{t("ops:pos_total")}</span><span className="mono">{formatMoney(totals.total, currency)}</span></div>
+            </>
+          )}
 
           <div className="row" style={{ marginTop: 12, gap: 8 }}>
-            <button className="btn" style={{ flex: 1 }} disabled={!cart.lines.length || busy || (cart.channel === "DINE_IN" && !cart.tableId)} onClick={() => sendMut.mutate()}>
-              {sendMut.isPending ? "Sending…" : "Send to Kitchen"}
+            <button
+              className="btn primary"
+              style={{ flex: 1 }}
+              disabled={(!cart.lines.length && !order) || busy || (cart.channel === "DINE_IN" && !cart.tableId && !order)}
+              onClick={() => sendMut.mutate()}
+            >
+              {sendMut.isPending ? t("ops:pos_sending") : t("ops:pos_send_kitchen")}
             </button>
-            <button className="btn" disabled={!cart.lines.length || busy} onClick={() => setShowDiscount(true)}>Discount</button>
+            <button className="btn" disabled={(!cart.lines.length && !order) || busy} onClick={() => setShowDiscount(true)}>{t("ops:pos_discount_btn")}</button>
           </div>
           <div className="row" style={{ marginTop: 8, gap: 8 }}>
-            <button className="btn" style={{ flex: 1 }} disabled={!cart.lines.length || busy} onClick={holdOrder}>Hold</button>
-            {order && <button className="btn" onClick={() => reprint(order.id)}>Reprint</button>}
+            <button className="btn" style={{ flex: 1 }} disabled={(!cart.lines.length && !order) || busy} onClick={holdOrder}>{t("ops:pos_hold")}</button>
+            {order && <button className="btn" onClick={() => reprint(order.id)}>{t("ops:pos_reprint")}</button>}
             {order && (
-              <button className="btn ghost" onClick={() => { cart.reset(); setOrder(null); }}>New</button>
+              <button className="btn ghost" onClick={() => { cart.reset(); setOrder(null); setNotes(""); setPickupName(""); }}>{t("ops:pos_new")}</button>
             )}
           </div>
           <button
             className="btn primary block"
             style={{ marginTop: 8, padding: "14px" }}
-            disabled={!cart.lines.length || busy || !shiftOpen || (cart.channel === "DINE_IN" && !cart.tableId)}
+            disabled={(!cart.lines.length && !order) || busy || !shiftOpen || (cart.channel === "DINE_IN" && !cart.tableId && !order)}
             onClick={() => setShowPay(true)}
           >
-            Charge {formatMoney(serverTotal, currency)}
+            {t("ops:pos_charge", { amount: formatMoney(chargeTotal, currency) })}
           </button>
         </div>
       </aside>
@@ -387,38 +513,21 @@ export default function Pos() {
         <DiscountModal onClose={() => setShowDiscount(false)} onApply={doDiscount} currency={currency} subtotal={totals.subtotal} />
       )}
 
-      {showPay && <PaymentModal currency={currency} total={serverTotal} onClose={() => setShowPay(false)} onPay={pay} />}
+      {showPay && <PaymentModal currency={currency} total={chargeTotal} onClose={() => setShowPay(false)} onPay={pay} />}
+
+      {receipt && (
+        <ReceiptModal
+          currency={currency}
+          orderNumber={receipt.orderNumber}
+          preview={receipt.preview}
+          changeGiven={receipt.changeGiven}
+          orderId={receipt.orderId}
+          onClose={() => setReceipt(null)}
+        />
+      )}
 
       {showOrders && (
-        <OrdersModal
-          currency={currency}
-          canRefund={can("order.refund")}
-          onClose={() => setShowOrders(false)}
-          onRecall={(o) => {
-            cart.loadFromServer({
-              channel: o.channel as never,
-              tableId: o.tableId,
-              tableLabel: o.tableSession?.table ? `#${o.tableSession.table.number}` : null,
-              orderId: o.id,
-              orderNumber: o.orderNumber,
-              orderDiscount: toCents(o.discountAmount),
-              lines: o.lines.map((l) => ({
-                key: l.id,
-                menuItemId: l.menuItemId,
-                name: l.itemNameSnapshot,
-                unitPrice: toCents(l.unitPriceSnapshot),
-                variantId: null,
-                variantName: l.variantSnapshot,
-                modifiers: l.modifiers.map((m) => ({ id: m.id, name: m.nameSnapshot, price: toCents(m.priceSnapshot) })),
-                quantity: l.quantity,
-                notes: l.notes,
-              })),
-            });
-            setOrder(o);
-            setShowOrders(false);
-            push(`Recalled order #${o.orderNumber}`, "ok");
-          }}
-        />
+        <OrdersModal currency={currency} canRefund={can("order.refund")} onClose={() => setShowOrders(false)} onRecall={recallOrder} />
       )}
 
       {voidTarget && <VoidModal line={voidTarget} onClose={() => setVoidTarget(null)} onSubmit={voidLine} />}
@@ -439,6 +548,7 @@ function OrdersModal({
 }) {
   const { push } = useToast();
   const qc = useQueryClient();
+  const { t } = useTranslation(["ops", "common"]);
   const [tab, setTab] = useState<"OPEN" | "RECENT">("OPEN");
   const [refundOrder, setRefundOrder] = useState<OrderShape | null>(null);
 
@@ -452,38 +562,39 @@ function OrdersModal({
   async function reprint(id: string) {
     try {
       await apiPost(`/orders/${id}/reprint`);
-      push("Receipt sent to printer", "ok");
+      push(t("ops:receipt_sent"), "ok");
     } catch (e) {
-      push(e instanceof Error ? e.message : "Reprint failed", "error");
+      push(e instanceof Error ? e.message : t("ops:reprint_failed"), "error");
     }
   }
 
   const rows = tab === "OPEN" ? open?.orders ?? [] : recent?.orders ?? [];
+  const channelLabel = (channel: string) => t(`ops:channel_${String(channel).toLowerCase()}`, { defaultValue: String(channel).replace("_", " ") });
 
   return (
-    <Modal title="Orders" onClose={onClose} wide footer={<button className="btn ghost" onClick={onClose}>Close</button>}>
+    <Modal title={t("ops:orders_title")} onClose={onClose} wide footer={<button className="btn ghost" onClick={onClose}>{t("ops:close")}</button>}>
       <div className="row" style={{ marginBottom: 12 }}>
-        <button className={`cat-tab ${tab === "OPEN" ? "active" : ""}`} onClick={() => setTab("OPEN")}>Held / open</button>
-        <button className={`cat-tab ${tab === "RECENT" ? "active" : ""}`} onClick={() => setTab("RECENT")}>Recent (paid)</button>
+        <button className={`cat-tab ${tab === "OPEN" ? "active" : ""}`} onClick={() => setTab("OPEN")}>{t("ops:orders_held_open")}</button>
+        <button className={`cat-tab ${tab === "RECENT" ? "active" : ""}`} onClick={() => setTab("RECENT")}>{t("ops:orders_recent")}</button>
       </div>
       <table className="tbl">
-        <thead><tr><th>#</th><th>Items</th><th style={{ textAlign: "right" }}>Total</th><th /></tr></thead>
+        <thead><tr><th>#</th><th>{t("ops:orders_items_header")}</th><th style={{ textAlign: "right" }}>{t("ops:orders_total_header")}</th><th /></tr></thead>
         <tbody>
           {rows.map((o) => (
             <tr key={o.id}>
               <td>#{o.orderNumber}</td>
-              <td className="small muted">{o.lines.filter((l) => !l.isVoided).length} item(s) · {o.channel.replace("_", "-")}</td>
+              <td className="small muted">{t("ops:orders_item_count", { count: o.lines.filter((l) => !l.isVoided).length, channel: channelLabel(o.channel) })}</td>
               <td className="mono" style={{ textAlign: "right" }}>{formatMoney(toCents(o.total), currency)}</td>
               <td>
                 <div className="row" style={{ justifyContent: "flex-end" }}>
-                  {tab === "OPEN" && <button className="btn small primary" onClick={() => onRecall(o)}>Recall</button>}
-                  {tab === "RECENT" && <button className="btn small" onClick={() => reprint(o.id)}>Reprint</button>}
-                  {tab === "RECENT" && canRefund && <button className="btn small danger" onClick={() => setRefundOrder(o)}>Refund</button>}
+                  {tab === "OPEN" && <button className="btn small primary" onClick={() => onRecall(o)}>{t("ops:orders_recall")}</button>}
+                  {tab === "RECENT" && <button className="btn small" onClick={() => reprint(o.id)}>{t("ops:pos_reprint")}</button>}
+                  {tab === "RECENT" && canRefund && <button className="btn small danger" onClick={() => setRefundOrder(o)}>{t("ops:orders_refund")}</button>}
                 </div>
               </td>
             </tr>
           ))}
-          {rows.length === 0 && <tr><td colSpan={4} className="muted">Nothing here.</td></tr>}
+          {rows.length === 0 && <tr><td colSpan={4} className="muted">{t("ops:orders_nothing")}</td></tr>}
         </tbody>
       </table>
 
@@ -500,6 +611,7 @@ function OrdersModal({
 }
 
 function VoidModal({ line, onClose, onSubmit }: { line: ServerLine; onClose: () => void; onSubmit: (lineId: string, reason: string, managerPin?: string) => Promise<void> }) {
+  const { t } = useTranslation(["ops", "common"]);
   const [reason, setReason] = useState("");
   const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
@@ -511,7 +623,7 @@ function VoidModal({ line, onClose, onSubmit }: { line: ServerLine; onClose: () 
     try {
       await onSubmit(line.id, reason, pin || undefined);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Void failed");
+      setErr(e instanceof Error ? e.message : t("ops:void_failed"));
     } finally {
       setBusy(false);
     }
@@ -519,12 +631,12 @@ function VoidModal({ line, onClose, onSubmit }: { line: ServerLine; onClose: () 
 
   return (
     <Modal
-      title={`Void · ${line.itemNameSnapshot}`}
+      title={t("ops:void_title", { name: line.itemNameSnapshot })}
       onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn danger" disabled={!reason || busy} onClick={submit}>{busy ? "…" : "Void line"}</button></>}
+      footer={<><button className="btn ghost" onClick={onClose}>{t("ops:cancel")}</button><button className="btn danger" disabled={!reason || busy} onClick={submit}>{busy ? "…" : t("ops:void_submit")}</button></>}
     >
-      <Field label="Reason"><input className="input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why is this being voided?" /></Field>
-      <Field label="Manager PIN (if already sent to kitchen)"><input className="input" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="••••" /></Field>
+      <Field label={t("ops:void_reason")}><input className="input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder={t("ops:void_reason_placeholder")} /></Field>
+      <Field label={t("ops:void_manager_pin")}><input className="input" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="••••" /></Field>
       {err && <p className="badge danger">{err}</p>}
     </Modal>
   );
@@ -532,6 +644,7 @@ function VoidModal({ line, onClose, onSubmit }: { line: ServerLine; onClose: () 
 
 function RefundModal({ order, currency, onClose, onDone }: { order: OrderShape; currency: string; onClose: () => void; onDone: () => void }) {
   const { push } = useToast();
+  const { t } = useTranslation(["ops", "common"]);
   const [amount, setAmount] = useState(fromCents(toCents(order.total)));
   const [reason, setReason] = useState("");
   const [pin, setPin] = useState("");
@@ -544,10 +657,10 @@ function RefundModal({ order, currency, onClose, onDone }: { order: OrderShape; 
     setErr("");
     try {
       await apiPost("/payments/refund", { orderId: order.id, amount: Number(amount), reason, managerPin: pin, restock });
-      push("Refund recorded", "ok");
+      push(t("ops:refund_recorded"), "ok");
       onDone();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Refund failed");
+      setErr(e instanceof Error ? e.message : t("ops:refund_failed"));
     } finally {
       setBusy(false);
     }
@@ -555,16 +668,16 @@ function RefundModal({ order, currency, onClose, onDone }: { order: OrderShape; 
 
   return (
     <Modal
-      title={`Refund · order #${order.orderNumber}`}
+      title={t("ops:refund_title", { number: order.orderNumber })}
       onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn danger" disabled={busy || !reason || pin.length < 4} onClick={submit}>{busy ? "…" : "Refund"}</button></>}
+      footer={<><button className="btn ghost" onClick={onClose}>{t("ops:cancel")}</button><button className="btn danger" disabled={busy || !reason || pin.length < 4} onClick={submit}>{busy ? "…" : t("ops:refund_submit")}</button></>}
     >
-      <p className="muted small">Order total {formatMoney(toCents(order.total), currency)}</p>
-      <Field label={`Refund amount (${currency})`}><input className="input" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
-      <Field label="Reason"><input className="input" value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
-      <Field label="Manager PIN"><input className="input" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="••••" /></Field>
+      <p className="muted small">{t("ops:refund_order_total", { amount: formatMoney(toCents(order.total), currency) })}</p>
+      <Field label={t("ops:refund_amount", { currency })}><input className="input" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
+      <Field label={t("ops:refund_reason")}><input className="input" value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
+      <Field label={t("ops:refund_manager_pin")}><input className="input" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="••••" /></Field>
       <label className="row small" style={{ gap: 6 }}>
-        <input type="checkbox" checked={restock} onChange={(e) => setRestock(e.target.checked)} /> Restock ingredients
+        <input type="checkbox" checked={restock} onChange={(e) => setRestock(e.target.checked)} /> {t("ops:refund_restock")}
       </label>
       {err && <p className="badge danger">{err}</p>}
     </Modal>
@@ -582,6 +695,7 @@ function ModifierModal({
   onClose: () => void;
   onAdd: (line: Omit<CartLine, "key">) => void;
 }) {
+  const { t } = useTranslation(["ops", "common"]);
   const [variantId, setVariantId] = useState<string | null>(item.variants[0]?.id ?? null);
   const [selected, setSelected] = useState<Record<string, string[]>>({});
   const [qty, setQty] = useState(1);
@@ -612,7 +726,7 @@ function ModifierModal({
       onClose={onClose}
       footer={
         <>
-          <button className="btn ghost" onClick={onClose}>Cancel</button>
+          <button className="btn ghost" onClick={onClose}>{t("ops:cancel")}</button>
           <button
             className="btn primary"
             disabled={invalid}
@@ -629,14 +743,14 @@ function ModifierModal({
               })
             }
           >
-            Add · {formatMoney((unitPrice + chosen.reduce((s, o) => s + toCents(o.price), 0)) * qty, currency)}
+            {t("ops:mod_add", { amount: formatMoney((unitPrice + chosen.reduce((s, o) => s + toCents(o.price), 0)) * qty, currency) })}
           </button>
         </>
       }
     >
       {item.variants.length > 0 && (
         <div className="field">
-          <span className="small muted">Variant</span>
+          <span className="small muted">{t("ops:mod_variant")}</span>
           <div className="row wrap" style={{ marginTop: 6 }}>
             {item.variants.map((v) => (
               <button key={v.id} className={`cat-tab ${variantId === v.id ? "active" : ""}`} onClick={() => setVariantId(v.id)}>
@@ -649,7 +763,7 @@ function ModifierModal({
       {item.modifierGroups.map((g) => (
         <div className="field" key={g.id}>
           <span className="small muted">
-            {g.name} {g.required ? "(required)" : ""} {g.maxSelect ? `· max ${g.maxSelect}` : ""}
+            {g.name} {g.required ? t("ops:mod_required") : ""} {g.maxSelect ? t("ops:mod_max", { count: g.maxSelect }) : ""}
           </span>
           <div className="grid cols-2" style={{ marginTop: 6 }}>
             {g.options.map((o) => {
@@ -665,7 +779,7 @@ function ModifierModal({
       ))}
       <div className="row">
         <div>
-          <span className="small muted">Qty</span>
+          <span className="small muted">{t("ops:mod_qty")}</span>
           <div className="row" style={{ marginTop: 6 }}>
             <button className="qty-btn" onClick={() => setQty((q) => Math.max(1, q - 1))}>−</button>
             <span className="mono" style={{ minWidth: 24, textAlign: "center" }}>{qty}</span>
@@ -673,8 +787,8 @@ function ModifierModal({
           </div>
         </div>
         <div style={{ flex: 1 }}>
-          <Field label="Notes">
-            <input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="No onions…" />
+          <Field label={t("ops:mod_notes")}>
+            <input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={t("ops:mod_notes_placeholder")} />
           </Field>
         </div>
       </div>
@@ -693,6 +807,7 @@ function DiscountModal({
   onClose: () => void;
   onApply: (type: "PERCENT" | "ABSOLUTE", value: number, managerPin?: string) => Promise<void>;
 }) {
+  const { t } = useTranslation(["ops", "common"]);
   const [type, setType] = useState<"PERCENT" | "ABSOLUTE">("PERCENT");
   const [value, setValue] = useState(10);
   const [pin, setPin] = useState("");
@@ -707,7 +822,7 @@ function DiscountModal({
     try {
       await onApply(type, value, pin || undefined);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Failed");
+      setErr(e instanceof Error ? e.message : t("ops:failed"));
     } finally {
       setBusy(false);
     }
@@ -715,20 +830,20 @@ function DiscountModal({
 
   return (
     <Modal
-      title="Apply discount"
+      title={t("ops:disc_title")}
       onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" disabled={busy} onClick={apply}>{busy ? "…" : "Apply"}</button></>}
+      footer={<><button className="btn ghost" onClick={onClose}>{t("ops:cancel")}</button><button className="btn primary" disabled={busy} onClick={apply}>{busy ? "…" : t("ops:disc_apply")}</button></>}
     >
       <div className="row" style={{ marginBottom: 10 }}>
-        <button className={`cat-tab ${type === "PERCENT" ? "active" : ""}`} onClick={() => setType("PERCENT")}>Percent %</button>
-        <button className={`cat-tab ${type === "ABSOLUTE" ? "active" : ""}`} onClick={() => setType("ABSOLUTE")}>Amount</button>
+        <button className={`cat-tab ${type === "PERCENT" ? "active" : ""}`} onClick={() => setType("PERCENT")}>{t("ops:disc_percent")}</button>
+        <button className={`cat-tab ${type === "ABSOLUTE" ? "active" : ""}`} onClick={() => setType("ABSOLUTE")}>{t("ops:disc_amount")}</button>
       </div>
-      <Field label={type === "PERCENT" ? "Percent off" : `Amount (${currency})`}>
+      <Field label={type === "PERCENT" ? t("ops:disc_percent_off") : t("ops:disc_amount_label", { currency })}>
         <input className="input" type="number" value={value} onChange={(e) => setValue(Number(e.target.value))} />
       </Field>
-      <p className="muted small">Discount: {formatMoney(amount, currency)}</p>
+      <p className="muted small">{t("ops:disc_total", { amount: formatMoney(amount, currency) })}</p>
       {needsManager && (
-        <Field label="Manager PIN (required above 10%)">
+        <Field label={t("ops:disc_manager_pin")}>
           <input className="input" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="••••" />
         </Field>
       )}
@@ -746,10 +861,12 @@ function PaymentModal({
   total: number;
   currency: string;
   onClose: () => void;
-  onPay: (tenders: { method: string; amount: number; cashReceived?: number }[]) => Promise<void>;
+  onPay: (tenders: Tender[], idemKey: string) => Promise<void>;
 }) {
-  const [tenders, setTenders] = useState<{ method: string; amount: string; cash: string }[]>([
-    { method: "CASH", amount: fromCents(total), cash: fromCents(total) },
+  const { t } = useTranslation(["ops", "common"]);
+  const [idemKey] = useState(() => `pay-${crypto.randomUUID()}`);
+  const [tenders, setTenders] = useState<{ method: string; amount: string; cash: string; reference: string }[]>([
+    { method: "CASH", amount: fromCents(total), cash: fromCents(total), reference: "" },
   ]);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -758,8 +875,8 @@ function PaymentModal({
   const remaining = total - tendered;
   const cashChange = tenders.reduce((s, t) => (t.method === "CASH" ? s + (toCents(t.cash || "0") - toCents(t.amount || "0")) : s), 0);
 
-  function update(i: number, patch: Partial<{ method: string; amount: string; cash: string }>) {
-    setTenders((ts) => ts.map((t, idx) => (idx === i ? { ...t, ...patch } : t)));
+  function update(i: number, patch: Partial<{ method: string; amount: string; cash: string; reference: string }>) {
+    setTenders((ts) => ts.map((tnd, idx) => (idx === i ? { ...tnd, ...patch } : tnd)));
   }
 
   async function submit() {
@@ -767,14 +884,16 @@ function PaymentModal({
     setErr("");
     try {
       await onPay(
-        tenders.map((t) => ({
-          method: t.method,
-          amount: Number(t.amount),
-          cashReceived: t.method === "CASH" ? Number(t.cash) : undefined,
+        tenders.map((tnd) => ({
+          method: tnd.method,
+          amount: Number(tnd.amount),
+          cashReceived: tnd.method === "CASH" ? Number(tnd.cash) : undefined,
+          reference: tnd.method !== "CASH" && tnd.reference ? tnd.reference : undefined,
         })),
+        idemKey,
       );
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Payment failed");
+      setErr(e instanceof Error ? e.message : t("ops:pay_failed"));
     } finally {
       setBusy(false);
     }
@@ -782,48 +901,107 @@ function PaymentModal({
 
   return (
     <Modal
-      title="Charge order"
+      title={t("ops:pay_title")}
       onClose={onClose}
-      footer={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" disabled={busy || tendered < total} onClick={submit}>{busy ? "Processing…" : `Pay ${formatMoney(total, currency)}`}</button></>}
+      footer={<><button className="btn ghost" onClick={onClose}>{t("ops:cancel")}</button><button className="btn primary" disabled={busy || tendered < total} onClick={submit}>{busy ? t("ops:pay_processing") : t("ops:pay_pay", { amount: formatMoney(total, currency) })}</button></>}
     >
       <div className="totals-row grand" style={{ marginTop: 0 }}>
-        <span>Amount due</span>
+        <span>{t("ops:pay_due")}</span>
         <span className="mono">{formatMoney(total, currency)}</span>
       </div>
       <div style={{ marginTop: 12 }}>
-        {tenders.map((t, i) => (
+        {tenders.map((tender, i) => (
           <div key={i} className="card" style={{ marginBottom: 10 }}>
             <div className="row">
-              <select className="input" value={t.method} onChange={(e) => update(i, { method: e.target.value })}>
-                <option value="CASH">Cash</option>
-                <option value="CARD">Card</option>
-                <option value="MOBILE">Mobile</option>
+              <select className="input" value={tender.method} onChange={(e) => update(i, { method: e.target.value })}>
+                <option value="CASH">{t("ops:cash")}</option>
+                <option value="CARD">{t("ops:card")}</option>
+                <option value="MOBILE">{t("ops:mobile")}</option>
               </select>
-              <input className="input" type="number" value={t.amount} onChange={(e) => update(i, { amount: e.target.value })} placeholder="Amount" />
+              <input className="input" type="number" value={tender.amount} onChange={(e) => update(i, { amount: e.target.value })} placeholder={t("ops:pay_amount_placeholder")} />
             </div>
-            {t.method === "CASH" && (
+            {tender.method === "CASH" && (
               <div className="row" style={{ marginTop: 8 }}>
-                <span className="muted small" style={{ minWidth: 90 }}>Cash received</span>
-                <input className="input" type="number" value={t.cash} onChange={(e) => update(i, { cash: e.target.value })} />
+                <span className="muted small" style={{ minWidth: 90 }}>{t("ops:pay_cash_received")}</span>
+                <input className="input" type="number" value={tender.cash} onChange={(e) => update(i, { cash: e.target.value })} />
+              </div>
+            )}
+            {tender.method !== "CASH" && (
+              <div className="row" style={{ marginTop: 8 }}>
+                <span className="muted small" style={{ minWidth: 90 }}>{t("ops:pay_reference")}</span>
+                <input className="input" value={tender.reference} onChange={(e) => update(i, { reference: e.target.value })} placeholder={t("ops:pay_reference_placeholder")} />
               </div>
             )}
             {i > 0 && (
-              <button className="btn ghost small" style={{ marginTop: 8 }} onClick={() => setTenders((ts) => ts.filter((_, idx) => idx !== i))}>Remove</button>
+              <button className="btn ghost small" style={{ marginTop: 8 }} onClick={() => setTenders((ts) => ts.filter((_, idx) => idx !== i))}>{t("ops:remove")}</button>
             )}
           </div>
         ))}
       </div>
       <div className="row">
-        <button className="btn" onClick={() => setTenders((ts) => [...ts, { method: "CARD", amount: fromCents(Math.max(0, remaining)), cash: "0" }])} disabled={remaining <= 0}>
-          + Split payment
+        <button className="btn" onClick={() => setTenders((ts) => [...ts, { method: "CARD", amount: fromCents(Math.max(0, remaining)), cash: "0", reference: "" }])} disabled={remaining <= 0}>
+          {t("ops:pay_split")}
         </button>
         <div className="spacer" />
         <span className={remaining > 0 ? "badge warn" : "badge ok"}>
-          {remaining > 0 ? `Remaining ${formatMoney(remaining, currency)}` : "Fully tendered"}
+          {remaining > 0 ? t("ops:pay_remaining", { amount: formatMoney(remaining, currency) }) : t("ops:pay_fully_tendered")}
         </span>
       </div>
-      {cashChange > 0 && <p className="muted" style={{ marginTop: 10 }}>Change due: {formatMoney(cashChange, currency)}</p>}
+      {cashChange > 0 && <p className="muted" style={{ marginTop: 10 }}>{t("ops:pay_change_due", { amount: formatMoney(cashChange, currency) })}</p>}
       {err && <p className="badge danger" style={{ marginTop: 10 }}>{err}</p>}
+    </Modal>
+  );
+}
+
+function ReceiptModal({
+  currency,
+  orderNumber,
+  preview,
+  changeGiven,
+  orderId,
+  onClose,
+}: {
+  currency: string;
+  orderNumber: number;
+  preview: string;
+  changeGiven: string | null;
+  orderId: string;
+  onClose: () => void;
+}) {
+  const { push } = useToast();
+  const { t } = useTranslation(["ops", "common"]);
+  const [busy, setBusy] = useState(false);
+
+  async function print() {
+    setBusy(true);
+    try {
+      const r = await printOrderReceipt(orderId);
+      push(r.simulated ? t("ops:receipt_printed_simulated") : t("ops:receipt_sent"), "ok");
+    } catch (e) {
+      push(e instanceof Error ? e.message : t("ops:print_failed"), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={t("ops:receipt_title", { number: orderNumber })}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn ghost" onClick={onClose}>{t("ops:done")}</button>
+          <button className="btn primary" disabled={busy} onClick={print}>{busy ? "…" : t("ops:receipt_print")}</button>
+        </>
+      }
+    >
+      {changeGiven !== null && Number(changeGiven) > 0 && (
+        <div className="totals-row grand" style={{ marginTop: 0 }}>
+          <span>{t("ops:receipt_change_due")}</span>
+          <span className="mono">{formatMoney(toCents(changeGiven), currency)}</span>
+        </div>
+      )}
+      <pre className="receipt-paper">{preview || "…"}</pre>
     </Modal>
   );
 }

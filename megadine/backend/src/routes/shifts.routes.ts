@@ -84,6 +84,18 @@ shiftsRouter.post(
 );
 
 shiftsRouter.get(
+  "/:id/movements",
+  requirePermission("report.view"),
+  asyncHandler(async (req, res) => {
+    const movements = await prisma.cashMovement.findMany({
+      where: { shiftId: String(req.params.id) },
+      orderBy: { createdAt: "asc" },
+    });
+    res.json({ movements });
+  }),
+);
+
+shiftsRouter.get(
   "/:id/x-report",
   requirePermission("report.view"),
   asyncHandler(async (req, res) => {
@@ -112,6 +124,8 @@ shiftsRouter.post(
     res.json({
       shift: result.shift,
       variance: fromCents(result.variance),
+      varianceTolerance: result.varianceTolerance,
+      varianceExceedsTolerance: result.varianceExceedsTolerance,
       summary: { ...result.summary, shift: undefined },
     });
   }),

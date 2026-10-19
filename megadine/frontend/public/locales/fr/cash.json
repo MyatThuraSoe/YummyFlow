@@ -1,0 +1,12 @@
+{
+  "shift_open": "Service ouvert",
+  "opened_at": "Ouvert à",
+  "expected_cash": "Espèces attendues",
+  "actual_cash": "Espèces réelles",
+  "variance": "Écart",
+  "variance_warning": "L'écart de caisse dépasse la tolérance configurée",
+  "close_shift": "Clôturer le service",
+  "open_shift": "Ouvrir le service",
+  "opening_float": "Fond de caisse initial",
+  "tolerance": "Tolérance"
+}

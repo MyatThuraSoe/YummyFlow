@@ -1,0 +1,17 @@
+{
+  "auth.login.failed": "ชื่อผู้ใช้/อีเมลหรือรหัสผ่านไม่ถูกต้อง",
+  "auth.login.inactive": "บัญชีนี้ถูกปิดใช้งาน",
+  "auth.login.locked": "พยายามหลายครั้งเกินไป กรุณาลองใหม่ภายหลัง",
+  "auth.firstadmin.notallowed": "การตั้งค่าเสร็จสิ้นแล้ว",
+  "auth.lastadmin.demote": "ไม่สามารถลดตำแหน่งผู้ดูแลคนสุดท้ายได้",
+  "auth.lastadmin.deactivate": "ไม่สามารถปิดใช้งานผู้ดูแลคนสุดท้ายได้",
+  "auth.lastadmin.delete": "ไม่สามารถลบผู้ดูแลคนสุดท้ายได้",
+  "auth.user.self.deactivate": "ไม่สามารถปิดใช้งานบัญชีของตนเองได้",
+  "auth.current.password.incorrect": "รหัสผ่านปัจจุบันไม่ถูกต้อง",
+  "validation.duplicate.username": "ชื่อผู้ใช้นี้ถูกใช้แล้ว",
+  "validation.duplicate.email": "อีเมลนี้ถูกลงทะเบียนแล้ว",
+  "cannot_reach_server": "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ ตรวจสอบการเชื่อมต่อของคุณ",
+  "session_expired": "เซสชันของคุณหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง",
+  "forbidden": "คุณไม่มีสิทธิ์ดำเนินการนี้",
+  "generic": "เกิดข้อผิดพลาด กรุณาลองอีกครั้ง"
+}

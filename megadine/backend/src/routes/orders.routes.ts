@@ -16,7 +16,7 @@ import {
   sendToKitchen,
   voidOrderLine,
 } from "../services/order.service.js";
-import { receiptTextForOrder } from "../services/payment.service.js";
+import { receiptTextForOrder } from "../services/receipt.service.js";
 
 export const ordersRouter = Router();
 ordersRouter.use(requireAuth);
@@ -80,7 +80,7 @@ ordersRouter.get(
         ...(cashierId ? { cashierId } : {}),
         ...(businessDate ? { businessDate: new Date(businessDate) } : {}),
       },
-      include: { lines: { include: { modifiers: true } }, payments: true },
+      include: { lines: { include: { modifiers: true } }, payments: true, tableSession: { include: { table: true } } },
       orderBy: { createdAt: "desc" },
       take: limit ? Math.min(Number(limit), 200) : 50,
     });

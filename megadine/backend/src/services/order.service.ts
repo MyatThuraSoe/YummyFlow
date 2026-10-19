@@ -151,7 +151,13 @@ export async function createOrder(input: CreateOrderInput) {
       if (!table) throw ApiError.badRequest("Table not found");
       const open = await tx.tableSession.findFirst({
         where: { tableId: input.tableId, status: "OPEN" },
+        include: { order: { select: { id: true, orderNumber: true, status: true } } },
       });
+      // Never silently detach an open order from its table: the cashier must
+      // recall the existing order (and add round-2 items) instead.
+      if (open?.order && open.order.status !== "COMPLETED" && open.order.status !== "CANCELLED") {
+        throw ApiError.conflict(`Table already has an open order #${open.order.orderNumber}`);
+      }
       tableSessionId = open?.id ?? null;
     }
 
@@ -233,21 +239,9 @@ export async function addItemsToOrder(
   }
   await prisma.$transaction(async (tx) => {
     const { data } = await buildLines(tx, items);
-    await tx.orderLine.createMany({
-      data: data.map((d) => ({
-        orderId,
-        menuItemId: (d.menuItem as { connect: { id: string } }).connect.id,
-        itemNameSnapshot: d.itemNameSnapshot,
-        unitPriceSnapshot: d.unitPriceSnapshot,
-        stationSnapshot: d.stationSnapshot as Station,
-        variantSnapshot: d.variantSnapshot ?? null,
-        quantity: d.quantity,
-        lineDiscount: d.lineDiscount ?? "0",
-        lineTotal: d.lineTotal,
-        notes: d.notes ?? null,
-      })),
-    });
-    // Modifiers are supported on initial order; for added lines keep them simple.
+    for (const line of data) {
+      await tx.orderLine.create({ data: { ...line, order: { connect: { id: orderId } } } });
+    }
   });
   const updated = await recalcOrder(orderId);
   await audit({

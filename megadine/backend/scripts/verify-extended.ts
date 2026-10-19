@@ -17,6 +17,8 @@ import { createApp } from "../src/app.js";
 import { initSocket } from "../src/lib/socket.js";
 import { prisma } from "../src/lib/prisma.js";
 import { businessDateFor } from "../src/lib/businessDay.js";
+import { getMachineId } from "../src/lib/machine.js";
+import { setRuntimeLicenseKey } from "../src/lib/license.js";
 
 const PORT = 4598;
 const BASE = `http://127.0.0.1:${PORT}/api/v1`;
@@ -194,6 +196,11 @@ async function main() {
     assert.equal(x1.data.report.safeDrops, 1000);
     assert.equal(x1.data.report.paidOut, 0);
     ok("cash movements (PAID_IN / SAFE_DROP) reconcile in the X-report");
+    const movList = await api<{ movements: { id: string; type: string; direction: string }[] }>(`/shifts/${shiftId}/movements`, { token: cashier.token });
+    assert.equal(movList.status, 200, JSON.stringify(movList.data));
+    assert.ok(movList.data.movements.some((m) => m.id === paidIn.data.movement.id && m.direction === "IN"));
+    assert.ok(movList.data.movements.some((m) => m.id === safeDrop.data.movement.id && m.direction === "OUT"));
+    ok("shift movements list is available for the shift report");
     await prisma.cashMovement.delete({ where: { id: paidIn.data.movement.id } });
     await prisma.cashMovement.delete({ where: { id: safeDrop.data.movement.id } });
 
@@ -227,7 +234,10 @@ async function main() {
 
     const rb = await api<{ receipt: string }>(`/orders/${orderId}/receipt`, { token: cashier.token });
     assert.equal(rb.status, 200);
-    assert.ok(rb.data.receipt.includes(`#${o.data.order.orderNumber}`), "receipt should include the order number");
+    assert.ok(
+      rb.data.receipt.includes("Order #") && rb.data.receipt.includes(String(o.data.order.orderNumber)),
+      "receipt should include the order number",
+    );
     const rp = await api<{ printed: boolean }>(`/orders/${orderId}/reprint`, { method: "POST", token: cashier.token });
     assert.equal(rp.status, 200);
     assert.ok(rp.data.printed === true);
@@ -261,6 +271,88 @@ async function main() {
   assert.equal(withPin.status, 200);
   await api(`/orders/${v2.data.order.id}/cancel`, { method: "POST", token: cashier.token, body: { reason: "verify cleanup", managerPin: PIN_OWNER } });
     ok("manager PIN required (and works) to void a kitchen-sent line");
+
+    // ── Round-2 items, occupied-table guard, partial payments ──
+    const menuFull = await api<{ categories: { items: { id: string; modifierGroups: { options: { id: string }[] }[] }[] }[] }>("/menu", { token: cashier.token });
+    const modItem = menuFull.data.categories.flatMap((c) => c.items).find((i) => i.modifierGroups.some((g) => g.options.length));
+    const modOpt = modItem?.modifierGroups.find((g) => g.options.length)?.options[0]?.id;
+
+    const r2 = await api<{ order: { id: string; total: string } }>("/orders", {
+      method: "POST",
+      token: cashier.token,
+      body: { channel: "TAKEAWAY", items: [{ menuItemId: coke.id, quantity: 1 }] },
+    });
+    const r2Total = Number(r2.data.order.total);
+    const r2add = await api<{ order: { total: string } }>(`/orders/${r2.data.order.id}/items`, {
+      method: "POST",
+      token: cashier.token,
+      body: { items: [{ menuItemId: modItem ? modItem.id : burger.id, quantity: 1, ...(modOpt ? { modifierOptionIds: [modOpt] } : {}) }] },
+    });
+    assert.equal(r2add.status, 200, JSON.stringify(r2add.data));
+    assert.ok(Number(r2add.data.order.total) > r2Total, "adding items must raise the order total");
+    const r2full = await api<{ order: { lines: { isVoided: boolean; modifiers: { nameSnapshot: string }[] }[] } }>(`/orders/${r2.data.order.id}`, { token: cashier.token });
+    if (modItem) {
+      assert.ok(
+        r2full.data.order.lines.some((l) => !l.isVoided && l.modifiers.length > 0),
+        "added line must keep its modifiers",
+      );
+    }
+    await api(`/orders/${r2.data.order.id}/cancel`, { method: "POST", token: cashier.token, body: { reason: "verify cleanup" } });
+    ok("round-2 items append to an existing order with modifiers and recalculated total");
+
+    const tblList = await api<{ tables: { id: string; status: string }[] }>("/tables", { token: cashier.token });
+    const freeTable = tblList.data.tables.find((t) => t.status === "AVAILABLE");
+    if (freeTable) {
+      const d1 = await api<{ order: { id: string } }>("/orders", {
+        method: "POST",
+        token: cashier.token,
+        body: { channel: "DINE_IN", tableId: freeTable.id, items: [{ menuItemId: burger.id, quantity: 1 }] },
+      });
+      assert.equal(d1.status, 201, JSON.stringify(d1.data));
+      const d2 = await api("/orders", {
+        method: "POST",
+        token: cashier.token,
+        body: { channel: "DINE_IN", tableId: freeTable.id, items: [{ menuItemId: burger.id, quantity: 1 }] },
+      });
+      assert.equal(d2.status, 409, `expected 409 on occupied table, got ${d2.status}`);
+      const blockedClear = await api(`/tables/${freeTable.id}/clear`, { method: "POST", token: admin.token });
+      assert.equal(blockedClear.status, 409, `expected 409 clearing a table with an open order, got ${blockedClear.status}`);
+      await api(`/orders/${d1.data.order.id}/cancel`, { method: "POST", token: cashier.token, body: { reason: "verify cleanup" } });
+      const okClear = await api(`/tables/${freeTable.id}/clear`, { method: "POST", token: admin.token });
+      assert.equal(okClear.status, 200);
+      ok("occupied table rejects new orders and clear-table while an order is open");
+    } else {
+      ok("occupied-table guard skipped (no AVAILABLE table)");
+    }
+
+    const pp = await api<{ order: { id: string; total: string } }>("/orders", {
+      method: "POST",
+      token: cashier.token,
+      body: { channel: "TAKEAWAY", items: [{ menuItemId: coke.id, quantity: 1 }] },
+    });
+    const ppTotal = Number(pp.data.order.total);
+    const half = Math.round((ppTotal / 2) * 100) / 100;
+    const part1 = await api<{ order: { paymentStatus: string } }>("/payments", {
+      method: "POST",
+      token: cashier.token,
+      body: { orderId: pp.data.order.id, idempotencyKey: `part1-${pp.data.order.id}`, payments: [{ method: "CASH", amount: half, cashReceived: half }] },
+    });
+    assert.equal(part1.status, 201, JSON.stringify(part1.data));
+    assert.equal(part1.data.order.paymentStatus, "PENDING");
+    const replayPart = await api<{ order: { amountPaid: string } }>("/payments", {
+      method: "POST",
+      token: cashier.token,
+      body: { orderId: pp.data.order.id, idempotencyKey: `part1-${pp.data.order.id}`, payments: [{ method: "CASH", amount: half, cashReceived: half }] },
+    });
+    assert.equal(Number(replayPart.data.order.amountPaid), half, "replaying a key must not charge twice");
+    const rest = Math.round((ppTotal - half) * 100) / 100;
+    const part2 = await api<{ order: { paymentStatus: string } }>("/payments", {
+      method: "POST",
+      token: cashier.token,
+      body: { orderId: pp.data.order.id, idempotencyKey: `part2-${pp.data.order.id}`, payments: [{ method: "CASH", amount: rest, cashReceived: rest }] },
+    });
+    assert.equal(part2.data.order.paymentStatus, "SUCCEEDED");
+    ok("partial payment stays PENDING, replays are idempotent, balance settles the order");
 
     // Close the shift, reconciling exactly.
     const closed = await api<{ variance: string }>(`/shifts/${shiftId}/close`, {
@@ -297,6 +389,349 @@ async function main() {
       assert.ok(after.data.closes.some((c) => localDate(new Date(c.businessDate)) === iso));
       ok("business day closed and recorded in the day-closes ledger");
     }
+
+    // ── Platform: setup, credentials, users, guards, license, variance ──
+    const ownerPassword = process.env.SEED_OWNER_PASSWORD ?? "owner123";
+
+    const setupStatus = await api<{ success: boolean; data: { needsSetup: boolean } }>("/auth/setup-status");
+    assert.equal(setupStatus.status, 200);
+    assert.equal(setupStatus.data.data.needsSetup, false);
+    ok("setup-status reports an initialized installation");
+
+    const stamp = Date.now();
+    const firstAdmin = await api<{ error: { code: string } }>("/auth/register-first-admin", {
+      method: "POST",
+      body: { username: `late_${stamp}`, email: `late_${stamp}@example.com`, password: "password123", firstName: "Late", lastName: "Admin" },
+    });
+    assert.equal(firstAdmin.status, 403);
+    assert.equal(firstAdmin.data.error.code, "auth.firstadmin.notallowed");
+    ok("register-first-admin is rejected once setup is complete");
+
+    const badLogin = await api<{ error: { code: string } }>("/auth/login", {
+      method: "POST",
+      body: { username: "owner", password: "definitely-wrong" },
+    });
+    assert.equal(badLogin.status, 401);
+    assert.equal(badLogin.data.error.code, "auth.login.failed");
+    const ownerLogin = await api<{ user: { id: string; username: string; role: string }; token: string }>("/auth/login", {
+      method: "POST",
+      body: { username: "owner", password: ownerPassword },
+    });
+    assert.equal(ownerLogin.status, 200, JSON.stringify(ownerLogin.data));
+    assert.equal(ownerLogin.data.user.username, "owner");
+    assert.equal(ownerLogin.data.user.role, "OWNER");
+    const ownerToken = ownerLogin.data.token;
+    const ownerId = ownerLogin.data.user.id;
+    const emailLogin = await api<{ user: { username: string } }>("/auth/login", {
+      method: "POST",
+      body: { email: "Owner@MegaDine.Local", password: ownerPassword },
+    });
+    assert.equal(emailLogin.status, 200);
+    assert.equal(emailLogin.data.user.username, "owner");
+    ok("credential login works by username and by case-insensitive email");
+
+    // Purge temp users left behind by a previously aborted run.
+    const staleUsers = await prisma.user.findMany({ where: { username: { startsWith: "verify_" } }, select: { id: true } });
+    if (staleUsers.length > 0) {
+      const staleIds = staleUsers.map((u) => u.id);
+      await prisma.auditLog.deleteMany({ where: { userId: { in: staleIds } } });
+      await prisma.session.deleteMany({ where: { userId: { in: staleIds } } });
+      await prisma.user.deleteMany({ where: { id: { in: staleIds } } });
+    }
+
+    // Staff CRUD + duplicate handling.
+    const tempUsername = `verify_w_${stamp}`;
+    const tempEmail = `verify_w_${stamp}@example.com`;
+    const tempPassword = "verify-pass-123";
+    const created = await api<{ success: boolean; data: { user: { id: string; username: string; capabilities: string[] } } }>("/users", {
+      method: "POST",
+      token: ownerToken,
+      body: { username: tempUsername, email: tempEmail, password: tempPassword, firstName: "Vera", lastName: "Verify", role: "WAITER", pin: "918273" },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.data));
+    const temp = created.data.data.user;
+    assert.ok(temp.capabilities.includes("pos.use"));
+    ok("staff user created (envelope + capability matrix)");
+
+    const dupU = await api<{ error: { code: string } }>("/users", {
+      method: "POST",
+      token: ownerToken,
+      body: { username: tempUsername, email: `other_${stamp}@example.com`, password: tempPassword, firstName: "Dup", lastName: "User", role: "WAITER" },
+    });
+    assert.equal(dupU.status, 409);
+    assert.equal(dupU.data.error.code, "validation.duplicate.username");
+    const dupE = await api<{ error: { code: string } }>("/users", {
+      method: "POST",
+      token: ownerToken,
+      body: { username: `other_${stamp}`, email: tempEmail.toUpperCase(), password: tempPassword, firstName: "Dup", lastName: "User", role: "WAITER" },
+    });
+    assert.equal(dupE.status, 409);
+    assert.equal(dupE.data.error.code, "validation.duplicate.email");
+    ok("duplicate username/email (case-insensitive) rejected with specific codes");
+
+    const userList = await api<{ success: boolean; data: { users: { username: string | null }[] } }>("/users", { token: ownerToken });
+    assert.ok(userList.data.data.users.some((u) => u.username === tempUsername));
+    const stats = await api<{ success: boolean; data: { totalSales: number; totalRevenue: number } }>(`/users/${temp.id}/stats`, { token: ownerToken });
+    assert.equal(stats.status, 200);
+    assert.equal(stats.data.data.totalSales, 0);
+    ok("user list + per-user stats respond in the envelope");
+
+    // Password lockout: five failures engage a 423; reset through the DB.
+    let lastBad = 0;
+    for (let i = 0; i < 5; i += 1) {
+      const bad = await api("/auth/login", { method: "POST", body: { username: tempUsername, password: `wrong-password-${i}` } });
+      lastBad = bad.status;
+    }
+    assert.equal(lastBad, 401);
+    const locked = await api<{ error: { code: string } }>("/auth/login", { method: "POST", body: { username: tempUsername, password: "wrong-password-x" } });
+    assert.equal(locked.status, 423);
+    assert.equal(locked.data.error.code, "auth.login.locked");
+    await prisma.user.update({ where: { id: temp.id }, data: { failedPinAttempts: 0, lockoutUntil: null } });
+    ok("password lockout engages at the configured threshold (423)");
+
+    // Two sessions: change password kills the other, keeps the current one.
+    const t1 = await api<{ token: string }>("/auth/login", { method: "POST", body: { username: tempUsername, password: tempPassword } });
+    const t2 = await api<{ token: string }>("/auth/login", { method: "POST", body: { username: tempUsername, password: tempPassword } });
+    assert.equal(t1.status, 200);
+    assert.equal(t2.status, 200);
+    const wrongCurrent = await api<{ error: { code: string } }>("/auth/change-password", {
+      method: "POST",
+      token: t1.data.token,
+      body: { currentPassword: "nope-nope-1", newPassword: "verify-pass-456" },
+    });
+    assert.equal(wrongCurrent.status, 403);
+    assert.equal(wrongCurrent.data.error.code, "auth.current.password.incorrect");
+    const changedPw = await api<{ success: boolean }>("/auth/change-password", {
+      method: "POST",
+      token: t1.data.token,
+      body: { currentPassword: tempPassword, newPassword: "verify-pass-456" },
+    });
+    assert.equal(changedPw.status, 200);
+    assert.equal(changedPw.data.success, true);
+    const deadSession = await api("/auth/me", { token: t2.data.token });
+    assert.equal(deadSession.status, 401);
+    const aliveSession = await api("/auth/me", { token: t1.data.token });
+    assert.equal(aliveSession.status, 200);
+    const relogin = await api("/auth/login", { method: "POST", body: { username: tempUsername, password: "verify-pass-456" } });
+    assert.equal(relogin.status, 200);
+    ok("change-password invalidates other sessions and the new password logs in");
+
+    const lang = await api<{ success: boolean; data: { user: { preferredLanguage: string } } }>("/users/me/language?lang=ja", { method: "PATCH", token: t1.data.token });
+    assert.equal(lang.status, 200);
+    assert.equal(lang.data.data.user.preferredLanguage, "ja");
+    const badLang = await api("/users/me/language?lang=xx", { method: "PATCH", token: t1.data.token });
+    assert.equal(badLang.status, 400);
+    ok("preferred language updates and rejects unsupported codes");
+
+    const upd = await api<{ success: boolean; data: { user: { phone: string | null } } }>(`/users/${temp.id}`, {
+      method: "PUT",
+      token: ownerToken,
+      body: { phone: "+95 9 000 000" },
+    });
+    assert.equal(upd.status, 200);
+    assert.equal(upd.data.data.user.phone, "+95 9 000 000");
+    ok("admin updates a staff user");
+
+    // Soft delete: hidden from lists, sessions purged, cannot log in.
+    const del = await api(`/users/${temp.id}`, { method: "DELETE", token: ownerToken });
+    assert.equal(del.status, 200);
+    const afterDel = await api<{ success: boolean; data: { users: { username: string | null }[] } }>("/users", { token: ownerToken });
+    assert.ok(!afterDel.data.data.users.some((u) => u.username === tempUsername));
+    assert.equal((await api("/auth/me", { token: t1.data.token })).status, 401);
+    assert.equal((await api("/auth/login", { method: "POST", body: { username: tempUsername, password: "verify-pass-456" } })).status, 401);
+    ok("soft delete hides the user, purges sessions and blocks login");
+
+    // Admin guards: deactivate the seeded admin so the owner is the last guard.
+    const staffList = await api<{ success: boolean; data: { users: { id: string; username: string | null }[] } }>("/users", { token: ownerToken });
+    const seededAdmin = staffList.data.data.users.find((u) => u.username === "admin")!;
+    assert.ok(seededAdmin, "seeded admin user must exist");
+    assert.equal((await api(`/users/${seededAdmin.id}`, { method: "PUT", token: ownerToken, body: { isActive: false } })).status, 200);
+
+    const selfDemote = await api<{ error: { code: string } }>(`/users/${ownerId}`, { method: "PUT", token: ownerToken, body: { role: "MANAGER" } });
+    assert.equal(selfDemote.status, 409);
+    assert.equal(selfDemote.data.error.code, "auth.lastadmin.demote");
+    const selfOff = await api<{ error: { code: string } }>(`/users/${ownerId}`, { method: "PUT", token: ownerToken, body: { isActive: false } });
+    assert.equal(selfOff.status, 409);
+    assert.equal(selfOff.data.error.code, "auth.user.self.deactivate");
+    const selfDel = await api<{ error: { code: string } }>(`/users/${ownerId}`, { method: "DELETE", token: ownerToken });
+    assert.equal(selfDel.status, 409);
+    assert.equal(selfDel.data.error.code, "auth.user.self.deactivate");
+    assert.equal((await api(`/users/${seededAdmin.id}`, { method: "PUT", token: ownerToken, body: { isActive: true } })).status, 200);
+    ok("last-admin demote, self-deactivate and self-delete are blocked (409)");
+
+    // ── License activation (§7) ──
+    const licStatus = await api<{ success: boolean; data: { machineId: string; edition: string; licensed: boolean; reason: string } }>("/license/status", { token: ownerToken });
+    assert.equal(licStatus.status, 200);
+    assert.equal(licStatus.data.data.reason, "no_license");
+    assert.equal(licStatus.data.data.edition, "BASIC");
+    assert.equal(licStatus.data.data.licensed, false);
+    assert.ok(licStatus.data.data.machineId.length > 0);
+    ok("license status reports BASIC / no_license without a key");
+
+    const garbage = await api<{ error: { code: string } }>("/license/activate", { method: "POST", token: ownerToken, body: { licenseKey: "x".repeat(64) } });
+    assert.equal(garbage.status, 400);
+    assert.equal(garbage.data.error.code, "LICENSE_INVALID");
+    ok("activation rejects a malformed key (LICENSE_INVALID)");
+
+    const synth = (over: Record<string, unknown>) =>
+      Buffer.from(
+        JSON.stringify({
+          restaurantName: "Verify",
+          edition: "PROFESSIONAL",
+          maxTerminals: 5,
+          maxTables: 50,
+          maxMenuItems: 200,
+          features: ["pos"],
+          issuedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+          hardwareFingerprint: getMachineId(),
+          signature: "verify-script",
+          ...over,
+        }),
+      ).toString("base64");
+
+    const wrongMachine = await api<{ error: { code: string } }>("/license/activate", { method: "POST", token: ownerToken, body: { licenseKey: synth({ hardwareFingerprint: "not-this-machine" }) } });
+    assert.equal(wrongMachine.status, 400);
+    assert.equal(wrongMachine.data.error.code, "LICENSE_MACHINE_MISMATCH");
+    const expiredKey = await api<{ error: { code: string } }>("/license/activate", { method: "POST", token: ownerToken, body: { licenseKey: synth({ expiresAt: new Date(Date.now() - 86_400_000).toISOString() }) } });
+    assert.equal(expiredKey.status, 400);
+    assert.equal(expiredKey.data.error.code, "LICENSE_EXPIRED");
+    ok("activation distinguishes machine mismatch and expiry");
+
+    const valid = await api<{ success: boolean; data: { edition: string; licensed: boolean; reason: string; limits: { maxTables: number } } }>("/license/activate", { method: "POST", token: ownerToken, body: { licenseKey: synth({}) } });
+    assert.equal(valid.status, 200, JSON.stringify(valid.data));
+    assert.equal(valid.data.data.edition, "PROFESSIONAL");
+    assert.equal(valid.data.data.licensed, true);
+    assert.equal(valid.data.data.reason, "none");
+    assert.equal(valid.data.data.limits.maxTables, 50);
+    const persisted = await prisma.restaurant.findUnique({ where: { id: restaurant.id } });
+    assert.ok(persisted?.licenseKey, "activation must persist the key to the restaurant");
+    const adminLic = await api<{ limits: { edition: string } }>("/admin/license", { token: ownerToken });
+    assert.equal(adminLic.data.limits.edition, "PROFESSIONAL");
+    ok("a valid key activates, persists and raises plan limits");
+
+    await prisma.restaurant.update({ where: { id: restaurant.id }, data: { licenseKey: null } });
+    setRuntimeLicenseKey(null);
+    const restored = await api<{ data: { edition: string; reason: string } }>("/license/status", { token: ownerToken });
+    assert.equal(restored.data.data.edition, "BASIC");
+    ok("license state restored to BASIC for repeat runs");
+
+    // ── Cash variance (§6): refund window + tolerance boundary ──
+    const tolCents = Math.round(Number(restaurant.cashVarianceTolerance ?? 10) * 100);
+    const open1 = await api<{ shift: { id: string } }>("/shifts/open", { method: "POST", token: cashier.token, body: { openingFloat: 0 } });
+    assert.equal(open1.status, 201, JSON.stringify(open1.data));
+    const varShift1 = open1.data.shift.id;
+
+    const vo = await api<{ order: { id: string; total: string } }>("/orders", {
+      method: "POST",
+      token: cashier.token,
+      body: { channel: "TAKEAWAY", items: [{ menuItemId: coke.id, quantity: 1 }] },
+    });
+    assert.equal(vo.status, 201, JSON.stringify(vo.data));
+    const vTotal = Number(vo.data.order.total);
+    const vPay = await api("/payments", {
+      method: "POST",
+      token: cashier.token,
+      body: { orderId: vo.data.order.id, shiftId: varShift1, idempotencyKey: `var-pay-${vo.data.order.id}`, payments: [{ method: "CASH", amount: vTotal, cashReceived: vTotal }] },
+    });
+    assert.equal(vPay.status, 201);
+    const vRefund = await api("/payments/refund", {
+      method: "POST",
+      token: admin.token,
+      body: { orderId: vo.data.order.id, amount: vTotal, reason: "variance verify", managerPin: PIN_OWNER },
+    });
+    assert.equal(vRefund.status, 200, JSON.stringify(vRefund.data));
+
+    const tCents = Math.round(vTotal * 100);
+    const x = await api<{ report: { cashSales: number; refundsInWindow: number; expectedCash: number; varianceTolerance: number } }>(`/shifts/${varShift1}/x-report`, { token: cashier.token });
+    assert.equal(x.data.report.cashSales, tCents);
+    assert.equal(x.data.report.refundsInWindow, tCents);
+    assert.equal(x.data.report.expectedCash, 0);
+    assert.equal(x.data.report.varianceTolerance, tolCents / 100);
+    ok("refunds are attributed to the refund time window (drawer returns to 0)");
+
+    const close1 = await api<{ varianceExceedsTolerance: boolean }>(`/shifts/${varShift1}/close`, {
+      method: "POST",
+      token: cashier.token,
+      body: { actualCash: tolCents / 100 },
+    });
+    assert.equal(close1.status, 200, JSON.stringify(close1.data));
+    assert.equal(close1.data.varianceExceedsTolerance, false);
+    ok("variance exactly at tolerance is NOT flagged");
+
+    const open2 = await api<{ shift: { id: string } }>("/shifts/open", { method: "POST", token: cashier.token, body: { openingFloat: 0 } });
+    assert.equal(open2.status, 201);
+    const close2 = await api<{ varianceExceedsTolerance: boolean }>(`/shifts/${open2.data.shift.id}/close`, {
+      method: "POST",
+      token: cashier.token,
+      body: { actualCash: (tolCents + 1) / 100 },
+    });
+    assert.equal(close2.status, 200);
+    assert.equal(close2.data.varianceExceedsTolerance, true);
+    ok("variance one cent over tolerance IS flagged");
+
+    // ── Receipt customization (spec: receipt config, preview, per-order) ──
+    const rc = await api<{ success: boolean; data: { config: { paperWidth: number; showTax: boolean; fontSize: string } } }>("/receipts/config", { token: cashier.token });
+    assert.equal(rc.status, 200);
+    assert.equal(rc.data.data.config.paperWidth, 80);
+    assert.equal(rc.data.data.config.showTax, true);
+    assert.equal(rc.data.data.config.fontSize, "medium");
+    const rcDefaults = await api<{ success: boolean; data: { defaults: { paperWidth: number } } }>("/receipts/defaults", { token: admin.token });
+    assert.equal(rcDefaults.status, 200);
+    assert.equal(rcDefaults.data.data.defaults.paperWidth, 80);
+    ok("receipt config auto-provisions with defaults");
+
+    const badLogo = await api("/receipts/config", { method: "PUT", token: admin.token, body: { logo: "data:image/gif;base64,R0lGODlh" } });
+    assert.equal(badLogo.status, 400);
+    const putRc = await api<{ success: boolean; data: { config: { showTax: boolean } } }>("/receipts/config", {
+      method: "PUT",
+      token: admin.token,
+      body: { showTax: false },
+    });
+    assert.equal(putRc.status, 200, JSON.stringify(putRc.data));
+    assert.equal(putRc.data.data.config.showTax, false);
+    const rcAfter = await api<{ data: { config: { showTax: boolean } } }>("/receipts/config", { token: admin.token });
+    assert.equal(rcAfter.data.data.config.showTax, false);
+    const rcAudit = await prisma.auditLog.count({ where: { restaurantId: restaurant.id, action: "RECEIPT_CONFIG_UPDATED" } });
+    assert.ok(rcAudit >= 1);
+    ok("receipt config persists updates, validates logos and is audited");
+
+    const prevOff = await api<{ data: { html: string } }>("/receipts/preview", { method: "POST", token: admin.token, body: { showTax: false } });
+    assert.equal(prevOff.status, 200);
+    assert.ok(!prevOff.data.data.html.includes("Tax"), "preview override should remove the tax line");
+    const prevOn = await api<{ data: { html: string } }>("/receipts/preview", { method: "POST", token: admin.token, body: { showTax: true, alignment: "center" } });
+    assert.equal(prevOn.status, 200);
+    assert.ok(prevOn.data.data.html.includes("Tax"));
+    assert.ok(prevOn.data.data.html.includes('class="r-center"'));
+    ok("receipt preview reflects unsaved overrides");
+
+    const testPrint = await api<{ data: { ok: boolean; simulated: boolean; preview: string } }>("/receipts/test-print", { method: "POST", token: admin.token });
+    assert.equal(testPrint.status, 200);
+    assert.equal(testPrint.data.data.ok, true);
+    assert.equal(testPrint.data.data.simulated, true);
+    assert.ok(testPrint.data.data.preview.length > 0);
+    ok("receipt test-print simulates on the default printer mode");
+
+    const orHtml = await api<{ data: { html: string } }>(`/receipts/order/${orderId}/html`, { token: admin.token });
+    assert.equal(orHtml.status, 200);
+    assert.ok(orHtml.data.data.html.includes(String(o.data.order.orderNumber)));
+    const orText = await api<{ data: { text: string } }>(`/receipts/order/${orderId}/text`, { token: admin.token });
+    assert.equal(orText.status, 200);
+    assert.ok(orText.data.data.text.length > 0);
+    const missing = await api(`/receipts/order/00000000-0000-0000-0000-000000000000/html`, { token: admin.token });
+    assert.equal(missing.status, 404);
+    ok("order receipt html/text render and unknown orders 404");
+
+    const printOrder = await api<{ data: { ok: boolean; simulated: boolean; receipt: string } }>(`/receipts/order/${orderId}/print`, { method: "POST", token: cashier.token });
+    assert.equal(printOrder.status, 200, JSON.stringify(printOrder.data));
+    assert.equal(printOrder.data.data.ok, true);
+    assert.ok(printOrder.data.data.receipt.includes("*** REPRINT ***"));
+    const reprintAudit2 = await prisma.auditLog.count({ where: { restaurantId: restaurant.id, action: "RECEIPT_REPRINTED" } });
+    assert.ok(reprintAudit2 >= 1);
+    ok("order reprint prints (simulated) with marker and is audited");
+
+    await api("/receipts/config", { method: "PUT", token: admin.token, body: { showTax: true } });
+    ok("receipt config reset for repeat runs");
 
     console.log(`\n\u2705 MegaDine Basic extended verification passed: ${passed} checks\n`);
   } finally {
