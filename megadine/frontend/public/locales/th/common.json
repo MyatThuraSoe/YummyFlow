@@ -10,5 +10,7 @@
   "failed_to_change_password": "เปลี่ยนรหัสผ่านไม่สำเร็จ",
   "copy": "คัดลอก",
   "copied": "คัดลอกแล้ว",
-  "basic_plan_banner": "คุณอยู่ในแผน Basic เปิดใช้ไลเซนส์เพื่อเพิ่มขีดจำกัด"
+  "basic_plan_banner": "คุณอยู่ในแผน Basic เปิดใช้ไลเซนส์เพื่อเพิ่มขีดจำกัด",
+  "toggle_sidebar": "สลับแถบข้าง",
+  "open_menu": "เปิดเมนู"
 }

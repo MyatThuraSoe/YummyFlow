@@ -10,5 +10,7 @@
   "failed_to_change_password": "パスワードの変更に失敗しました",
   "copy": "コピー",
   "copied": "コピーしました",
-  "basic_plan_banner": "Basicプランをご利用中です。制限を解除するにはライセンスを有効化してください。"
+  "basic_plan_banner": "Basicプランをご利用中です。制限を解除するにはライセンスを有効化してください。",
+  "toggle_sidebar": "サイドバーを切り替え",
+  "open_menu": "メニューを開く"
 }

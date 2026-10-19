@@ -10,5 +10,7 @@
   "failed_to_change_password": "Failed to change password",
   "copy": "Copy",
   "copied": "Copied",
-  "basic_plan_banner": "You're on the Basic plan. Activate a license to raise limits."
+  "basic_plan_banner": "You're on the Basic plan. Activate a license to raise limits.",
+  "toggle_sidebar": "Toggle sidebar",
+  "open_menu": "Open menu"
 }

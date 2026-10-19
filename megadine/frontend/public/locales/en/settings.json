@@ -20,7 +20,6 @@
   "receipt_preview": "Preview",
   "language_hint": "Choose the language used across the interface. Your preference is saved to your account.",
   "save_settings": "Save settings",
-
   "receipt_customization": "Receipt Customization",
   "identity": "Identity",
   "messages": "Messages",
@@ -74,5 +73,6 @@
   "print_failed": "Printer unavailable — check the printer settings",
   "receipt_for_order": "Receipt",
   "back_to_orders": "Back to orders",
-  "print_receipt": "Print receipt"
+  "print_receipt": "Print receipt",
+  "logo_alt": "Logo"
 }

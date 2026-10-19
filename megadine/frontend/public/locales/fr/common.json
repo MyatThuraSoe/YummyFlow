@@ -10,5 +10,7 @@
   "failed_to_change_password": "Échec de la modification du mot de passe",
   "copy": "Copier",
   "copied": "Copié",
-  "basic_plan_banner": "Vous êtes sur le forfait Basique. Activez une licence pour augmenter les limites."
+  "basic_plan_banner": "Vous êtes sur le forfait Basique. Activez une licence pour augmenter les limites.",
+  "toggle_sidebar": "Afficher/masquer la barre latérale",
+  "open_menu": "Ouvrir le menu"
 }

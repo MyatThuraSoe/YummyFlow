@@ -73,5 +73,6 @@
   "print_failed": "Imprimante indisponible — vérifiez les paramètres d'impression",
   "receipt_for_order": "Ticket",
   "back_to_orders": "Retour aux commandes",
-  "print_receipt": "Imprimer le ticket"
+  "print_receipt": "Imprimer le ticket",
+  "logo_alt": "Logo"
 }

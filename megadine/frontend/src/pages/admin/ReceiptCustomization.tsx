@@ -135,7 +135,7 @@ export default function ReceiptCustomization() {
               <Toggle label={t("settings:show_logo")} value={form.showLogo} onChange={(v) => patch({ showLogo: v })} />
               <Stack direction="row" spacing={1.5} sx={{ alignItems: "center", py: 0.5 }}>
                 {form.logo && (
-                  <img src={form.logo} alt="logo" style={{ height: 40, borderRadius: 4, border: "1px solid #dfe3dd" }} />
+                  <img src={form.logo} alt={t("settings:logo_alt")} style={{ height: 40, borderRadius: 4, border: "1px solid #dfe3dd" }} />
                 )}
                 <Button component="label" size="small" variant="outlined">
                   {t("settings:upload_logo")}

@@ -73,5 +73,6 @@
   "print_failed": "プリンターを利用できません — プリンター設定を確認してください",
   "receipt_for_order": "レシート",
   "back_to_orders": "注文一覧に戻る",
-  "print_receipt": "レシートを印刷"
+  "print_receipt": "レシートを印刷",
+  "logo_alt": "ロゴ"
 }

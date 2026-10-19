@@ -315,7 +315,7 @@ export default function DashboardLayout() {
           {collapsed && !isMobile ? "MD" : "MegaDine"}
         </Typography>
         {!isMobile && (
-          <IconButton size="small" onClick={toggleCollapsed} aria-label="Toggle sidebar">
+          <IconButton size="small" onClick={toggleCollapsed} aria-label={t("common:toggle_sidebar")}>
             {collapsed ? <ChevronRightIcon /> : <ChevronLeftIcon />}
           </IconButton>
         )}
@@ -424,7 +424,7 @@ export default function DashboardLayout() {
         >
           <Toolbar sx={{ gap: 1 }}>
             {isMobile && (
-              <IconButton edge="start" onClick={() => setDrawerOpen(true)} aria-label="Open menu">
+              <IconButton edge="start" onClick={() => setDrawerOpen(true)} aria-label={t("common:open_menu")}>
                 <MenuIcon />
               </IconButton>
             )}
