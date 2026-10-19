@@ -13,10 +13,14 @@ import {
   applyDiscount,
   cancelOrder,
   createOrder,
+  markOrderServed,
   sendToKitchen,
+  serveOrderLines,
+  setOrderPriority,
   voidOrderLine,
 } from "../services/order.service.js";
-import { receiptTextForOrder } from "../services/receipt.service.js";
+import { receiptTextForOrder, receiptTextForSplit, printSplitReceipt } from "../services/receipt.service.js";
+import { getOrderSplit, listOrderSplits, setOrderSplits } from "../services/split.service.js";
 
 export const ordersRouter = Router();
 ordersRouter.use(requireAuth);
@@ -95,7 +99,7 @@ ordersRouter.get(
     const orders = await prisma.order.findMany({
       where: {
         restaurantId: req.auth!.restaurantId,
-        status: { in: ["DRAFT", "SENT_TO_KITCHEN", "IN_PROGRESS", "READY"] },
+        status: { in: ["DRAFT", "SENT_TO_KITCHEN", "IN_PROGRESS", "READY", "SERVED"] },
         ...(tableId ? { tableId } : {}),
       },
       include: { lines: { include: { modifiers: true } }, payments: true, tableSession: { include: { table: true } } },
@@ -145,6 +149,46 @@ ordersRouter.post(
   }),
 );
 
+ordersRouter.post(
+  "/:id/mark-served",
+  requirePermission("pos.use"),
+  asyncHandler(async (req, res) => {
+    const order = await markOrderServed(String(req.params.id), req.auth!.userId);
+    res.json({ order });
+  }),
+);
+
+const serveLinesSchema = z.object({
+  lines: z.array(z.object({ lineId: z.string().uuid(), quantity: z.number().int().min(0).max(99) })).min(1),
+});
+
+ordersRouter.post(
+  "/:id/serve-lines",
+  requirePermission("pos.use"),
+  validate({ body: serveLinesSchema }),
+  asyncHandler(async (req, res) => {
+    const { lines } = req.body as z.infer<typeof serveLinesSchema>;
+    const order = await serveOrderLines(String(req.params.id), req.auth!.userId, lines);
+    res.json({ order });
+  }),
+);
+
+const prioritySchema = z.object({
+  priority: z.enum(["NORMAL", "RUSH", "VIP", "CATERING"]),
+  managerPin: z.string().regex(/^\d{4,6}$/).optional(),
+});
+
+ordersRouter.patch(
+  "/:id/priority",
+  requirePermission("pos.use"),
+  validate({ body: prioritySchema }),
+  asyncHandler(async (req, res) => {
+    const { priority, managerPin } = req.body as z.infer<typeof prioritySchema>;
+    const order = await setOrderPriority(String(req.params.id), req.auth!.userId, req.auth!.role, priority, managerPin);
+    res.json({ order });
+  }),
+);
+
 const voidSchema = z.object({ lineId: z.string().uuid(), reason: z.string().min(2), managerPin: z.string().regex(/^\d{4,6}$/).optional() });
 
 ordersRouter.post(
@@ -186,6 +230,68 @@ ordersRouter.post(
     const { reason, managerPin } = req.body as z.infer<typeof cancelSchema>;
     const order = await cancelOrder(String(req.params.id), req.auth!.userId, req.auth!.role, reason, managerPin);
     res.json({ order });
+  }),
+);
+
+const splitsSchema = z.object({
+  splits: z
+    .array(
+      z.object({
+        personName: z.string().min(1).max(30),
+        lineIds: z.array(z.string().uuid()).min(1).max(100),
+      }),
+    )
+    .min(2)
+    .max(20),
+});
+
+ordersRouter.get(
+  "/:id/splits",
+  requirePermission("pos.use"),
+  asyncHandler(async (req, res) => {
+    const splits = await listOrderSplits(String(req.params.id));
+    res.json({ splits });
+  }),
+);
+
+ordersRouter.put(
+  "/:id/splits",
+  requirePermission("pos.use"),
+  validate({ body: splitsSchema }),
+  asyncHandler(async (req, res) => {
+    const { splits } = req.body as z.infer<typeof splitsSchema>;
+    const saved = await setOrderSplits(String(req.params.id), req.auth!.userId, splits);
+    res.json({ splits: saved });
+  }),
+);
+
+ordersRouter.get(
+  "/:id/splits/:splitId/receipt",
+  requirePermission("pos.use"),
+  asyncHandler(async (req, res) => {
+    const { text } = await receiptTextForSplit(String(req.params.id), String(req.params.splitId));
+    res.json({ receipt: text });
+  }),
+);
+
+ordersRouter.post(
+  "/:id/splits/:splitId/print",
+  requirePermission("pos.use"),
+  asyncHandler(async (req, res) => {
+    const orderId = String(req.params.id);
+    const splitId = String(req.params.splitId);
+    await getOrderSplit(orderId, splitId);
+    const { text, result } = await printSplitReceipt(orderId, splitId);
+    await audit({
+      restaurantId: req.auth!.restaurantId,
+      userId: req.auth!.userId,
+      orderId,
+      action: "RECEIPT_REPRINTED",
+      entityType: "OrderSplit",
+      entityId: splitId,
+      after: { split: true },
+    });
+    res.json({ receipt: text, printed: result.ok, mode: result.mode });
   }),
 );
 

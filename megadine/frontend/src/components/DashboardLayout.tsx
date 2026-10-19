@@ -167,7 +167,7 @@ interface HardwareStatus {
 }
 
 export default function DashboardLayout() {
-  const { t } = useTranslation(["nav", "common", "cash"]);
+  const { t } = useTranslation(["nav", "common", "cash", "ops"]);
   const { user, can, logout, loginPin } = useAuth();
   const nav = useNavigate();
   const loc = useLocation();
@@ -233,6 +233,37 @@ export default function DashboardLayout() {
     const on86 = (p: { name: string; isAvailable: boolean }) =>
       push(t(p.isAvailable ? "nav:marked_available" : "nav:marked_86", { name: p.name }), "info");
     s.on(EVENTS.MENU_ITEM_86, on86);
+    const onAllReady = (p: { orderNumber: number }) => {
+      push(t("ops:kds_all_ready_toast", { number: p.orderNumber }), "ok");
+      qc.invalidateQueries({ queryKey: ["tickets"] });
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      qc.invalidateQueries({ queryKey: ["tables"] });
+    };
+    const onOverdue = (p: { orderNumber: number; minutes: number; station: string }) => {
+      push(t("ops:kds_overdue_toast", { number: p.orderNumber, minutes: p.minutes, station: p.station }), "error");
+    };
+    const onReminder = (p: { customerName: string; tableNumber: number; partySize: number; minutesUntil: number }) => {
+      push(
+        t("ops:res_reminder_toast", {
+          name: p.customerName,
+          table: p.tableNumber,
+          count: p.partySize,
+          minutes: p.minutesUntil,
+        }),
+        "info",
+      );
+      qc.invalidateQueries({ queryKey: ["reservations"] });
+      qc.invalidateQueries({ queryKey: ["tables"] });
+    };
+    const onInventoryLow = (p: { name: string; stock: number; unit: string }) => {
+      push(t("ops:inv_low_toast", { name: p.name, stock: Number(p.stock).toFixed(2), unit: p.unit }), "error");
+      qc.invalidateQueries({ queryKey: ["ingredients"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    };
+    s.on(EVENTS.ORDER_ALL_READY, onAllReady);
+    s.on(EVENTS.KITCHEN_OVERDUE, onOverdue);
+    s.on(EVENTS.RESERVATION_REMINDER, onReminder);
+    s.on(EVENTS.INVENTORY_LOW, onInventoryLow);
     const onConnect = () => setSocketUp(true);
     const onDisconnect = () => setSocketUp(false);
     s.on("connect", onConnect);
@@ -241,6 +272,10 @@ export default function DashboardLayout() {
     return () => {
       handlers.forEach(([ev, fn]) => s.off(ev, fn));
       s.off(EVENTS.MENU_ITEM_86, on86);
+      s.off(EVENTS.ORDER_ALL_READY, onAllReady);
+      s.off(EVENTS.KITCHEN_OVERDUE, onOverdue);
+      s.off(EVENTS.RESERVATION_REMINDER, onReminder);
+      s.off(EVENTS.INVENTORY_LOW, onInventoryLow);
       s.off("connect", onConnect);
       s.off("disconnect", onDisconnect);
     };

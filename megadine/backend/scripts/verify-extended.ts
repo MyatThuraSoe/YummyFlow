@@ -2,7 +2,9 @@
  * Extended exit-gate: covers the endpoint round added for the PRD-audit pass —
  * menu variant/modifier CRUD, recipes, plan-limit enforcement, expenses from
  * the cash drawer, cash movements, receipt preview/reprint, void-line
- * (manager PIN rules), Z-report and business-day close.
+ * (manager PIN rules), Z-report and business-day close. Phase 3 adds split
+ * bill by person, line-level refunds, serve-time inventory deduction and
+ * wastage tracking.
  *
  * Repeatable: every created record is cleaned up (menu items/tables/terminals,
  * recipe lines, cash movements, expenses). A business day is closed only once
@@ -670,6 +672,49 @@ async function main() {
     assert.equal(close2.data.varianceExceedsTolerance, true);
     ok("variance one cent over tolerance IS flagged");
 
+    // Card-only refunds never touch the drawer (PRD §6.2 exclusion).
+    const open3 = await api<{ shift: { id: string } }>("/shifts/open", { method: "POST", token: cashier.token, body: { openingFloat: 0 } });
+    assert.equal(open3.status, 201, JSON.stringify(open3.data));
+    const cardOrder = await api<{ order: { id: string; total: string } }>("/orders", {
+      method: "POST",
+      token: cashier.token,
+      body: { channel: "TAKEAWAY", items: [{ menuItemId: coke.id, quantity: 1 }] },
+    });
+    assert.equal(cardOrder.status, 201, JSON.stringify(cardOrder.data));
+    const cardTotal = Number(cardOrder.data.order.total);
+    const cardPay = await api("/payments", {
+      method: "POST",
+      token: cashier.token,
+      body: {
+        orderId: cardOrder.data.order.id,
+        shiftId: open3.data.shift.id,
+        idempotencyKey: `var-card-${cardOrder.data.order.id}`,
+        payments: [{ method: "CARD", amount: cardTotal }],
+      },
+    });
+    assert.equal(cardPay.status, 201, JSON.stringify(cardPay.data));
+    const cardRefund = await api("/payments/refund", {
+      method: "POST",
+      token: admin.token,
+      body: { orderId: cardOrder.data.order.id, amount: cardTotal, reason: "card-only verify", managerPin: PIN_OWNER },
+    });
+    assert.equal(cardRefund.status, 200, JSON.stringify(cardRefund.data));
+    const xCard = await api<{ report: { cashSales: number; refundsInWindow: number; expectedCash: number } }>(
+      `/shifts/${open3.data.shift.id}/x-report`,
+      { token: cashier.token },
+    );
+    assert.equal(xCard.data.report.cashSales, 0);
+    assert.equal(xCard.data.report.refundsInWindow, 0);
+    assert.equal(xCard.data.report.expectedCash, 0);
+    ok("card-only refunds are excluded from the cash drawer expectation");
+    const close3 = await api<{ varianceExceedsTolerance: boolean }>(`/shifts/${open3.data.shift.id}/close`, {
+      method: "POST",
+      token: cashier.token,
+      body: { actualCash: 0 },
+    });
+    assert.equal(close3.status, 200, JSON.stringify(close3.data));
+    assert.equal(close3.data.varianceExceedsTolerance, false);
+
     // ── Receipt customization (spec: receipt config, preview, per-order) ──
     const rc = await api<{ success: boolean; data: { config: { paperWidth: number; showTax: boolean; fontSize: string } } }>("/receipts/config", { token: cashier.token });
     assert.equal(rc.status, 200);
@@ -732,6 +777,672 @@ async function main() {
 
     await api("/receipts/config", { method: "PUT", token: admin.token, body: { showTax: true } });
     ok("receipt config reset for repeat runs");
+
+    // ── Phase 1 roadmap: SERVED lifecycle, kitchen priority, reservations ──
+    const menuNow = await api<{ categories: { items: { id: string }[] }[] }>("/menu", { token: cashier.token });
+    const anyItemId = menuNow.data.categories.flatMap((c) => c.items)[0].id;
+    const tablesNow = await api<{ tables: { id: string; number: number; status: string }[] }>("/tables", { token: cashier.token });
+    const availTable = tablesNow.data.tables.find((t) => t.status === "AVAILABLE");
+
+    const servedOrder = await api<{ order: { id: string; total: string; status: string; priority: string } }>("/orders", {
+      method: "POST",
+      token: cashier.token,
+      body: {
+        channel: availTable ? "DINE_IN" : "TAKEAWAY",
+        tableId: availTable?.id ?? null,
+        items: [{ menuItemId: anyItemId, quantity: 1 }],
+      },
+    });
+    assert.equal(servedOrder.status, 201, JSON.stringify(servedOrder.data));
+    assert.equal(servedOrder.data.order.priority, "NORMAL");
+    const servedId = servedOrder.data.order.id;
+
+    const tooEarly = await api(`/orders/${servedId}/mark-served`, { method: "POST", token: cashier.token });
+    assert.equal(tooEarly.status, 409, "serving an order that is not READY must be rejected");
+
+    await api(`/orders/${servedId}/send-to-kitchen`, { method: "POST", token: cashier.token });
+    const ticketList = await api<{ tickets: { id: string; orderId: string }[] }>("/kitchen/tickets", { token: admin.token });
+    const myTickets = ticketList.data.tickets.filter((t) => t.orderId === servedId);
+    assert.ok(myTickets.length >= 1, "expected kitchen tickets for the served-flow order");
+    for (const tk of myTickets) {
+      await api(`/kitchen/tickets/${tk.id}/status`, { method: "POST", token: admin.token, body: { status: "PREPARING" } });
+      await api(`/kitchen/tickets/${tk.id}/status`, { method: "POST", token: admin.token, body: { status: "READY" } });
+    }
+    const readyOrder = await api<{ order: { status: string } }>(`/orders/${servedId}`, { token: cashier.token });
+    assert.equal(readyOrder.data.order.status, "READY");
+
+    const servedRes = await api<{ order: { status: string; servedAt: string | null; servedBy: string | null; lines: { quantity: number; servedQuantity: number; isVoided: boolean }[] } }>(
+      `/orders/${servedId}/mark-served`,
+      { method: "POST", token: cashier.token },
+    );
+    assert.equal(servedRes.status, 200, JSON.stringify(servedRes.data));
+    assert.equal(servedRes.data.order.status, "SERVED");
+    assert.ok(servedRes.data.order.servedAt);
+    assert.ok(servedRes.data.order.servedBy);
+    assert.ok(Array.isArray(servedRes.data.order.lines) && servedRes.data.order.lines.length > 0, "mark-served must return the hydrated order");
+    assert.ok(
+      servedRes.data.order.lines.filter((l) => !l.isVoided).every((l) => l.servedQuantity === l.quantity),
+      "mark-served must mark every active line as served",
+    );
+    const servedAgain = await api(`/orders/${servedId}/mark-served`, { method: "POST", token: cashier.token });
+    assert.equal(servedAgain.status, 200, "mark-served must be idempotent");
+    const openNow = await api<{ orders: { id: string }[] }>("/orders/open", { token: cashier.token });
+    assert.ok(openNow.data.orders.some((o) => o.id === servedId), "SERVED order must stay recallable from the open list");
+    if (availTable) {
+      const session = await prisma.tableSession.findFirst({ where: { tableId: availTable.id, status: "OPEN" } });
+      assert.ok(session?.servedAt, "dining session must record servedAt for turnover metrics");
+    }
+    ok("SERVED lifecycle: gated on READY, sets servedAt/servedBy, stays recallable");
+
+    const prRush = await api<{ order: { priority: string } }>(`/orders/${servedId}/priority`, {
+      method: "PATCH",
+      token: admin.token,
+      body: { priority: "RUSH" },
+    });
+    assert.equal(prRush.status, 200, JSON.stringify(prRush.data));
+    assert.equal(prRush.data.order.priority, "RUSH");
+    const prNoPin = await api(`/orders/${servedId}/priority`, { method: "PATCH", token: cashier.token, body: { priority: "VIP" } });
+    assert.equal(prNoPin.status, 400, "cashier escalation without a manager PIN must be rejected");
+    const prPin = await api<{ order: { priority: string } }>(`/orders/${servedId}/priority`, {
+      method: "PATCH",
+      token: cashier.token,
+      body: { priority: "VIP", managerPin: PIN_OWNER },
+    });
+    assert.equal(prPin.status, 200, JSON.stringify(prPin.data));
+    assert.equal(prPin.data.order.priority, "VIP");
+    await api(`/orders/${servedId}/priority`, { method: "PATCH", token: cashier.token, body: { priority: "NORMAL" } });
+    ok("kitchen priority: manager-PIN gated for cashiers and persists RUSH/VIP");
+
+    // Cancelling every kitchen ticket must NOT mark the order ready/served:
+    // a fully cancelled line-up means no food was cooked (regression guard).
+    const cancelledFlow = await api<{ order: { id: string; total: string } }>("/orders", {
+      method: "POST",
+      token: cashier.token,
+      body: { channel: "TAKEAWAY", items: [{ menuItemId: anyItemId, quantity: 1 }] },
+    });
+    assert.equal(cancelledFlow.status, 201, JSON.stringify(cancelledFlow.data));
+    const cancelledId = cancelledFlow.data.order.id;
+    await api(`/orders/${cancelledId}/send-to-kitchen`, { method: "POST", token: cashier.token });
+    const cancelTickets = await api<{ tickets: { id: string; orderId: string }[] }>("/kitchen/tickets", { token: admin.token });
+    for (const tk of cancelTickets.data.tickets.filter((t) => t.orderId === cancelledId)) {
+      await api(`/kitchen/tickets/${tk.id}/status`, { method: "POST", token: admin.token, body: { status: "CANCELLED", reason: "verify cancel rollup" } });
+    }
+    const stillOpen = await api<{ order: { status: string } }>(`/orders/${cancelledId}`, { token: cashier.token });
+    assert.equal(stillOpen.data.order.status, "SENT_TO_KITCHEN", "all tickets cancelled must not roll the order to READY/SERVED");
+    await api(`/orders/${cancelledId}/cancel`, { method: "POST", token: admin.token, body: { reason: "cleanup after verify" } });
+    ok("cancelling all kitchen tickets leaves the order unserved");
+
+    // ── Phase 2: partial (line-level) serving ────────────────────────────────
+    const menuItems = menuNow.data.categories.flatMap((c) => c.items);
+    const partialItemA = menuItems[0].id;
+    const partialItemB = (menuItems.find((i) => i.id !== partialItemA) ?? menuItems[0]).id;
+    const partialFlow = await api<{ order: { id: string; total: string } }>("/orders", {
+      method: "POST",
+      token: cashier.token,
+      body: {
+        channel: "TAKEAWAY",
+        items: [
+          { menuItemId: partialItemA, quantity: 2 },
+          { menuItemId: partialItemB, quantity: 1 },
+        ],
+      },
+    });
+    assert.equal(partialFlow.status, 201, JSON.stringify(partialFlow.data));
+    const partialId = partialFlow.data.order.id;
+
+    const partialOrder = await api<{ order: { lines: { id: string; quantity: number; servedQuantity: number; isVoided: boolean }[] } }>(
+      `/orders/${partialId}`,
+      { token: cashier.token },
+    );
+    const partialLines = partialOrder.data.order.lines.filter((l) => !l.isVoided);
+    assert.ok(partialLines.length >= 2, "partial-serving flow needs at least two lines");
+    const [lineA] = partialLines;
+
+    const serveTooEarly = await api(`/orders/${partialId}/serve-lines`, {
+      method: "POST",
+      token: cashier.token,
+      body: { lines: [{ lineId: lineA.id, quantity: 1 }] },
+    });
+    assert.equal(serveTooEarly.status, 409, "serving an order that was never sent to the kitchen must be rejected");
+
+    await api(`/orders/${partialId}/send-to-kitchen`, { method: "POST", token: cashier.token });
+    const partialTickets = await api<{ tickets: { id: string; orderId: string }[] }>("/kitchen/tickets", { token: admin.token });
+    for (const tk of partialTickets.data.tickets.filter((t) => t.orderId === partialId)) {
+      await api(`/kitchen/tickets/${tk.id}/status`, { method: "POST", token: admin.token, body: { status: "PREPARING" } });
+      await api(`/kitchen/tickets/${tk.id}/status`, { method: "POST", token: admin.token, body: { status: "READY" } });
+    }
+
+    const serveUnknown = await api(`/orders/${partialId}/serve-lines`, {
+      method: "POST",
+      token: cashier.token,
+      body: { lines: [{ lineId: "00000000-0000-0000-0000-000000000000", quantity: 1 }] },
+    });
+    assert.equal(serveUnknown.status, 400, "unknown line ids must be rejected");
+    const serveOver = await api(`/orders/${partialId}/serve-lines`, {
+      method: "POST",
+      token: cashier.token,
+      body: { lines: [{ lineId: lineA.id, quantity: 99 }] },
+    });
+    assert.equal(serveOver.status, 400, "over-serving a line must be rejected");
+    ok("serve-lines rejects unsent orders, unknown lines and over-serving");
+
+    const serveOne = await api<{ order: { status: string; lines: { id: string; quantity: number; servedQuantity: number; isVoided: boolean }[] } }>(
+      `/orders/${partialId}/serve-lines`,
+      { method: "POST", token: cashier.token, body: { lines: [{ lineId: lineA.id, quantity: 1 }] } },
+    );
+    assert.equal(serveOne.status, 200, JSON.stringify(serveOne.data));
+    assert.notEqual(serveOne.data.order.status, "SERVED", "a partially served order must not flip to SERVED");
+    const lineAAfter = serveOne.data.order.lines.find((l) => l.id === lineA.id)!;
+    assert.equal(lineAAfter.servedQuantity, 1, "partial serving must persist the per-line quantity");
+    ok("line-level serving tracks partial delivery without closing the order");
+
+    const serveRest = await api<{ order: { status: string; servedAt: string | null; lines: { quantity: number; servedQuantity: number; isVoided: boolean }[] } }>(
+      `/orders/${partialId}/serve-lines`,
+      {
+        method: "POST",
+        token: cashier.token,
+        body: {
+          lines: partialLines.map((l) => ({ lineId: l.id, quantity: l.quantity })),
+        },
+      },
+    );
+    assert.equal(serveRest.status, 200, JSON.stringify(serveRest.data));
+    assert.equal(serveRest.data.order.status, "SERVED", "serving every remaining item must auto-complete to SERVED");
+    assert.ok(serveRest.data.order.servedAt);
+    assert.ok(
+      serveRest.data.order.lines.filter((l) => !l.isVoided).every((l) => l.servedQuantity === l.quantity),
+      "every active line must be fully served",
+    );
+    await api(`/orders/${partialId}/cancel`, { method: "POST", token: admin.token, body: { reason: "cleanup after verify" } });
+    ok("serving the last remaining items auto-transitions the order to SERVED");
+
+    // Settle the SERVED order (covers paying after service) and free the table.
+    if (availTable) {
+      const payServed = await api("/payments", {
+        method: "POST",
+        token: cashier.token,
+        body: {
+          orderId: servedId,
+          shiftId: null,
+          idempotencyKey: `served-flow-${servedId}`,
+          payments: [{ method: "CASH", amount: Number(servedOrder.data.order.total) }],
+        },
+      });
+      assert.equal(payServed.status, 201, JSON.stringify(payServed.data));
+      await api(`/tables/${availTable.id}/clear`, { method: "POST", token: admin.token });
+    } else {
+      await api(`/orders/${servedId}/cancel`, { method: "POST", token: admin.token, body: { reason: "cleanup after verify" } });
+    }
+
+    const tablesAfterPay = await api<{ tables: { id: string; number: number; status: string }[] }>("/tables", { token: admin.token });
+    const resTable =
+      tablesAfterPay.data.tables.find((t) => t.id === availTable?.id && t.status === "AVAILABLE") ??
+      tablesAfterPay.data.tables.find((t) => t.status === "AVAILABLE");
+    assert.ok(resTable, "expected an available table for the reservation flow");
+    const resStart = new Date(Date.now() + 2 * 60 * 60 * 1000);
+    const resEnd = new Date(resStart.getTime() + 3 * 60 * 60 * 1000);
+    const newRes = await api<{ reservation: { id: string; status: string } }>("/reservations", {
+      method: "POST",
+      token: admin.token,
+      body: { tableId: resTable.id, customerName: "Verify Guest", partySize: 4, reservationTime: resStart.toISOString() },
+    });
+    assert.equal(newRes.status, 201, JSON.stringify(newRes.data));
+    assert.equal(newRes.data.reservation.status, "CONFIRMED");
+    const resList = await api<{ reservations: { id: string }[] }>(
+      `/reservations?from=${encodeURIComponent(new Date().toISOString())}&to=${encodeURIComponent(resEnd.toISOString())}&tableId=${resTable.id}`,
+      { token: admin.token },
+    );
+    assert.ok(resList.data.reservations.some((r) => r.id === newRes.data.reservation.id));
+    const clash = await api("/reservations", {
+      method: "POST",
+      token: admin.token,
+      body: {
+        tableId: resTable.id,
+        customerName: "Clash Guest",
+        partySize: 2,
+        reservationTime: new Date(resStart.getTime() + 30 * 60 * 1000).toISOString(),
+      },
+    });
+    assert.equal(clash.status, 409, "overlapping reservation on the same table must be rejected");
+    const seatRes = await api(`/reservations/${newRes.data.reservation.id}/seat`, { method: "POST", token: admin.token });
+    assert.equal(seatRes.status, 200, JSON.stringify(seatRes.data));
+    const seatedTable = await prisma.restaurantTable.findUnique({ where: { id: resTable.id } });
+    assert.equal(seatedTable?.status, "OCCUPIED");
+    const seatSession = await prisma.tableSession.findFirst({ where: { tableId: resTable.id, status: "OPEN" } });
+    assert.ok(seatSession?.seatedAt, "seating a reservation must stamp the session seatedAt");
+    const reseat = await api(`/reservations/${newRes.data.reservation.id}/seat`, { method: "POST", token: admin.token });
+    assert.equal(reseat.status, 409, "re-seating a SEATED reservation must be rejected");
+    await api(`/tables/${resTable.id}/clear`, { method: "POST", token: admin.token });
+    const noShowRes = await api<{ reservation: { id: string } }>("/reservations", {
+      method: "POST",
+      token: admin.token,
+      body: {
+        tableId: resTable.id,
+        customerName: "NoShow Guest",
+        partySize: 2,
+        reservationTime: new Date(resStart.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+      },
+    });
+    const noShow = await api(`/reservations/${noShowRes.data.reservation.id}/no-show`, { method: "POST", token: admin.token });
+    assert.equal(noShow.status, 200, JSON.stringify(noShow.data));
+    await prisma.reservation.deleteMany({
+      where: { restaurantId: restaurant.id, customerName: { in: ["Verify Guest", "Clash Guest", "NoShow Guest"] } },
+    });
+    ok("reservations create/conflict/list/seat with table + session timestamps");
+
+    // ── Phase 3: split bill by person ────────────────────────────────────────
+    const splitFlow = await api<{ order: { id: string } }>("/orders", {
+      method: "POST",
+      token: cashier.token,
+      body: {
+        channel: "TAKEAWAY",
+        items: [
+          { menuItemId: anyItemId, quantity: 1 },
+          { menuItemId: partialItemB, quantity: 1 },
+        ],
+      },
+    });
+    assert.equal(splitFlow.status, 201, JSON.stringify(splitFlow.data));
+    const splitOrderId = splitFlow.data.order.id;
+    const splitOrder = await api<{ order: { total: string; lines: { id: string; lineTotal: string; isVoided: boolean }[] } }>(
+      `/orders/${splitOrderId}`,
+      { token: cashier.token },
+    );
+    const splitLines = splitOrder.data.order.lines.filter((l) => !l.isVoided);
+    assert.ok(splitLines.length >= 2, "split flow needs at least two lines");
+
+    interface SplitRow {
+      id: string;
+      personName: string;
+      lineIds: string[];
+      total: string;
+      paid: boolean;
+    }
+    const splitsEmpty = await api<{ splits: SplitRow[] }>(`/orders/${splitOrderId}/splits`, { token: cashier.token });
+    assert.equal(splitsEmpty.status, 200);
+    assert.equal(splitsEmpty.data.splits.length, 0, "a fresh order has no splits");
+    const splitsSolo = await api(`/orders/${splitOrderId}/splits`, {
+      method: "PUT",
+      token: cashier.token,
+      body: { splits: [{ personName: "Solo", lineIds: splitLines.map((l) => l.id) }] },
+    });
+    assert.equal(splitsSolo.status, 400, "a split needs at least two people");
+    const splitsDuplicate = await api(`/orders/${splitOrderId}/splits`, {
+      method: "PUT",
+      token: cashier.token,
+      body: {
+        splits: [
+          { personName: "Verify Aung", lineIds: [splitLines[0].id] },
+          { personName: "Verify Bella", lineIds: [splitLines[0].id] },
+        ],
+      },
+    });
+    assert.equal(splitsDuplicate.status, 400, "an item cannot be assigned to two people");
+    const splitsSaved = await api<{ splits: SplitRow[] }>(`/orders/${splitOrderId}/splits`, {
+      method: "PUT",
+      token: cashier.token,
+      body: {
+        splits: [
+          { personName: "Verify Aung", lineIds: [splitLines[0].id] },
+          { personName: "Verify Bella", lineIds: splitLines.slice(1).map((l) => l.id) },
+        ],
+      },
+    });
+    assert.equal(splitsSaved.status, 200, JSON.stringify(splitsSaved.data));
+    assert.equal(splitsSaved.data.splits.length, 2);
+    assert.equal(
+      splitsSaved.data.splits.reduce((s, r) => s + Math.round(Number(r.total) * 100), 0),
+      Math.round(Number(splitOrder.data.order.total) * 100),
+      "person totals must reconcile to the order total",
+    );
+    const assigned = splitsSaved.data.splits.flatMap((r) => r.lineIds);
+    assert.equal(new Set(assigned).size, splitLines.length, "every active line is assigned exactly once");
+    ok("splits: validation gates bad assignments and totals reconcile to the order total");
+
+    const aRow = splitsSaved.data.splits.find((r) => r.personName === "Verify Aung")!;
+    const bRow = splitsSaved.data.splits.find((r) => r.personName === "Verify Bella")!;
+    const paySplitA = await api<{ order: { status: string; paymentStatus: string } }>("/payments", {
+      method: "POST",
+      token: cashier.token,
+      body: {
+        orderId: splitOrderId,
+        shiftId: null,
+        idempotencyKey: `split-a-${splitOrderId}`,
+        splitId: aRow.id,
+        payments: [{ method: "CASH", amount: Number(aRow.total), cashReceived: Number(aRow.total) }],
+      },
+    });
+    assert.equal(paySplitA.status, 201, JSON.stringify(paySplitA.data));
+    assert.notEqual(paySplitA.data.order.status, "COMPLETED", "one person paying must not complete the order");
+    assert.equal(paySplitA.data.order.paymentStatus, "PENDING");
+    const splitsAfterA = await api<{ splits: SplitRow[] }>(`/orders/${splitOrderId}/splits`, { token: cashier.token });
+    assert.equal(splitsAfterA.data.splits.find((s) => s.id === aRow.id)?.paid, true);
+    assert.equal(splitsAfterA.data.splits.find((s) => s.id === bRow.id)?.paid, false);
+
+    const relock = await api(`/orders/${splitOrderId}/splits`, {
+      method: "PUT",
+      token: cashier.token,
+      body: {
+        splits: [
+          { personName: "Verify Aung", lineIds: [splitLines[0].id] },
+          { personName: "Verify Bella", lineIds: splitLines.slice(1).map((l) => l.id) },
+        ],
+      },
+    });
+    assert.equal(relock.status, 409, "splits must be locked once a person has paid");
+
+    const splitReceipt = await api<{ receipt: string }>(`/orders/${splitOrderId}/splits/${aRow.id}/receipt`, { token: cashier.token });
+    assert.equal(splitReceipt.status, 200, JSON.stringify(splitReceipt.data));
+    assert.ok(splitReceipt.data.receipt.includes("Verify Aung"), "split receipt must name the person");
+    const splitPrint = await api<{ receipt: string; printed: boolean; mode: string }>(
+      `/orders/${splitOrderId}/splits/${aRow.id}/print`,
+      { method: "POST", token: cashier.token },
+    );
+    assert.equal(splitPrint.status, 200, JSON.stringify(splitPrint.data));
+    assert.equal(splitPrint.data.printed, true);
+    assert.equal(splitPrint.data.mode, "simulate");
+    ok("splits: paid share locks re-splitting; per-person receipt + simulated print work");
+
+    const paySplitB = await api<{ order: { status: string; paymentStatus: string } }>("/payments", {
+      method: "POST",
+      token: cashier.token,
+      body: {
+        orderId: splitOrderId,
+        shiftId: null,
+        idempotencyKey: `split-b-${splitOrderId}`,
+        splitId: bRow.id,
+        payments: [{ method: "CASH", amount: Number(bRow.total), cashReceived: Number(bRow.total) }],
+      },
+    });
+    assert.equal(paySplitB.status, 201, JSON.stringify(paySplitB.data));
+    assert.equal(paySplitB.data.order.status, "COMPLETED", "paying every share must complete the order");
+    assert.equal(paySplitB.data.order.paymentStatus, "SUCCEEDED");
+    ok("splits: paying the final share completes the order");
+
+    // ── Phase 3: line-level refunds ──────────────────────────────────────────
+    const refundFlow = await api<{ order: { id: string } }>("/orders", {
+      method: "POST",
+      token: cashier.token,
+      body: { channel: "TAKEAWAY", items: [{ menuItemId: anyItemId, quantity: 3 }] },
+    });
+    assert.equal(refundFlow.status, 201, JSON.stringify(refundFlow.data));
+    const refundOrderId = refundFlow.data.order.id;
+    const refundOrder = await api<{ order: { total: string; lines: { id: string; quantity: number; lineTotal: string; isVoided: boolean }[] } }>(
+      `/orders/${refundOrderId}`,
+      { token: cashier.token },
+    );
+    const refundLine = refundOrder.data.order.lines.filter((l) => !l.isVoided)[0]!;
+    assert.equal(refundLine.quantity, 3);
+    const payRefundOrder = await api("/payments", {
+      method: "POST",
+      token: cashier.token,
+      body: {
+        orderId: refundOrderId,
+        shiftId: null,
+        idempotencyKey: `refund-flow-${refundOrderId}`,
+        payments: [{ method: "CASH", amount: Number(refundOrder.data.order.total), cashReceived: Number(refundOrder.data.order.total) }],
+      },
+    });
+    assert.equal(payRefundOrder.status, 201, JSON.stringify(payRefundOrder.data));
+
+    const lineCents = Math.round(Number(refundLine.lineTotal) * 100);
+    const partialCents = Math.round((lineCents * 2) / 3);
+    interface RefundResultOrder {
+      paymentStatus: string;
+      refundedAmount: string;
+      refundedLines: { lineId: string; quantity: number; amountCents: number }[] | null;
+    }
+    const partialRefund = await api<{ order: RefundResultOrder }>("/payments/refund", {
+      method: "POST",
+      token: admin.token,
+      body: {
+        orderId: refundOrderId,
+        lines: [{ lineId: refundLine.id, quantity: 2 }],
+        reason: "verify partial line refund",
+        managerPin: PIN_OWNER,
+      },
+    });
+    assert.equal(partialRefund.status, 200, JSON.stringify(partialRefund.data));
+    assert.equal(partialRefund.data.order.paymentStatus, "PARTIALLY_REFUNDED");
+    assert.equal(Math.round(Number(partialRefund.data.order.refundedAmount) * 100), partialCents);
+    assert.deepEqual(partialRefund.data.order.refundedLines, [
+      { lineId: refundLine.id, quantity: 2, amountCents: partialCents },
+    ]);
+    ok("refunds: a partial line refund prorates the amount and snapshots refundedLines");
+
+    const restRefund = await api<{ order: RefundResultOrder }>("/payments/refund", {
+      method: "POST",
+      token: admin.token,
+      body: {
+        orderId: refundOrderId,
+        lines: [{ lineId: refundLine.id, quantity: 1 }],
+        reason: "verify remaining line refund",
+        managerPin: PIN_OWNER,
+      },
+    });
+    assert.equal(restRefund.status, 200, JSON.stringify(restRefund.data));
+    assert.equal(Math.round(Number(restRefund.data.order.refundedAmount) * 100), lineCents - partialCents);
+    assert.deepEqual(restRefund.data.order.refundedLines, [
+      { lineId: refundLine.id, quantity: 1, amountCents: lineCents - partialCents },
+    ]);
+
+    // The order total also carries tax/service above the line totals, so a
+    // full-line refund still leaves a refundable balance — clear it via the
+    // amount path to reach REFUNDED.
+    const orderPaidCents = Math.round(Number(refundOrder.data.order.total) * 100);
+    const balanceCents = orderPaidCents - lineCents;
+    if (balanceCents > 0) {
+      const balanceRefund = await api<{ order: RefundResultOrder }>("/payments/refund", {
+        method: "POST",
+        token: admin.token,
+        body: {
+          orderId: refundOrderId,
+          amount: balanceCents / 100,
+          reason: "verify tax/service balance refund",
+          managerPin: PIN_OWNER,
+        },
+      });
+      assert.equal(balanceRefund.status, 200, JSON.stringify(balanceRefund.data));
+      assert.equal(Math.round(Number(balanceRefund.data.order.refundedAmount) * 100), balanceCents);
+    }
+    const refundedOrder = await prisma.order.findUnique({ where: { id: refundOrderId } });
+    assert.equal(refundedOrder?.paymentStatus, "REFUNDED");
+    ok("refunds: line refunds prorate/snapshot; clearing the balance reaches REFUNDED");
+
+    const overRefund = await api("/payments/refund", {
+      method: "POST",
+      token: admin.token,
+      body: {
+        orderId: refundOrderId,
+        lines: [{ lineId: refundLine.id, quantity: 1 }],
+        reason: "verify over refund",
+        managerPin: PIN_OWNER,
+      },
+    });
+    assert.equal(overRefund.status, 400, "a fully refunded line cannot be refunded again");
+    const unknownRefundLine = await api("/payments/refund", {
+      method: "POST",
+      token: admin.token,
+      body: {
+        orderId: refundOrderId,
+        lines: [{ lineId: "00000000-0000-0000-0000-000000000000", quantity: 1 }],
+        reason: "verify unknown line",
+        managerPin: PIN_OWNER,
+      },
+    });
+    assert.equal(unknownRefundLine.status, 400, "unknown line ids must be rejected");
+    ok("refunds: over-refunds and unknown lines are rejected");
+
+    // ── Phase 3: serve-time inventory deduction + wastage ────────────────────
+    const ingName = `Verify Ingredient ${Date.now()}`;
+    const ingRes = await api<{ ingredient: { id: string } }>("/inventory/ingredients", {
+      method: "POST",
+      token: admin.token,
+      body: { name: ingName, stockUnit: "kg", currentStock: 10, reorderLevel: 5, costPerUnit: 2 },
+    });
+    assert.equal(ingRes.status, 201, JSON.stringify(ingRes.data));
+    const ingId = ingRes.data.ingredient.id;
+    const recipeBefore = await api<{ lines: { ingredientId: string; quantity: string }[] }>(
+      `/inventory/items/${anyItemId}/recipe`,
+      { token: admin.token },
+    );
+    const setRecipe = await api(`/inventory/items/${anyItemId}/recipe`, {
+      method: "PUT",
+      token: admin.token,
+      body: { lines: [{ ingredientId: ingId, quantity: 2 }] },
+    });
+    assert.equal(setRecipe.status, 200, JSON.stringify(setRecipe.data));
+
+    const invFlow = await api<{ order: { id: string } }>("/orders", {
+      method: "POST",
+      token: cashier.token,
+      body: { channel: "TAKEAWAY", items: [{ menuItemId: anyItemId, quantity: 1 }] },
+    });
+    assert.equal(invFlow.status, 201, JSON.stringify(invFlow.data));
+    const invOrderId = invFlow.data.order.id;
+    await api(`/orders/${invOrderId}/send-to-kitchen`, { method: "POST", token: cashier.token });
+    const invTickets = await api<{ tickets: { id: string; orderId: string }[] }>("/kitchen/tickets", { token: admin.token });
+    for (const tk of invTickets.data.tickets.filter((t) => t.orderId === invOrderId)) {
+      await api(`/kitchen/tickets/${tk.id}/status`, { method: "POST", token: admin.token, body: { status: "PREPARING" } });
+      await api(`/kitchen/tickets/${tk.id}/status`, { method: "POST", token: admin.token, body: { status: "READY" } });
+    }
+    const servedInv = await api(`/orders/${invOrderId}/mark-served`, { method: "POST", token: cashier.token });
+    assert.equal(servedInv.status, 200, JSON.stringify(servedInv.data));
+    const ingAfterServe = await prisma.ingredient.findUnique({ where: { id: ingId } });
+    assert.equal(Number(ingAfterServe?.currentStock), 8, "serving must deduct recipe usage once (10 − 2)");
+    const invOrderRow = await prisma.order.findUnique({ where: { id: invOrderId } });
+    assert.ok(invOrderRow?.inventoryConsumedAt, "serving must stamp inventoryConsumedAt");
+    ok("inventory: serving deducts recipe stock once and stamps the order");
+
+    const payInv = await api("/payments", {
+      method: "POST",
+      token: cashier.token,
+      body: {
+        orderId: invOrderId,
+        shiftId: null,
+        idempotencyKey: `inv-flow-${invOrderId}`,
+        payments: [{ method: "CASH", amount: Number(invOrderRow!.total.toString()), cashReceived: Number(invOrderRow!.total.toString()) }],
+      },
+    });
+    assert.equal(payInv.status, 201, JSON.stringify(payInv.data));
+    const ingAfterPay = await prisma.ingredient.findUnique({ where: { id: ingId } });
+    assert.equal(Number(ingAfterPay?.currentStock), 8, "paying a served order must not deduct twice");
+    ok("inventory: payment after service does not deduct twice (idempotent)");
+
+    const wastage = await api<{ ingredient: { currentStock: string } }>("/inventory/wastage", {
+      method: "POST",
+      token: admin.token,
+      body: { ingredientId: ingId, quantity: 1, reason: "burned", note: "verify burn" },
+    });
+    assert.equal(wastage.status, 201, JSON.stringify(wastage.data));
+    assert.equal(Number(wastage.data.ingredient.currentStock), 7);
+    const wasteMovement = await prisma.stockMovement.findFirst({
+      where: { ingredientId: ingId, type: "WASTAGE" },
+      orderBy: { createdAt: "desc" },
+    });
+    assert.equal(wasteMovement?.reason, "burned");
+    assert.equal(wasteMovement?.note, "verify burn");
+    const badReason = await api("/inventory/wastage", {
+      method: "POST",
+      token: admin.token,
+      body: { ingredientId: ingId, quantity: 1, reason: "melted" },
+    });
+    assert.equal(badReason.status, 400, "unknown wastage reasons must be rejected");
+    const overWaste = await api("/inventory/wastage", {
+      method: "POST",
+      token: admin.token,
+      body: { ingredientId: ingId, quantity: 100, reason: "expired" },
+    });
+    assert.equal(overWaste.status, 409, "wastage must not drive stock negative");
+    ok("wastage: records reason + note, rejects bad reasons, blocks negative stock");
+
+    const today = localDate(new Date());
+    const wasteReport = await api<{
+      rows: { ingredientName: string; reason: string | null; note: string | null }[];
+      byReason: { reason: string; quantity: number }[];
+    }>(`/reports/wastage?from=${today}&to=${today}`, { token: admin.token });
+    assert.equal(wasteReport.status, 200, JSON.stringify(wasteReport.data));
+    assert.ok(
+      wasteReport.data.rows.some((r) => r.ingredientName === ingName && r.reason === "burned" && r.note === "verify burn"),
+      "wastage report must include the recorded movement",
+    );
+    assert.ok(
+      wasteReport.data.byReason.some((b) => b.reason === "burned" && b.quantity >= 1),
+      "wastage report must aggregate by reason",
+    );
+    ok("reports: wastage report includes the movement and aggregates by reason");
+
+    // ── Phase 4: dashboard alerts, sales trend, floor timeline ───────────────
+    const ingLowName = `Verify Low ${Date.now()}`;
+    const ingLowRes = await api<{ ingredient: { id: string } }>("/inventory/ingredients", {
+      method: "POST",
+      token: admin.token,
+      body: { name: ingLowName, stockUnit: "pc", currentStock: 0, reorderLevel: 999, costPerUnit: 1 },
+    });
+    assert.equal(ingLowRes.status, 201, JSON.stringify(ingLowRes.data));
+    const ingLowId = ingLowRes.data.ingredient.id;
+
+    const alerts = await api<{ alerts: { kind: string; severity: string; name?: string }[] }>("/reports/alerts", {
+      token: admin.token,
+    });
+    assert.equal(alerts.status, 200, JSON.stringify(alerts.data));
+    assert.ok(
+      alerts.data.alerts.some((a) => a.kind === "LOW_STOCK" && a.name === ingLowName),
+      "alerts must flag the low-stock ingredient",
+    );
+    assert.ok(
+      alerts.data.alerts.every((a) => ["LOW_STOCK", "KDS_OVERDUE", "RESERVATION_SOON"].includes(a.kind)),
+      "alerts must only use known kinds",
+    );
+
+    const trend = await api<{ days: { date: string; orders: number; sales: number }[] }>("/reports/trend?days=7", {
+      token: admin.token,
+    });
+    assert.equal(trend.status, 200, JSON.stringify(trend.data));
+    assert.equal(trend.data.days.length, 7, "trend must return one bucket per day");
+    assert.ok(trend.data.days[6].orders >= 1, "today's bucket must count completed orders");
+    assert.ok(trend.data.days.every((d) => typeof d.date === "string" && typeof d.orders === "number" && typeof d.sales === "number"));
+
+    const sessions = await api<{ sessions: { id: string; openedAt: string; order: unknown }[] }>(
+      `/tables/${resTable!.id}/sessions`,
+      { token: admin.token },
+    );
+    assert.equal(sessions.status, 200, JSON.stringify(sessions.data));
+    assert.ok(sessions.data.sessions.some((s) => s.id === seatSession!.id), "floor timeline must include the seated session");
+
+    const dash = await api<{ activeTables: number; activeOrders: number }>("/reports/dashboard", { token: admin.token });
+    assert.equal(dash.status, 200, JSON.stringify(dash.data));
+    assert.equal(typeof dash.data.activeTables, "number");
+    ok("dashboard: alerts flag low stock, 7-day trend buckets orders, floor timeline lists sessions");
+
+    // Clean up every Phase 3 artifact (orders, ingredient, recipe).
+    const phase3OrderIds = [splitOrderId, refundOrderId, invOrderId];
+    const ticketsForCleanup = await prisma.kitchenTicket.findMany({
+      where: { orderId: { in: phase3OrderIds } },
+      select: { id: true },
+    });
+    await prisma.kitchenTicketLine.deleteMany({ where: { ticketId: { in: ticketsForCleanup.map((t) => t.id) } } });
+    await prisma.kitchenTicket.deleteMany({ where: { orderId: { in: phase3OrderIds } } });
+    const paymentsForCleanup = await prisma.payment.findMany({
+      where: { orderId: { in: phase3OrderIds } },
+      select: { id: true },
+    });
+    await prisma.refund.deleteMany({ where: { paymentId: { in: paymentsForCleanup.map((p) => p.id) } } });
+    await prisma.payment.deleteMany({ where: { orderId: { in: phase3OrderIds } } });
+    await prisma.order.deleteMany({ where: { id: { in: phase3OrderIds } } });
+    await api(`/inventory/items/${anyItemId}/recipe`, {
+      method: "PUT",
+      token: admin.token,
+      body: { lines: recipeBefore.data.lines.map((l) => ({ ingredientId: l.ingredientId, quantity: Number(l.quantity) })) },
+    });
+    await prisma.stockMovement.deleteMany({ where: { ingredientId: ingId } });
+    // Recipe PUT supersedes lines instead of deleting them, so drop the
+    // historical rows for this verify-only ingredient first.
+    await prisma.recipeLine.deleteMany({ where: { ingredientId: ingId } });
+    await prisma.ingredient.delete({ where: { id: ingId } });
+    await prisma.stockMovement.deleteMany({ where: { ingredientId: ingLowId } });
+    await prisma.recipeLine.deleteMany({ where: { ingredientId: ingLowId } });
+    await prisma.ingredient.delete({ where: { id: ingLowId } });
 
     console.log(`\n\u2705 MegaDine Basic extended verification passed: ${passed} checks\n`);
   } finally {

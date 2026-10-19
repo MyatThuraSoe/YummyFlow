@@ -8,7 +8,8 @@ import { verifyManagerPin } from "../lib/approval.js";
 import { EVENTS, emitToWorkspace, emitToRole } from "../lib/socket.js";
 import { sendToPrinter, buildKitchenTicketText } from "../lib/printers.js";
 import { env } from "../lib/env.js";
-import type { OrderChannel, Prisma, Station } from "@prisma/client";
+import { consumeForOrder } from "./inventory.service.js";
+import type { OrderChannel, OrderPriority, Prisma, Station } from "@prisma/client";
 
 export interface NewLineInput {
   menuItemId: string;
@@ -441,6 +442,177 @@ export async function sendToKitchen(orderId: string, actorId: string, actorRole:
   });
 
   return { tickets: byStation.size, printed };
+}
+
+/** Waiter confirms the food actually reached the table (READY -> SERVED). */
+export async function markOrderServed(orderId: string, actorId: string) {
+  const order = await prisma.order.findUnique({ where: { id: orderId } });
+  if (!order) throw ApiError.notFound("Order not found");
+  if (order.status === "SERVED") return order;
+  if (order.status === "COMPLETED" || order.status === "CANCELLED") {
+    throw ApiError.conflict("Order is already closed");
+  }
+  if (order.status !== "READY") {
+    throw ApiError.conflict("Order is not ready to be served yet");
+  }
+
+  const now = new Date();
+  const updated = await prisma.$transaction(async (tx) => {
+    const o = await tx.order.update({
+      where: { id: orderId },
+      data: { status: "SERVED", servedAt: now, servedBy: actorId },
+      include: { lines: { include: { modifiers: true } }, payments: true },
+    });
+    for (const line of o.lines) {
+      if (line.isVoided || line.servedQuantity >= line.quantity) continue;
+      await tx.orderLine.update({
+        where: { id: line.id },
+        data: { servedQuantity: line.quantity, servedAt: line.servedAt ?? now },
+      });
+      line.servedQuantity = line.quantity;
+    }
+    if (o.tableId) {
+      await tx.tableSession.updateMany({
+        where: { tableId: o.tableId, status: "OPEN" },
+        data: { servedAt: now },
+      });
+    }
+    await consumeForOrder(tx, orderId);
+    return o;
+  });
+
+  await audit({
+    restaurantId: order.restaurantId,
+    userId: actorId,
+    orderId,
+    action: "ORDER_SERVED",
+    entityType: "Order",
+    entityId: orderId,
+  });
+  emitToWorkspace(EVENTS.ORDER_UPDATED, { id: orderId, status: "SERVED" });
+  return updated;
+}
+
+/**
+ * Partial delivery: waiters confirm quantities per line. Quantities are
+ * absolute totals (not deltas), so retries are idempotent. Once every active
+ * line is fully served the order auto-transitions to SERVED.
+ */
+export async function serveOrderLines(
+  orderId: string,
+  actorId: string,
+  entries: { lineId: string; quantity: number }[],
+) {
+  const order = await prisma.order.findUnique({ where: { id: orderId }, include: { lines: true } });
+  if (!order) throw ApiError.notFound("Order not found");
+  if (order.status === "COMPLETED" || order.status === "CANCELLED") {
+    throw ApiError.conflict("Order is already closed");
+  }
+  if (order.status === "DRAFT") {
+    throw ApiError.conflict("Order has not been sent to the kitchen yet");
+  }
+
+  const byId = new Map(order.lines.map((l) => [l.id, l]));
+  for (const entry of entries) {
+    const line = byId.get(entry.lineId);
+    if (!line || line.isVoided) throw ApiError.badRequest(`Unknown order line ${entry.lineId}`);
+    if (!Number.isInteger(entry.quantity) || entry.quantity < 0 || entry.quantity > line.quantity) {
+      throw ApiError.badRequest(`Served quantity for "${line.itemNameSnapshot}" must be between 0 and ${line.quantity}`);
+    }
+  }
+
+  const now = new Date();
+  const result = await prisma.$transaction(async (tx) => {
+    for (const entry of entries) {
+      const line = byId.get(entry.lineId)!;
+      await tx.orderLine.update({
+        where: { id: entry.lineId },
+        data: { servedQuantity: entry.quantity, ...(entry.quantity > 0 ? { servedAt: line.servedAt ?? now } : {}) },
+      });
+    }
+    const include = { lines: { include: { modifiers: true } }, payments: true } as const;
+    let o = (await tx.order.findUnique({ where: { id: orderId }, include }))!;
+    const activeLines = o.lines.filter((l) => !l.isVoided);
+    const allServed = activeLines.length > 0 && activeLines.every((l) => l.servedQuantity >= l.quantity);
+    let becameServed = false;
+    if (allServed && o.status !== "SERVED") {
+      o = await tx.order.update({
+        where: { id: orderId },
+        data: { status: "SERVED", servedAt: now, servedBy: actorId },
+        include,
+      });
+      becameServed = true;
+      if (o.tableId) {
+        await tx.tableSession.updateMany({
+          where: { tableId: o.tableId, status: "OPEN" },
+          data: { servedAt: now },
+        });
+      }
+      await consumeForOrder(tx, orderId);
+    }
+    return { order: o, becameServed };
+  });
+
+  await audit({
+    restaurantId: order.restaurantId,
+    userId: actorId,
+    orderId,
+    action: "ORDER_LINES_SERVED",
+    entityType: "Order",
+    entityId: orderId,
+    after: { lines: entries, fullyServed: result.becameServed },
+  });
+  if (result.becameServed) {
+    await audit({
+      restaurantId: order.restaurantId,
+      userId: actorId,
+      orderId,
+      action: "ORDER_SERVED",
+      entityType: "Order",
+      entityId: orderId,
+    });
+  }
+  emitToWorkspace(EVENTS.ORDER_UPDATED, { id: orderId, status: result.order.status });
+  return result.order;
+}
+
+/** Kitchen priority: RUSH > VIP > CATERING > NORMAL (manager approval to escalate). */
+export async function setOrderPriority(
+  orderId: string,
+  actorId: string,
+  actorRole: string,
+  priority: OrderPriority,
+  managerPin?: string,
+) {
+  const order = await prisma.order.findUnique({ where: { id: orderId } });
+  if (!order) throw ApiError.notFound("Order not found");
+  if (order.status === "COMPLETED" || order.status === "CANCELLED") {
+    throw ApiError.conflict("Cannot change priority on a closed order");
+  }
+  if (order.priority === priority) return order;
+
+  let approvedBy: string | null = null;
+  const isManager = actorRole === "OWNER" || actorRole === "ADMIN";
+  if (!isManager && priority !== "NORMAL") {
+    const manager = await verifyManagerPin(order.restaurantId, managerPin ?? "", actorId);
+    approvedBy = manager.id;
+  }
+
+  const updated = await prisma.order.update({ where: { id: orderId }, data: { priority } });
+  await audit({
+    restaurantId: order.restaurantId,
+    userId: actorId,
+    orderId,
+    action: "ORDER_PRIORITY_CHANGED",
+    entityType: "Order",
+    entityId: orderId,
+    before: { priority: order.priority },
+    after: { priority },
+    approvedBy,
+  });
+  emitToWorkspace(EVENTS.ORDER_UPDATED, { id: orderId, priority });
+  emitToRole("KITCHEN", EVENTS.KITCHEN_UPDATED, { orderId, priority });
+  return updated;
 }
 
 export async function cancelOrder(

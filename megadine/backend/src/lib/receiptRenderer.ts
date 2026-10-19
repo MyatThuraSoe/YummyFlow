@@ -42,6 +42,8 @@ export interface ReceiptData {
   qrValue?: string | null;
   qrDataUrl?: string | null;
   reprint?: boolean;
+  /** Split-bill receipts: name of the person this receipt belongs to. */
+  splitLabel?: string | null;
   config: ReceiptConfigShape;
 }
 
@@ -97,6 +99,7 @@ export function buildBlocks(data: ReceiptData): Block[] {
   if (c.showDateTime) blocks.push({ kind: "row", left: "Date", right: data.createdAt.toLocaleString() });
   if (c.showCashier && data.cashierName) blocks.push({ kind: "row", left: "Cashier", right: data.cashierName });
   blocks.push({ kind: "row", left: "Channel", right: CHANNEL_LABELS[data.channel] ?? data.channel });
+  if (data.splitLabel) blocks.push({ kind: "text", text: `Split: ${data.splitLabel}`, align: "center", bold: true });
 
   // 8. Items
   blocks.push({ kind: "divider" });

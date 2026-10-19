@@ -11,6 +11,7 @@ import { authRouter } from "./routes/auth.routes.js";
 import { ordersRouter } from "./routes/orders.routes.js";
 import { menuRouter } from "./routes/menu.routes.js";
 import { tablesRouter } from "./routes/tables.routes.js";
+import { reservationsRouter } from "./routes/reservations.routes.js";
 import { kitchenRouter } from "./routes/kitchen.routes.js";
 import { paymentsRouter } from "./routes/payments.routes.js";
 import { shiftsRouter } from "./routes/shifts.routes.js";
@@ -51,6 +52,7 @@ export function createApp() {
   v1.use("/orders", ordersRouter);
   v1.use("/menu", menuRouter);
   v1.use("/tables", tablesRouter);
+  v1.use("/reservations", reservationsRouter);
   v1.use("/kitchen", kitchenRouter);
   v1.use("/payments", paymentsRouter);
   v1.use("/shifts", shiftsRouter);

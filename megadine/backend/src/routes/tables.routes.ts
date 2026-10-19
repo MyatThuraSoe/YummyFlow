@@ -29,6 +29,7 @@ tablesRouter.get(
       const session = t.sessions[0] ?? null;
       const order = session?.order ?? null;
       const itemCount = order?.lines.reduce((s, l) => s + l.quantity, 0) ?? 0;
+      const servedCount = order?.lines.reduce((s, l) => s + Math.min(l.servedQuantity, l.quantity), 0) ?? 0;
       return {
         ...t,
         sessions: undefined,
@@ -40,12 +41,59 @@ tablesRouter.get(
               orderNumber: order?.orderNumber ?? null,
               total: order?.total ?? "0",
               itemCount,
+              servedCount,
               status: order?.status ?? null,
             }
           : null,
       };
     });
     res.json({ tables: view });
+  }),
+);
+
+/** Recent sessions with their orders — powers the floor timeline (Phase 4). */
+tablesRouter.get(
+  "/:id/sessions",
+  asyncHandler(async (req, res) => {
+    const table = await prisma.restaurantTable.findFirst({
+      where: { id: String(req.params.id), restaurantId: req.auth!.restaurantId },
+      select: { id: true },
+    });
+    if (!table) throw ApiError.notFound("Table not found");
+    const sessions = await prisma.tableSession.findMany({
+      where: { tableId: table.id },
+      orderBy: { openedAt: "desc" },
+      take: 8,
+      include: {
+        order: {
+          select: {
+            id: true,
+            orderNumber: true,
+            status: true,
+            total: true,
+            lines: { where: { isVoided: false }, select: { quantity: true } },
+          },
+        },
+      },
+    });
+    res.json({
+      sessions: sessions.map((s) => ({
+        id: s.id,
+        openedAt: s.openedAt,
+        closedAt: s.closedAt,
+        clearedAt: s.clearedAt,
+        status: s.status,
+        order: s.order
+          ? {
+              id: s.order.id,
+              orderNumber: s.order.orderNumber,
+              status: s.order.status,
+              total: s.order.total,
+              itemCount: s.order.lines.reduce((sum, l) => sum + l.quantity, 0),
+            }
+          : null,
+      })),
+    });
   }),
 );
 
@@ -97,6 +145,12 @@ tablesRouter.patch(
       where: { id: String(req.params.id) },
       data: { ...data, version: { increment: 1 } },
     });
+    if (data.status === "NEEDS_BILL") {
+      await prisma.tableSession.updateMany({
+        where: { tableId: table.id, status: "OPEN" },
+        data: { billRequestedAt: new Date() },
+      });
+    }
     emitToWorkspace(EVENTS.TABLE_UPDATED, { tableId: table.id, status: table.status });
     res.json({ table });
   }),
@@ -116,6 +170,12 @@ tablesRouter.post(
       where: { id: String(req.params.id) },
       data: { status, version: { increment: 1 } },
     });
+    if (status === "NEEDS_BILL") {
+      await prisma.tableSession.updateMany({
+        where: { tableId: table.id, status: "OPEN" },
+        data: { billRequestedAt: new Date() },
+      });
+    }
     emitToWorkspace(EVENTS.TABLE_UPDATED, { tableId: table.id, status });
     res.json({ table });
   }),
@@ -138,7 +198,10 @@ tablesRouter.post(
       throw ApiError.conflict(`Table has an open order #${open.order.orderNumber}. Pay or cancel it first.`);
     }
     await prisma.$transaction([
-      prisma.tableSession.updateMany({ where: { tableId: table.id, status: "OPEN" }, data: { status: "CLOSED", closedAt: new Date() } }),
+      prisma.tableSession.updateMany({
+        where: { tableId: table.id, status: "OPEN" },
+        data: { status: "CLOSED", closedAt: new Date(), clearedAt: new Date() },
+      }),
       prisma.restaurantTable.update({ where: { id: table.id }, data: { status: "AVAILABLE", version: { increment: 1 } } }),
     ]);
     await audit({ restaurantId: req.auth!.restaurantId, userId: req.auth!.userId, action: "TABLE_CLEARED", entityType: "RestaurantTable", entityId: table.id });

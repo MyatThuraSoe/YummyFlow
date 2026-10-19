@@ -6,7 +6,8 @@ import { verifyManagerPin } from "../lib/approval.js";
 import { EVENTS, emitToWorkspace } from "../lib/socket.js";
 import { consumeForOrder } from "./inventory.service.js";
 import { autoPrintReceipt, receiptTextForOrder } from "./receipt.service.js";
-import type { PaymentMethod } from "@prisma/client";
+import { planLineRefund, priorRefundedQtyByLine, type RefundLineSelection, type RefundedLineSnapshot } from "./refundMath.js";
+import type { PaymentMethod, Prisma } from "@prisma/client";
 
 export interface TenderInput {
   method: PaymentMethod;
@@ -22,6 +23,7 @@ export interface PayOrderInput {
   terminalId?: string | null;
   payments: TenderInput[];
   idempotencyKey?: string | null;
+  splitId?: string | null;
 }
 
 export async function payOrder(input: PayOrderInput) {
@@ -39,6 +41,12 @@ export async function payOrder(input: PayOrderInput) {
   if (!order) throw ApiError.notFound("Order not found");
   if (order.status === "CANCELLED") throw ApiError.conflict("Order is cancelled");
   if (order.paymentStatus === "SUCCEEDED") throw ApiError.conflict("Order already paid");
+
+  const split = input.splitId
+    ? await prisma.orderSplit.findUnique({ where: { id: input.splitId } })
+    : null;
+  if (input.splitId && (!split || split.orderId !== order.id)) throw ApiError.notFound("Split not found");
+  if (split?.paid) throw ApiError.conflict("This person's bill is already paid");
 
   const total = toCents(order.total);
   const alreadyPaid = order.payments
@@ -62,9 +70,11 @@ export async function payOrder(input: PayOrderInput) {
   const newPaid = alreadyPaid + tendered;
   const completes = newPaid >= due + alreadyPaid || newPaid >= total;
 
+  let splitMarkedPaid = false;
   const result = await prisma.$transaction(async (tx) => {
+    let firstPaymentId: string | null = null;
     for (const p of input.payments) {
-      await tx.payment.create({
+      const createdPayment = await tx.payment.create({
         data: {
           orderId: order.id,
           method: p.method,
@@ -78,6 +88,7 @@ export async function payOrder(input: PayOrderInput) {
           idempotencyKey: input.payments.length === 1 ? input.idempotencyKey ?? null : null,
         },
       });
+      firstPaymentId ??= createdPayment.id;
       if (p.method === "CASH" && (input.shiftId ?? order.shiftId)) {
         await tx.cashMovement.create({
           data: {
@@ -101,6 +112,14 @@ export async function payOrder(input: PayOrderInput) {
         ...(completes ? { status: "COMPLETED", completedAt: new Date() } : {}),
       },
     });
+
+    if (split && tendered >= toCents(split.total)) {
+      await tx.orderSplit.update({
+        where: { id: split.id },
+        data: { paid: true, paidAt: new Date(), paymentId: firstPaymentId },
+      });
+      splitMarkedPaid = true;
+    }
 
     if (completes) {
       await consumeForOrder(tx, order.id);
@@ -140,6 +159,7 @@ export async function payOrder(input: PayOrderInput) {
   });
   emitToWorkspace(EVENTS.ORDER_COMPLETED, { id: order.id, orderNumber: order.orderNumber, completes });
   if (order.tableId) emitToWorkspace(EVENTS.TABLE_UPDATED, { tableId: order.tableId, status: "NEEDS_CLEANING" });
+  if (splitMarkedPaid) emitToWorkspace(EVENTS.ORDER_UPDATED, { id: order.id, splitPaid: split!.id });
 
   return { ...result, receiptPreview };
 }
@@ -147,7 +167,9 @@ export async function payOrder(input: PayOrderInput) {
 export interface RefundInput {
   orderId: string;
   actorId: string;
-  amount: number;
+  amount?: number;
+  /** Line-level refund: quantities per order line (amount is derived). */
+  lines?: RefundLineSelection[];
   reason: string;
   managerPin: string;
   restock?: boolean;
@@ -157,30 +179,56 @@ export interface RefundInput {
 export async function refundOrder(input: RefundInput) {
   const order = await prisma.order.findUnique({
     where: { id: input.orderId },
-    include: { payments: { where: { status: "SUCCEEDED" } }, lines: true },
+    include: {
+      payments: { where: { status: "SUCCEEDED" }, include: { refunds: true } },
+      lines: { include: { menuItem: { include: { recipeLines: { where: { effectiveTo: null }, include: { ingredient: true } } } } } },
+    },
   });
   if (!order) throw ApiError.notFound("Order not found");
 
   const manager = await verifyManagerPin(order.restaurantId, input.managerPin, input.actorId);
-  const requested = toCents(input.amount);
+
+  const activeLines = order.lines.filter((l) => !l.isVoided);
+  const priorRefunds = order.payments.flatMap((p) => p.refunds);
+  const priorByLine = priorRefundedQtyByLine(priorRefunds.map((r) => r.refundedLines));
+
+  let requested: number;
+  let lineSnapshot: RefundedLineSnapshot[] | null = null;
+  if (input.lines && input.lines.length > 0) {
+    const plan = planLineRefund(
+      activeLines.map((l) => ({ id: l.id, quantity: l.quantity, lineTotalCents: toCents(l.lineTotal) })),
+      priorByLine,
+      input.lines,
+    );
+    if (!plan.ok) throw ApiError.badRequest(plan.message);
+    requested = plan.amountCents;
+    lineSnapshot = plan.snapshot;
+  } else {
+    requested = toCents(input.amount ?? 0);
+  }
   if (requested <= 0) throw ApiError.badRequest("Refund amount must be positive");
 
-  const alreadyRefunded = await prisma.refund.aggregate({
-    where: { orderId: order.id },
-    _sum: { amount: true },
-  });
   const paid = order.payments.reduce((s, p) => s + toCents(p.amount), 0);
-  const refundedSoFar = toCents(alreadyRefunded._sum.amount ?? 0);
+  const refundedSoFar = priorRefunds.reduce((s, r) => s + toCents(r.amount), 0);
   if (requested > paid - refundedSoFar) {
     throw ApiError.badRequest("Refund exceeds the refundable balance of the order");
   }
 
+  const priorByPayment = new Map<string, number>();
+  for (const p of order.payments) {
+    priorByPayment.set(p.id, p.refunds.reduce((s, r) => s + toCents(r.amount), 0));
+  }
+
   const result = await prisma.$transaction(async (tx) => {
-    // Distribute the refund across successful payments (oldest first).
+    // Distribute the refund across successful payments (oldest first), never
+    // exceeding what is still refundable on each payment.
     let remaining = requested;
+    let firstRow = true;
     for (const p of order.payments) {
       if (remaining <= 0) break;
-      const amt = Math.min(remaining, toCents(p.amount));
+      const cap = Math.max(0, toCents(p.amount) - (priorByPayment.get(p.id) ?? 0));
+      const amt = Math.min(remaining, cap);
+      if (amt <= 0) continue;
       await tx.refund.create({
         data: {
           paymentId: p.id,
@@ -189,8 +237,11 @@ export async function refundOrder(input: RefundInput) {
           reason: input.reason,
           approvedBy: manager.id,
           restockItems: input.restock ?? false,
+          // The per-line breakdown is stored once; totals aggregate fine.
+          refundedLines: firstRow && lineSnapshot ? (lineSnapshot as unknown as Prisma.InputJsonValue) : undefined,
         },
       });
+      firstRow = false;
       if (p.method === "CASH" && p.shiftId) {
         await tx.cashMovement.create({
           data: {
@@ -206,19 +257,19 @@ export async function refundOrder(input: RefundInput) {
       }
       remaining -= amt;
     }
+    if (remaining > 0) throw ApiError.conflict("Refund cannot be allocated across this order's payments");
 
     const totalRefunded = refundedSoFar + requested;
     const status = totalRefunded >= paid ? "REFUNDED" : "PARTIALLY_REFUNDED";
 
     if (input.restock) {
-      const lines = await tx.orderLine.findMany({
-        where: { orderId: order.id, isVoided: false },
-        include: { menuItem: { include: { recipeLines: { where: { effectiveTo: null }, include: { ingredient: true } } } } },
-      });
       const ratio = paid > 0 ? requested / paid : 0;
-      for (const line of lines) {
+      for (const line of activeLines) {
+        const refundedQty = lineSnapshot
+          ? lineSnapshot.filter((s) => s.lineId === line.id).reduce((s, e) => s + e.quantity, 0)
+          : line.quantity * ratio;
         for (const recipe of line.menuItem.recipeLines) {
-          const back = Number(recipe.quantity) * line.quantity * ratio;
+          const back = Number(recipe.quantity) * refundedQty;
           if (back <= 0) continue;
           await tx.ingredient.update({
             where: { id: recipe.ingredientId },
@@ -252,10 +303,10 @@ export async function refundOrder(input: RefundInput) {
     action: "ORDER_REFUNDED",
     entityType: "Order",
     entityId: order.id,
-    after: { amount: fromCents(requested) },
+    after: { amount: fromCents(requested), lines: lineSnapshot ?? undefined },
     reason: input.reason,
     approvedBy: manager.id,
   });
   emitToWorkspace(EVENTS.ORDER_UPDATED, { id: order.id, status: result.paymentStatus });
-  return result;
+  return { ...result, refundedAmount: fromCents(requested), refundedLines: lineSnapshot };
 }

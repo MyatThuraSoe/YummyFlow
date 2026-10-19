@@ -6,6 +6,14 @@ import { computeOrderTotals, lineTotalCents, toDb } from "../src/lib/calculation
 import { addDays, businessDateFor, endOfDay, isSameDay, startOfDay } from "../src/lib/businessDay.js";
 import { assertWithinLimit, getFeatures, getLimits } from "../src/lib/license.js";
 import { expectedCash, varianceExceedsTolerance } from "../src/lib/cashVariance.js";
+import { releaseUnique } from "../src/lib/userGuards.js";
+import {
+  overdueBand,
+  pickOverdueTickets,
+  pickReservationReminders,
+} from "../src/services/notifications.service.js";
+import { computeSplitShares } from "../src/services/splitMath.js";
+import { computeLineRefundAmount, planLineRefund, priorRefundedQtyByLine } from "../src/services/refundMath.js";
 
 // ── money ───────────────────────────────────────────────
 test("toCents rounds to nearest cent without float drift", () => {
@@ -140,4 +148,155 @@ test("variance tolerance boundary: strictly greater fails, equal passes", () => 
   assert.equal(varianceExceedsTolerance(-500, 500), false);
   assert.equal(varianceExceedsTolerance(501, 500), true);
   assert.equal(varianceExceedsTolerance(-501, 500), true);
+});
+
+test("PRD §6.8 worked example: a cross-shift refund drives the drawer expectation negative", () => {
+  const expected = expectedCash({ openingFloat: 0, cashSales: 0, refundsInWindow: 10_000, paidIn: 0, paidOut: 0, safeDrops: 0 });
+  assert.equal(expected, -10_000);
+  assert.equal(0 - expected, 10_000);
+});
+
+// ── user guards (PRD platform §5.3) ─────────────────────
+test("releaseUnique appends a deletion suffix and respects max length", () => {
+  assert.equal(releaseUnique(null, "abcdef123456"), null);
+  assert.equal(releaseUnique("cashier", "abcdef123456"), "cashier#del-abcdef12");
+  const freed = releaseUnique("u".repeat(400), "12345678", 255)!;
+  assert.equal(freed, "u".repeat(242) + "#del-12345678");
+  assert.equal(freed.length, 255);
+  assert.equal(releaseUnique("ab", "12345678", 10), "#del-12345678");
+});
+
+// ── kitchen notifications (Phase 2) ─────────────────────────────────────────
+test("overdueBand escalates at 15 and 30 minutes", () => {
+  assert.equal(overdueBand(0), null);
+  assert.equal(overdueBand(14), null);
+  assert.equal(overdueBand(15), "warn");
+  assert.equal(overdueBand(29), "warn");
+  assert.equal(overdueBand(30), "overdue");
+  assert.equal(overdueBand(90), "overdue");
+});
+
+test("pickOverdueTickets notifies once per band and re-notifies on escalation", () => {
+  const now = new Date("2026-10-19T12:00:00Z");
+  const seen = new Map<string, string>();
+  const ticket = (sentAtIso: string) => ({ id: "t1", orderNumber: 7, station: "GRILL", sentAt: new Date(sentAtIso) });
+
+  const fresh = pickOverdueTickets(now, [ticket("2026-10-19T11:50:00Z")], seen);
+  assert.equal(fresh.length, 0, "10 minutes old is not overdue yet");
+
+  const warn = pickOverdueTickets(now, [ticket("2026-10-19T11:44:00Z")], seen);
+  assert.deepEqual(warn.map((n) => n.band), ["warn"]);
+  assert.equal(warn[0].minutes, 16);
+  assert.equal(pickOverdueTickets(now, [ticket("2026-10-19T11:44:00Z")], seen).length, 0, "same band must not re-notify");
+
+  const escalate = pickOverdueTickets(now, [ticket("2026-10-19T11:29:00Z")], seen);
+  assert.deepEqual(escalate.map((n) => n.band), ["overdue"]);
+});
+
+test("pickReservationReminders fires once inside the 15 minute window", () => {
+  const now = new Date("2026-10-19T12:00:00Z");
+  const reminded = new Set<string>();
+  const res = (id: string, minutesAhead: number) => ({
+    id,
+    customerName: `Guest ${id}`,
+    partySize: 4,
+    tableNumber: 5,
+    reservationTime: new Date(now.getTime() + minutesAhead * 60000),
+  });
+
+  const due = pickReservationReminders(now, [res("past", -5), res("soon", 10), res("later", 45)], reminded);
+  assert.deepEqual(due.map((n) => n.reservationId), ["soon"]);
+  assert.equal(due[0].minutesUntil, 10);
+  assert.equal(pickReservationReminders(now, [res("soon", 10)], reminded).length, 0, "must not re-notify");
+
+  const boundary = pickReservationReminders(now, [res("edge", 15)], new Set());
+  assert.deepEqual(boundary.map((n) => n.reservationId), ["edge"]);
+});
+
+// ── split bill math (Phase 3) ───────────────────────────────
+test("computeSplitShares distributes discount, service and tax proportionally", () => {
+  const shares = computeSplitShares(
+    { subtotal: 3000, discountAmount: 300, serviceCharge: 150, taxAmount: 315 },
+    [1000, 2000],
+  );
+  assert.deepEqual(shares, [
+    { subtotal: 1000, discount: 100, serviceCharge: 50, tax: 105, total: 1055 },
+    { subtotal: 2000, discount: 200, serviceCharge: 100, tax: 210, total: 2110 },
+  ]);
+  assert.equal(
+    shares.reduce((s, sh) => s + sh.total, 0),
+    3000 - 300 + 150 + 315,
+    "shares must reconcile to the order total",
+  );
+});
+
+test("computeSplitShares assigns rounding remainder to the largest group", () => {
+  const shares = computeSplitShares(
+    { subtotal: 1000, discountAmount: 0, serviceCharge: 0, taxAmount: 100 },
+    [333, 333, 334],
+  );
+  assert.equal(shares.reduce((s, sh) => s + sh.tax, 0), 100);
+  assert.deepEqual(shares.map((sh) => sh.tax), [33, 33, 34], "largest group absorbs the drift");
+});
+
+test("computeSplitShares handles zero base and zero amounts", () => {
+  const zeroBase = computeSplitShares({ subtotal: 0, discountAmount: 100, serviceCharge: 50, taxAmount: 25 }, [0, 0]);
+  assert.deepEqual(zeroBase.map((sh) => sh.total), [0, 0]);
+  const zeroAmounts = computeSplitShares({ subtotal: 1000, discountAmount: 0, serviceCharge: 0, taxAmount: 0 }, [400, 600]);
+  assert.deepEqual(zeroAmounts.map((sh) => sh.discount), [0, 0]);
+});
+
+// ── line-level refund math (Phase 3) ────────────────────────
+test("computeLineRefundAmount prorates per unit and is exact for the full line", () => {
+  assert.equal(computeLineRefundAmount(1000, 3, 1), 333);
+  assert.equal(computeLineRefundAmount(1000, 3, 2), 667);
+  assert.equal(computeLineRefundAmount(1000, 3, 3), 1000);
+  assert.equal(computeLineRefundAmount(1000, 3, 0), 0);
+  assert.equal(computeLineRefundAmount(1000, 0, 1), 0);
+});
+
+test("priorRefundedQtyByLine merges snapshots and ignores malformed entries", () => {
+  const map = priorRefundedQtyByLine([
+    { lineId: "a", quantity: 1, amountCents: 100 },
+    { lineId: "a", quantity: 2, amountCents: 200 },
+    { lineId: "b", quantity: 1, amountCents: 50 },
+    null,
+    "junk",
+    { lineId: 7, quantity: 1 },
+    { lineId: "c", quantity: Number.NaN },
+    {},
+  ]);
+  assert.equal(map.get("a"), 3);
+  assert.equal(map.get("b"), 1);
+  assert.equal(map.has("c"), false);
+  assert.equal(priorRefundedQtyByLine(null).size, 0);
+});
+
+test("planLineRefund validates remaining quantities and totals each line", () => {
+  const lines = [
+    { id: "a", quantity: 3, lineTotalCents: 1000 },
+    { id: "b", quantity: 1, lineTotalCents: 500 },
+  ];
+  const plan = planLineRefund(lines, new Map([["a", 1]]), [
+    { lineId: "a", quantity: 2 },
+    { lineId: "b", quantity: 1 },
+  ]);
+  assert.equal(plan.ok, true);
+  if (plan.ok) {
+    assert.deepEqual(plan.snapshot, [
+      { lineId: "a", quantity: 2, amountCents: 667 },
+      { lineId: "b", quantity: 1, amountCents: 500 },
+    ]);
+    assert.equal(plan.amountCents, 1167);
+  }
+});
+
+test("planLineRefund rejects unknown lines and over-refunds", () => {
+  const lines = [{ id: "a", quantity: 2, lineTotalCents: 1000 }];
+  const unknown = planLineRefund(lines, new Map(), [{ lineId: "zz", quantity: 1 }]);
+  assert.equal(unknown.ok, false);
+  const over = planLineRefund(lines, new Map(), [{ lineId: "a", quantity: 3 }]);
+  assert.equal(over.ok, false);
+  const exhausted = planLineRefund(lines, new Map([["a", 2]]), [{ lineId: "a", quantity: 1 }]);
+  assert.equal(exhausted.ok, false, "a fully refunded line cannot be refunded again");
 });

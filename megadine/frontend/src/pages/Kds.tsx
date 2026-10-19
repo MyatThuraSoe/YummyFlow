@@ -1,17 +1,32 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { apiGet, apiPost } from "../lib/api";
+import { apiGet, apiPatch, apiPost } from "../lib/api";
 import { Badge, Field, Modal, useToast } from "../components/ui";
 
 interface TicketLine { id: string; itemName: string; quantity: number; modifiers: { name: string }[] | null; notes: string | null; status: string }
 interface Ticket {
   id: string;
+  orderId: string;
   station: string;
   status: string;
   sentAt: string;
-  order: { orderNumber: number; channel: string; tableId: string | null; notes: string | null };
+  order: { orderNumber: number; channel: string; tableId: string | null; notes: string | null; priority: string };
   lines: TicketLine[];
+}
+
+const PRIORITIES = ["NORMAL", "RUSH", "VIP", "CATERING"];
+const priorityKind = (p: string) => (p === "RUSH" ? "danger" : p === "VIP" ? "warn" : p === "CATERING" ? "info" : "muted");
+const timerUrgency = (mins: number) => (mins < 5 ? "fast" : mins < 15 ? "normal" : mins < 30 ? "slow" : "overdue");
+
+function groupByOrder(list: Ticket[]): Ticket[][] {
+  const map = new Map<string, Ticket[]>();
+  for (const tk of list) {
+    const arr = map.get(tk.orderId) ?? [];
+    arr.push(tk);
+    map.set(tk.orderId, arr);
+  }
+  return [...map.values()];
 }
 
 const STATIONS = ["ALL", "GRILL", "FRYER", "SALAD", "BAR", "DESSERT", "KITCHEN"];
@@ -25,14 +40,24 @@ export default function Kds() {
   const qc = useQueryClient();
   const { push } = useToast();
   const { t } = useTranslation(["ops", "common"]);
-  const [station, setStation] = useState("ALL");
+  const [station, setStation] = useState(() => localStorage.getItem("kds_station") ?? "ALL");
+  const [merge, setMerge] = useState(() => localStorage.getItem("kds_merge") === "1");
   const [show86, setShow86] = useState(false);
   const [cancelTarget, setCancelTarget] = useState<Ticket | null>(null);
+  const [priorityTarget, setPriorityTarget] = useState<Ticket | null>(null);
   const { data } = useQuery({
     queryKey: ["tickets", station],
     queryFn: () => apiGet<{ tickets: Ticket[] }>("/kitchen/tickets", { station: station === "ALL" ? undefined : station, active: "true" }),
     refetchInterval: 10000,
   });
+
+  useEffect(() => {
+    localStorage.setItem("kds_station", station);
+  }, [station]);
+
+  useEffect(() => {
+    localStorage.setItem("kds_merge", merge ? "1" : "0");
+  }, [merge]);
 
   const statusMut = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => apiPost(`/kitchen/tickets/${id}/status`, { status }),
@@ -56,49 +81,125 @@ export default function Kds() {
           </button>
         ))}
         <div className="spacer" />
+        <button className={`btn ${merge ? "primary" : ""}`} onClick={() => setMerge((m) => !m)}>
+          🧩 {t("ops:kds_merge")}
+        </button>
         <button className="btn" onClick={() => setShow86(true)}>{t("ops:kds_86_btn")}</button>
       </div>
 
       <div className="kds-grid">
         {COLUMNS.map((col) => {
           const list = tickets.filter((t) => t.status === col.key);
+          const groups = merge ? groupByOrder(list) : list.map((tk) => [tk]);
           return (
             <div className="kds-col" key={col.key}>
               <h3>
                 {t(`ops:${col.labelKey}`)} · {list.length}
               </h3>
-              {list.map((tk) => {
-                const mins = age(tk.sentAt);
-                const overdue = mins >= 15 && col.key !== "READY";
-                return (
-                  <div className={`ticket ${overdue ? "overdue" : ""}`} key={tk.id}>
-                    <div className="row">
-                      <span className="tnum">#{tk.order.orderNumber}</span>
-                      <Badge kind="muted">{channelLabel(tk.order.channel)}</Badge>
-                      <div className="spacer" />
-                      <span className={`badge ${overdue ? "danger" : "muted"}`}>{t("ops:kds_minutes", { count: mins })}</span>
-                    </div>
-                    <div className="small muted" style={{ margin: "4px 0 8px" }}>
-                      {tk.station}
-                    </div>
-                    {tk.lines.map((l) => (
-                      <div key={l.id} style={{ marginBottom: 4 }}>
-                        <b>{l.quantity}×</b> {l.itemName}
-                        {l.modifiers && l.modifiers.length > 0 && (
-                          <div className="small muted">+ {l.modifiers.map((m) => m.name).join(", ")}</div>
+              {groups.map((group) => {
+                const first = group[0];
+                const mins = Math.max(...group.map((tk) => age(tk.sentAt)));
+                const priority = first.order.priority ?? "NORMAL";
+                const urgency = timerUrgency(mins);
+                const veryOverdue = mins >= 30 && col.key !== "READY";
+                const nextBtn = (tk: Ticket) =>
+                  col.next ? (
+                    <button className="btn ok" style={{ flex: 1 }} onClick={() => statusMut.mutate({ id: tk.id, status: col.next!.to })}>
+                      {t(`ops:${col.next.labelKey}`)}
+                      {group.length > 1 ? ` · ${tk.station}` : ""}
+                    </button>
+                  ) : null;
+                if (group.length === 1) {
+                  return (
+                    <div
+                      className={`ticket ${first.status.toLowerCase()} ${priority !== "NORMAL" ? priority.toLowerCase() : ""} ${veryOverdue ? "overdue" : ""}`}
+                      key={first.id}
+                    >
+                      <div className="row">
+                        <span className="tnum">#{first.order.orderNumber}</span>
+                        <Badge kind="muted">{channelLabel(first.order.channel)}</Badge>
+                        {priority !== "NORMAL" && (
+                          <Badge kind={priorityKind(priority)}>{t(`ops:priority_${priority.toLowerCase()}`)}</Badge>
                         )}
-                        {l.notes && <div className="small" style={{ color: "var(--warn)" }}>{t("ops:kds_note", { note: l.notes })}</div>}
+                        <div className="spacer" />
+                        <span className={`timer ${urgency}`}>
+                          {t("ops:kds_minutes", { count: mins })}
+                          {first.status === "PREPARING" && mins > 10 && <span className="timer-warn">⚠</span>}
+                        </span>
+                      </div>
+                      <div className="row" style={{ margin: "4px 0 8px" }}>
+                        <Badge kind="info">{first.station}</Badge>
+                      </div>
+                      {first.lines.map((l) => (
+                        <div key={l.id} style={{ marginBottom: 4 }}>
+                          <b>{l.quantity}×</b> {l.itemName}
+                          {l.modifiers && l.modifiers.length > 0 && (
+                            <div className="small muted">+ {l.modifiers.map((m) => m.name).join(", ")}</div>
+                          )}
+                          {l.notes && <div className="small" style={{ color: "var(--warn)" }}>{t("ops:kds_note", { note: l.notes })}</div>}
+                        </div>
+                      ))}
+                      {first.order.notes && <div className="small muted" style={{ marginTop: 6 }}>{t("ops:kds_order_note", { note: first.order.notes })}</div>}
+                      <div className="row" style={{ marginTop: 10 }}>
+                        {nextBtn(first)}
+                        <button className="btn ghost small" onClick={() => setPriorityTarget(first)}>
+                          {t("ops:kds_priority_btn")}
+                        </button>
+                        <button className="btn ghost small" onClick={() => setCancelTarget(first)}>
+                          {t("ops:kds_cancel")}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <div
+                    className={`ticket merged ${first.status.toLowerCase()} ${priority !== "NORMAL" ? priority.toLowerCase() : ""} ${veryOverdue ? "overdue" : ""}`}
+                    key={first.orderId}
+                  >
+                    <div className="row">
+                      <span className="tnum">#{first.order.orderNumber}</span>
+                      <Badge kind="muted">{channelLabel(first.order.channel)}</Badge>
+                      <Badge kind="info">{t("ops:kds_merge_badge", { count: group.length })}</Badge>
+                      {priority !== "NORMAL" && (
+                        <Badge kind={priorityKind(priority)}>{t(`ops:priority_${priority.toLowerCase()}`)}</Badge>
+                      )}
+                      <div className="spacer" />
+                      <span className={`timer ${urgency}`}>
+                        {t("ops:kds_minutes", { count: mins })}
+                        {group.some((tk) => tk.status === "PREPARING" && age(tk.sentAt) > 10) && <span className="timer-warn">⚠</span>}
+                      </span>
+                    </div>
+                    {first.order.notes && <div className="small muted" style={{ marginTop: 6 }}>{t("ops:kds_order_note", { note: first.order.notes })}</div>}
+                    {group.map((tk) => (
+                      <div className="kds-merge-part" key={tk.id}>
+                        <div className="row">
+                          <Badge kind="info">{tk.station}</Badge>
+                          <div className="spacer" />
+                          <span className={`timer ${timerUrgency(age(tk.sentAt))}`}>
+                            {t("ops:kds_minutes", { count: age(tk.sentAt) })}
+                          </span>
+                        </div>
+                        {tk.lines.map((l) => (
+                          <div key={l.id} style={{ marginBottom: 4 }}>
+                            <b>{l.quantity}×</b> {l.itemName}
+                            {l.modifiers && l.modifiers.length > 0 && (
+                              <div className="small muted">+ {l.modifiers.map((m) => m.name).join(", ")}</div>
+                            )}
+                            {l.notes && <div className="small" style={{ color: "var(--warn)" }}>{t("ops:kds_note", { note: l.notes })}</div>}
+                          </div>
+                        ))}
+                        <div className="row" style={{ marginTop: 8 }}>
+                          {nextBtn(tk)}
+                          <button className="btn ghost small" onClick={() => setCancelTarget(tk)}>
+                            {t("ops:kds_cancel")}
+                          </button>
+                        </div>
                       </div>
                     ))}
-                    {tk.order.notes && <div className="small muted" style={{ marginTop: 6 }}>{t("ops:kds_order_note", { note: tk.order.notes })}</div>}
-                    <div className="row" style={{ marginTop: 10 }}>
-                      {col.next && (
-                        <button className="btn ok" style={{ flex: 1 }} onClick={() => statusMut.mutate({ id: tk.id, status: col.next!.to })}>
-                          {t(`ops:${col.next.labelKey}`)}
-                        </button>
-                      )}
-                      <button className="btn ghost small" onClick={() => setCancelTarget(tk)}>
-                        {t("ops:kds_cancel")}
+                    <div className="row" style={{ marginTop: 8 }}>
+                      <button className="btn ghost small" onClick={() => setPriorityTarget(first)}>
+                        {t("ops:kds_priority_btn")}
                       </button>
                     </div>
                   </div>
@@ -112,7 +213,64 @@ export default function Kds() {
 
       {show86 && <EightySixModal onClose={() => setShow86(false)} />}
       {cancelTarget && <CancelTicketModal ticket={cancelTarget} onClose={() => setCancelTarget(null)} />}
+      {priorityTarget && <PriorityModal ticket={priorityTarget} onClose={() => setPriorityTarget(null)} />}
     </div>
+  );
+}
+
+function PriorityModal({ ticket, onClose }: { ticket: Ticket; onClose: () => void }) {
+  const qc = useQueryClient();
+  const { push } = useToast();
+  const { t } = useTranslation(["ops", "common"]);
+  const [priority, setPriority] = useState(ticket.order.priority ?? "NORMAL");
+  const [pin, setPin] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    setBusy(true);
+    setErr("");
+    try {
+      await apiPatch(`/orders/${ticket.orderId}/priority`, { priority, managerPin: pin || undefined });
+      push(t("ops:kds_priority_saved"), "ok");
+      qc.invalidateQueries({ queryKey: ["tickets"] });
+      onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : t("ops:failed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={t("ops:kds_priority_title", { number: ticket.order.orderNumber })}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn ghost" onClick={onClose}>
+            {t("ops:cancel")}
+          </button>
+          <button className="btn primary" disabled={busy} onClick={submit}>
+            {busy ? "…" : t("ops:done")}
+          </button>
+        </>
+      }
+    >
+      <div className="row wrap" style={{ marginBottom: 12 }}>
+        {PRIORITIES.map((p) => (
+          <button key={p} className={`cat-tab ${priority === p ? "active" : ""}`} onClick={() => setPriority(p)}>
+            {t(`ops:priority_${p.toLowerCase()}`)}
+          </button>
+        ))}
+      </div>
+      {priority !== "NORMAL" && (
+        <Field label={t("ops:kds_priority_pin")}>
+          <input className="input" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="••••" />
+        </Field>
+      )}
+      {err && <p className="badge danger">{err}</p>}
+    </Modal>
   );
 }
 

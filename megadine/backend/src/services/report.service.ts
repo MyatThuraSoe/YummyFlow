@@ -153,9 +153,31 @@ export async function wastageReport(restaurantId: string, range: Range) {
     unit: m.ingredient.stockUnit,
     cost: Math.abs(Number(m.quantity)) * Number(m.unitCost ?? m.ingredient.costPerUnit),
     reason: m.reason,
+    note: m.note,
     at: m.createdAt,
   }));
-  return { rows, totalCost: rows.reduce((s, r) => s + r.cost, 0) };
+
+  const byReasonMap = new Map<string, { reason: string; quantity: number; cost: number }>();
+  for (const r of rows) {
+    const key = r.reason ?? "unspecified";
+    const entry = byReasonMap.get(key) ?? { reason: key, quantity: 0, cost: 0 };
+    entry.quantity += r.quantity;
+    entry.cost += r.cost;
+    byReasonMap.set(key, entry);
+  }
+
+  const byDayMap = new Map<string, number>();
+  for (const r of rows) {
+    const key = `${r.at.getFullYear()}-${String(r.at.getMonth() + 1).padStart(2, "0")}-${String(r.at.getDate()).padStart(2, "0")}`;
+    byDayMap.set(key, (byDayMap.get(key) ?? 0) + r.cost);
+  }
+
+  return {
+    rows,
+    totalCost: rows.reduce((s, r) => s + r.cost, 0),
+    byReason: [...byReasonMap.values()].sort((a, b) => b.cost - a.cost),
+    byDay: [...byDayMap.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, cost]) => ({ date, cost })),
+  };
 }
 
 export async function dashboard(restaurantId: string) {
@@ -164,24 +186,131 @@ export async function dashboard(restaurantId: string) {
     select: { businessDayCutoff: true },
   });
   const today = businessDateFor(new Date(), restaurant?.businessDayCutoff ?? "04:00");
-  const [{ _sum, _count }, openShifts, lowStock, activeOrders] = await Promise.all([
+  const [{ _sum, _count }, openShifts, lowStock, activeOrders, activeTables] = await Promise.all([
     prisma.order.aggregate({
       where: { restaurantId, status: "COMPLETED", businessDate: today },
       _sum: { total: true },
       _count: true,
     }),
     prisma.cashShift.count({ where: { restaurantId, status: "OPEN" } }),
-    prisma.ingredient.count({
-      where: { restaurantId, isActive: true, reorderLevel: { not: null }, currentStock: { lte: 0 } },
+    prisma.ingredient.findMany({
+      where: { restaurantId, isActive: true, reorderLevel: { not: null } },
+      select: { currentStock: true, reorderLevel: true },
     }),
     prisma.order.count({ where: { restaurantId, status: { in: ["DRAFT", "SENT_TO_KITCHEN", "IN_PROGRESS", "READY"] } } }),
+    prisma.restaurantTable.count({ where: { restaurantId, isActive: true, status: { in: ["OCCUPIED", "NEEDS_BILL"] } } }),
   ]);
+  const lowStockCount = lowStock.filter((i) => Number(i.currentStock) <= Number(i.reorderLevel)).length;
   return {
     todaySales: toCents(_sum.total ?? 0),
     todayOrders: _count,
     openShifts,
-    lowStockCount: lowStock,
+    lowStockCount,
     activeOrders,
+    activeTables,
+  };
+}
+
+/** Last N business days of completed sales — performance trend (Phase 4). */
+export async function salesTrend(restaurantId: string, days = 7) {
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: restaurantId },
+    select: { businessDayCutoff: true },
+  });
+  const today = businessDateFor(new Date(), restaurant?.businessDayCutoff ?? "04:00");
+  const start = new Date(today);
+  start.setDate(start.getDate() - (days - 1));
+  const orders = await prisma.order.findMany({
+    where: { restaurantId, status: "COMPLETED", businessDate: { gte: start, lte: endOfDay(today) } },
+    select: { businessDate: true, total: true },
+  });
+  const keyOf = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const map = new Map<string, { orders: number; sales: number }>();
+  for (const o of orders) {
+    const key = keyOf(o.businessDate);
+    const e = map.get(key) ?? { orders: 0, sales: 0 };
+    e.orders += 1;
+    e.sales += toCents(o.total);
+    map.set(key, e);
+  }
+  const rows = [];
+  for (let i = 0; i < days; i++) {
+    const d = new Date(start);
+    d.setDate(d.getDate() + i);
+    const e = map.get(keyOf(d)) ?? { orders: 0, sales: 0 };
+    rows.push({ date: keyOf(d), orders: e.orders, sales: e.sales });
+  }
+  return { days: rows };
+}
+
+/** Actionable alerts shown on the admin dashboard (Phase 4): low stock,
+ * overdue kitchen tickets and imminent reservations. */
+export async function activeAlerts(restaurantId: string) {
+  const now = new Date();
+  const in15 = new Date(now.getTime() + 15 * 60_000);
+  const overdueBefore = new Date(now.getTime() - 30 * 60_000);
+
+  const [ingredients, tickets, reservations] = await Promise.all([
+    prisma.ingredient.findMany({
+      where: { restaurantId, isActive: true, reorderLevel: { not: null } },
+      select: { id: true, name: true, currentStock: true, stockUnit: true, reorderLevel: true },
+    }),
+    prisma.kitchenTicket.findMany({
+      where: {
+        isCancelled: false,
+        status: { in: ["QUEUED", "PREPARING"] },
+        sentAt: { lte: overdueBefore },
+        order: { restaurantId },
+      },
+      select: { id: true, station: true, sentAt: true, order: { select: { orderNumber: true } } },
+      orderBy: { sentAt: "asc" },
+      take: 5,
+    }),
+    prisma.reservation.findMany({
+      where: { restaurantId, status: "CONFIRMED", reservationTime: { gte: now, lte: in15 } },
+      select: { id: true, customerName: true, partySize: true, reservationTime: true, table: { select: { number: true } } },
+      orderBy: { reservationTime: "asc" },
+      take: 5,
+    }),
+  ]);
+
+  const low = ingredients
+    .filter((i) => Number(i.currentStock) <= Number(i.reorderLevel))
+    .sort((a, b) => Number(a.currentStock) - Number(a.reorderLevel) - (Number(b.currentStock) - Number(b.reorderLevel)))
+    .slice(0, 5);
+
+  return {
+    alerts: [
+      ...low.map((i) => ({
+        id: `stock-${i.id}`,
+        kind: "LOW_STOCK" as const,
+        severity: Number(i.currentStock) <= 0 ? ("danger" as const) : ("warn" as const),
+        ingredientId: i.id,
+        name: i.name,
+        stock: Number(i.currentStock),
+        unit: i.stockUnit,
+        reorderLevel: Number(i.reorderLevel),
+      })),
+      ...tickets.map((tk) => ({
+        id: `ticket-${tk.id}`,
+        kind: "KDS_OVERDUE" as const,
+        severity: "danger" as const,
+        ticketId: tk.id,
+        orderNumber: tk.order.orderNumber,
+        station: tk.station,
+        minutes: Math.floor((now.getTime() - tk.sentAt.getTime()) / 60_000),
+      })),
+      ...reservations.map((r) => ({
+        id: `res-${r.id}`,
+        kind: "RESERVATION_SOON" as const,
+        severity: "info" as const,
+        reservationId: r.id,
+        customerName: r.customerName,
+        tableNumber: r.table.number,
+        partySize: r.partySize,
+        minutesUntil: Math.max(0, Math.round((r.reservationTime.getTime() - now.getTime()) / 60_000)),
+      })),
+    ],
   };
 }
 

@@ -8,11 +8,26 @@ import { Badge, Field, Modal, useToast } from "../components/ui";
 import { useCart } from "../store/cart";
 import { useNavigate } from "react-router-dom";
 
-interface TableCurrent { sessionId: string; orderId: string | null; orderNumber: number | null; total: string; itemCount: number; status: string | null }
+interface TableCurrent { sessionId: string; orderId: string | null; orderNumber: number | null; total: string; itemCount: number; servedCount?: number; status: string | null }
 interface TableRow { id: string; number: number; name: string | null; capacity: number; zone: string; status: string; version: number; current: TableCurrent | null }
 interface OrderLine { id: string; itemNameSnapshot: string; quantity: number; lineTotal: string; isVoided: boolean }
 interface OrderShape { id: string; orderNumber: number; status: string; total: string; lines: OrderLine[]; tableSession?: { table: { number: number } } | null }
 interface Settings { restaurant: { currency: string } | null }
+interface Reservation {
+  id: string;
+  tableId: string;
+  customerName: string;
+  customerPhone: string | null;
+  partySize: number;
+  reservationTime: string;
+  durationMinutes: number;
+  status: string;
+  notes: string | null;
+}
+interface SessionOrder { id: string; orderNumber: number; status: string; total: string; itemCount: number }
+interface SessionRow { id: string; openedAt: string; closedAt: string | null; clearedAt: string | null; status: string; order: SessionOrder | null }
+
+const timeLabel = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 const STATUSES = ["AVAILABLE", "OCCUPIED", "NEEDS_BILL", "NEEDS_CLEANING", "RESERVED", "OUT_OF_SERVICE"];
 const STATUS_KEYS: Record<string, string> = {
@@ -32,9 +47,32 @@ export default function Floor() {
   const cart = useCart();
   const { data } = useQuery({ queryKey: ["tables"], queryFn: () => apiGet<{ tables: TableRow[] }>("/tables"), refetchInterval: 15000 });
   const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: () => apiGet<Settings>("/admin/settings") });
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(dayStart);
+  dayEnd.setDate(dayEnd.getDate() + 1);
+  const { data: resData } = useQuery({
+    queryKey: ["reservations", "today"],
+    queryFn: () =>
+      apiGet<{ reservations: Reservation[] }>("/reservations", {
+        from: dayStart.toISOString(),
+        to: dayEnd.toISOString(),
+        status: "CONFIRMED",
+      }),
+    refetchInterval: 30000,
+  });
   const currency = settings?.restaurant?.currency ?? "USD";
   const [selected, setSelected] = useState<TableRow | null>(null);
   const [bill, setBill] = useState<string | null>(null);
+  const [resTarget, setResTarget] = useState<TableRow | null>(null);
+  const { data: sessionData } = useQuery({
+    queryKey: ["table-sessions", selected?.id],
+    queryFn: () => apiGet<{ sessions: SessionRow[] }>(`/tables/${selected!.id}/sessions`),
+    enabled: !!selected,
+  });
+
+  const reservations = resData?.reservations ?? [];
+  const reservationsFor = (tableId: string) => reservations.filter((r) => r.tableId === tableId);
 
   const statusLabel = (s: string) => (STATUS_KEYS[s] ? t(`ops:${STATUS_KEYS[s]}`) : s);
 
@@ -50,6 +88,26 @@ export default function Floor() {
       qc.invalidateQueries({ queryKey: ["tables"] });
       setSelected(null);
     },
+  });
+  const reservationMut = useMutation({
+    mutationFn: ({ id, action }: { id: string; action: "seat" | "no-show" | "cancel" }) =>
+      apiPost(`/reservations/${id}/${action}`),
+    onSuccess: (_res, vars) => {
+      const key = vars.action === "seat" ? "ops:floor_res_seated" : vars.action === "no-show" ? "ops:floor_res_no_show_done" : "ops:floor_res_cancelled";
+      push(t(key), "ok");
+      qc.invalidateQueries({ queryKey: ["reservations"] });
+      qc.invalidateQueries({ queryKey: ["tables"] });
+    },
+    onError: (e) => push(e instanceof Error ? e.message : t("ops:failed"), "error"),
+  });
+  const servedMut = useMutation({
+    mutationFn: (orderId: string) => apiPost(`/orders/${orderId}/mark-served`),
+    onSuccess: () => {
+      push(t("ops:floor_marked_served"), "ok");
+      qc.invalidateQueries({ queryKey: ["tables"] });
+      setSelected(null);
+    },
+    onError: (e) => push(e instanceof Error ? e.message : t("ops:failed"), "error"),
   });
 
   function startOrder(tbl: TableRow) {
@@ -91,6 +149,30 @@ export default function Floor() {
                 <div className="small">{t("ops:order_number", { number: tbl.current.orderNumber })}</div>
                 <div className="mono big" style={{ fontSize: 18 }}>{formatMoney(toCents(tbl.current.total), currency)}</div>
                 <div className="small muted">{t("ops:floor_items_count", { count: tbl.current.itemCount })}</div>
+                {tbl.current.status === "READY" && (
+                  <div className="row" style={{ marginTop: 6 }}>
+                    <span className="badge warn">{t("ops:floor_ready_to_serve")}</span>
+                  </div>
+                )}
+                {tbl.current.status === "SERVED" && (
+                  <div className="row" style={{ marginTop: 6 }}>
+                    <span className="badge ok">{t("ops:floor_served")}</span>
+                  </div>
+                )}
+                {(tbl.current.servedCount ?? 0) > 0 &&
+                  (tbl.current.servedCount ?? 0) < tbl.current.itemCount &&
+                  tbl.current.status !== "SERVED" && (
+                    <div className="row" style={{ marginTop: 6 }}>
+                      <span className="badge warn">
+                        {t("ops:pos_serve_progress", { served: tbl.current.servedCount, total: tbl.current.itemCount })}
+                      </span>
+                    </div>
+                  )}
+              </div>
+            )}
+            {reservationsFor(tbl.id)[0] && (
+              <div className="reservation-badge">
+                <span>{t("ops:floor_res_badge", { time: timeLabel(reservationsFor(tbl.id)[0].reservationTime), count: reservationsFor(tbl.id)[0].partySize })}</span>
               </div>
             )}
           </button>
@@ -104,6 +186,12 @@ export default function Floor() {
           footer={
             <>
               <button className="btn ghost" onClick={() => setSelected(null)}>{t("ops:close")}</button>
+              <button className="btn" onClick={() => setResTarget(selected)}>{t("ops:floor_res_new")}</button>
+              {selected.current?.status === "READY" && selected.current.orderId && (
+                <button className="btn ok" onClick={() => servedMut.mutate(selected.current!.orderId!)}>
+                  {t("ops:pos_mark_served")}
+                </button>
+              )}
               {selected.current ? (
                 <>
                   <button className="btn" onClick={() => setBill(selected.current!.orderId!)} disabled={!selected.current.orderId}>
@@ -129,12 +217,54 @@ export default function Floor() {
                 <div className="spacer" />
                 <span className="mono">{formatMoney(toCents(selected.current.total), currency)}</span>
               </div>
+              {selected.current.itemCount > 0 && (
+                <div className="small muted" style={{ marginTop: 4 }}>
+                  {t("ops:pos_serve_progress", {
+                    served: selected.current.servedCount ?? 0,
+                    total: selected.current.itemCount,
+                  })}
+                </div>
+              )}
             </div>
           )}
           {selectedHasOpenOrder && (
             <p className="badge warn" style={{ marginBottom: 12 }}>
               {t("ops:floor_open_order_warning")}
             </p>
+          )}
+          {(() => {
+            const soon = reservationsFor(selected.id).find(
+              (r) => new Date(r.reservationTime).getTime() - Date.now() <= 30 * 60_000,
+            );
+            return soon ? (
+              <p className="badge warn" style={{ marginBottom: 12 }}>
+                {t("ops:floor_res_soon_warning", { time: timeLabel(soon.reservationTime) })}
+              </p>
+            ) : null;
+          })()}
+          {reservationsFor(selected.id).length > 0 && (
+            <div className="card" style={{ marginBottom: 12 }}>
+              <div className="small muted" style={{ marginBottom: 6 }}>{t("ops:floor_res_title")}</div>
+              {reservationsFor(selected.id).map((r) => (
+                <div className="row wrap" key={r.id} style={{ marginBottom: 6 }}>
+                  <div style={{ flex: 1 }}>
+                    <div>
+                      <b>{timeLabel(r.reservationTime)}</b> · {r.customerName} · {t("ops:floor_res_party_short", { count: r.partySize })}
+                    </div>
+                    {r.customerPhone && <div className="small muted">{r.customerPhone}</div>}
+                  </div>
+                  <button className="btn ok small" onClick={() => reservationMut.mutate({ id: r.id, action: "seat" })}>
+                    {t("ops:floor_res_seat")}
+                  </button>
+                  <button className="btn ghost small" onClick={() => reservationMut.mutate({ id: r.id, action: "no-show" })}>
+                    {t("ops:floor_res_no_show")}
+                  </button>
+                  <button className="btn ghost small" onClick={() => reservationMut.mutate({ id: r.id, action: "cancel" })}>
+                    {t("ops:floor_res_cancel")}
+                  </button>
+                </div>
+              ))}
+            </div>
           )}
           <Field label={t("ops:floor_status_label")}>
             <div className="row wrap">
@@ -152,6 +282,30 @@ export default function Floor() {
               ))}
             </div>
           </Field>
+          <div className="card" style={{ marginTop: 12 }}>
+            <div className="small muted" style={{ marginBottom: 6 }}>{t("ops:floor_timeline_title")}</div>
+            {(sessionData?.sessions ?? []).length === 0 && <p className="muted small">{t("ops:floor_timeline_empty")}</p>}
+            <div className="timeline">
+              {(sessionData?.sessions ?? []).map((s) => (
+                <div className="timeline-item" key={s.id}>
+                  <div className="timeline-time">{timeLabel(s.openedAt)}</div>
+                  <div className="timeline-content">
+                    <div className="timeline-title">
+                      {s.order ? t("ops:order_number", { number: s.order.orderNumber }) : t("ops:floor_timeline_no_order")}{" "}
+                      <Badge kind={s.closedAt ? "muted" : "ok"}>
+                        {t(s.closedAt ? "ops:floor_timeline_closed" : "ops:floor_timeline_open")}
+                      </Badge>
+                    </div>
+                    <div className="timeline-meta">
+                      {s.order
+                        ? `${t("ops:floor_timeline_items", { count: s.order.itemCount })} · ${formatMoney(toCents(s.order.total), currency)}`
+                        : "—"}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
           {selected.current?.orderId && (
             <button className="btn block" onClick={() => { setSelected(null); nav(`/pos?tableId=${selected.id}`); }}>
               {t("ops:floor_add_items")}
@@ -161,7 +315,104 @@ export default function Floor() {
       )}
 
       {bill && <BillModal orderId={bill} currency={currency} onClose={() => setBill(null)} onPaid={() => { setBill(null); setSelected(null); qc.invalidateQueries({ queryKey: ["tables"] }); }} />}
+
+      {resTarget && <NewReservationModal table={resTarget} onClose={() => setResTarget(null)} />}
     </div>
+  );
+}
+
+function NewReservationModal({ table, onClose }: { table: TableRow; onClose: () => void }) {
+  const qc = useQueryClient();
+  const { push } = useToast();
+  const { t } = useTranslation(["ops", "common"]);
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [partySize, setPartySize] = useState(2);
+  const [time, setTime] = useState(() => {
+    const d = new Date(Date.now() + 60 * 60_000);
+    d.setMinutes(0, 0, 0);
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  });
+  const [duration, setDuration] = useState(90);
+  const [notes, setNotes] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    setBusy(true);
+    setErr("");
+    try {
+      await apiPost("/reservations", {
+        tableId: table.id,
+        customerName: name,
+        customerPhone: phone || null,
+        partySize,
+        reservationTime: new Date(time).toISOString(),
+        durationMinutes: duration,
+        notes: notes || null,
+      });
+      push(t("ops:floor_res_created"), "ok");
+      qc.invalidateQueries({ queryKey: ["reservations"] });
+      onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : t("ops:failed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={t("ops:floor_res_new_title", { number: table.number })}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn ghost" onClick={onClose}>{t("ops:cancel")}</button>
+          <button className="btn primary" disabled={busy || name.trim().length < 1} onClick={submit}>
+            {busy ? "…" : t("ops:floor_res_save")}
+          </button>
+        </>
+      }
+    >
+      <Field label={t("ops:floor_res_customer")}>
+        <input className="input" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+      </Field>
+      <Field label={t("ops:floor_res_phone")}>
+        <input className="input" value={phone} onChange={(e) => setPhone(e.target.value)} />
+      </Field>
+      <div className="row">
+        <Field label={t("ops:floor_res_party_label")}>
+          <input
+            className="input"
+            type="number"
+            min={1}
+            max={50}
+            value={partySize}
+            onChange={(e) => setPartySize(Math.max(1, Number(e.target.value)))}
+            style={{ width: 90 }}
+          />
+        </Field>
+        <Field label={t("ops:floor_res_duration")}>
+          <input
+            className="input"
+            type="number"
+            min={15}
+            max={480}
+            step={15}
+            value={duration}
+            onChange={(e) => setDuration(Math.max(15, Number(e.target.value)))}
+            style={{ width: 110 }}
+          />
+        </Field>
+      </div>
+      <Field label={t("ops:floor_res_time")}>
+        <input className="input" type="datetime-local" value={time} onChange={(e) => setTime(e.target.value)} />
+      </Field>
+      <Field label={t("ops:floor_res_notes")}>
+        <input className="input" value={notes} onChange={(e) => setNotes(e.target.value)} />
+      </Field>
+      {err && <p className="badge danger">{err}</p>}
+    </Modal>
   );
 }
 

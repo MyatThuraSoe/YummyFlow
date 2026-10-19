@@ -14,6 +14,8 @@ const paySchema = z.object({
   shiftId: z.string().uuid().nullable().optional(),
   terminalId: z.string().uuid().nullable().optional(),
   idempotencyKey: z.string().max(120).nullable().optional(),
+  /** When paying one person's share of a split bill. */
+  splitId: z.string().uuid().nullable().optional(),
   payments: z
     .array(
       z.object({
@@ -39,18 +41,25 @@ paymentsRouter.post(
       terminalId: body.terminalId ?? null,
       payments: body.payments,
       idempotencyKey: body.idempotencyKey ?? null,
+      splitId: body.splitId ?? null,
     });
     res.status(201).json({ order: result });
   }),
 );
 
-const refundSchema = z.object({
-  orderId: z.string().uuid(),
-  amount: z.number().positive(),
-  reason: z.string().min(2),
-  managerPin: z.string().regex(/^\d{4,6}$/),
-  restock: z.boolean().optional(),
-});
+const refundSchema = z
+  .object({
+    orderId: z.string().uuid(),
+    amount: z.number().positive().optional(),
+    lines: z.array(z.object({ lineId: z.string().uuid(), quantity: z.number().int().min(1).max(99) })).min(1).max(100).optional(),
+    reason: z.string().min(2),
+    managerPin: z.string().regex(/^\d{4,6}$/),
+    restock: z.boolean().optional(),
+  })
+  .refine((b) => b.amount !== undefined || (b.lines && b.lines.length > 0), {
+    message: "Provide an amount or at least one line to refund",
+    path: ["amount"],
+  });
 
 paymentsRouter.post(
   "/refund",
@@ -62,6 +71,7 @@ paymentsRouter.post(
       orderId: body.orderId,
       actorId: req.auth!.userId,
       amount: body.amount,
+      lines: body.lines,
       reason: body.reason,
       managerPin: body.managerPin,
       restock: body.restock,
