@@ -420,7 +420,15 @@ export default function DashboardLayout() {
           position="sticky"
           elevation={0}
           color="transparent"
-          sx={{ bgcolor: "background.paper", borderBottom: "1px solid", borderColor: "divider" }}
+          sx={{
+            bgcolor: "primary.main",
+            color: "#fff",
+            "& .MuiIconButton-root": { color: "#fff" },
+            "& .MuiChip-outlined": { borderColor: "rgba(255,255,255,.35)", color: "rgba(255,255,255,.9)" },
+            "& .MuiChip-outlinedWarning": { color: "#FBBF24", borderColor: "rgba(251,191,36,.5)" },
+            "& .MuiChip-outlinedSuccess": { color: "#4ADE80", borderColor: "rgba(74,222,128,.5)" },
+            "& .MuiChip-outlinedError": { color: "#F87171", borderColor: "rgba(248,113,113,.5)" },
+          }}
         >
           <Toolbar sx={{ gap: 1 }}>
             {isMobile && (
@@ -432,7 +440,7 @@ export default function DashboardLayout() {
               {title}
             </Typography>
             <Box sx={{ flex: 1 }} />
-            <Typography variant="body2" color="text.secondary" noWrap sx={{ display: { xs: "none", md: "block" }, maxWidth: 200 }}>
+            <Typography variant="body2" noWrap sx={{ display: { xs: "none", md: "block" }, maxWidth: 200, color: "rgba(255,255,255,.72)" }}>
               {settings?.restaurant.name ?? t("nav:shop_name_fallback")}
             </Typography>
             {hw && (
@@ -491,9 +499,9 @@ export default function DashboardLayout() {
             <Button
               onClick={(e) => setMenuAnchor(e.currentTarget)}
               endIcon={<ExpandMoreIcon />}
-              sx={{ textTransform: "none", color: "text.primary", minWidth: 0 }}
+              sx={{ textTransform: "none", color: "#fff", minWidth: 0 }}
             >
-              <Avatar sx={{ width: 30, height: 30, bgcolor: "primary.main", fontSize: 14 }}>
+              <Avatar sx={{ width: 30, height: 30, bgcolor: "secondary.main", fontSize: 14 }}>
                 {(user?.firstName?.[0] ?? user?.name?.[0] ?? "?").toUpperCase()}
               </Avatar>
             </Button>

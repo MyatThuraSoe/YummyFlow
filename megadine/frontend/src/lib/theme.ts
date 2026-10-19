@@ -6,12 +6,12 @@ const HEAD = '"Fraunces", Georgia, serif';
 
 export const theme = createTheme({
   palette: {
-    primary: { main: "#2B6E4F", light: "#4A8A6C", dark: "#1F5239" },
-    secondary: { main: "#B8862E", light: "#CBA054", dark: "#96701F" },
+    primary: { main: "#24292F", light: "#4B5563", dark: "#374151" },
+    secondary: { main: "#16A34A", light: "#4ADE80", dark: "#15803D" },
     error: { main: "#B23A2E" },
-    background: { default: "#FFFFFF", paper: "#FFFFFF" },
-    text: { primary: "#1C2620", secondary: "#5B655D" },
-    divider: "#DEDFD6",
+    background: { default: "#FAFAF5", paper: "#FFFFFF" },
+    text: { primary: "#24292F", secondary: "#6B7280" },
+    divider: "#E3E4DB",
   },
   typography: {
     fontFamily: SYSTEM_FONTS,

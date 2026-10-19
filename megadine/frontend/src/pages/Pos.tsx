@@ -473,7 +473,7 @@ export default function Pos() {
 
           <div className="row" style={{ marginTop: 12, gap: 8 }}>
             <button
-              className="btn"
+              className="btn primary"
               style={{ flex: 1 }}
               disabled={(!cart.lines.length && !order) || busy || (cart.channel === "DINE_IN" && !cart.tableId && !order)}
               onClick={() => sendMut.mutate()}
