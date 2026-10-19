@@ -78,6 +78,7 @@ interface NavItem {
   labelKey: string;
   cap: string | null;
   icon: ReactNode;
+  iconColor: string;
   exact?: boolean;
 }
 
@@ -89,47 +90,55 @@ interface NavGroup {
 const GROUPS: NavGroup[] = [
   {
     labelKey: "group_overview",
-    items: [{ to: "/admin", labelKey: "dashboard", cap: "report.view", icon: <DashboardIcon />, exact: true }],
+    items: [
+      { to: "/admin", labelKey: "dashboard", cap: "report.view", icon: <DashboardIcon />, iconColor: "#6F4E37", exact: true },
+    ],
   },
   {
     labelKey: "group_operations",
     items: [
-      { to: "/pos", labelKey: "pos", cap: "pos.use", icon: <PointOfSaleIcon /> },
-      { to: "/floor", labelKey: "floor", cap: "table.manage", icon: <TableRestaurantIcon /> },
-      { to: "/kds", labelKey: "kitchen", cap: "kds.view", icon: <KitchenIcon /> },
+      { to: "/pos", labelKey: "pos", cap: "pos.use", icon: <PointOfSaleIcon />, iconColor: "#16A34A" },
+      { to: "/floor", labelKey: "floor", cap: "table.manage", icon: <TableRestaurantIcon />, iconColor: "#0D9488" },
+      { to: "/kds", labelKey: "kitchen", cap: "kds.view", icon: <KitchenIcon />, iconColor: "#EA580C" },
     ],
   },
   {
     labelKey: "group_catalog",
     items: [
-      { to: "/admin/menu", labelKey: "menu", cap: "menu.manage", icon: <RestaurantMenuIcon /> },
-      { to: "/admin/tables", labelKey: "tables", cap: "table.manage", icon: <TableBarIcon /> },
-      { to: "/admin/inventory", labelKey: "inventory", cap: "inventory.view", icon: <Inventory2Icon /> },
+      { to: "/admin/menu", labelKey: "menu", cap: "menu.manage", icon: <RestaurantMenuIcon />, iconColor: "#B45309" },
+      { to: "/admin/tables", labelKey: "tables", cap: "table.manage", icon: <TableBarIcon />, iconColor: "#7C3AED" },
+      { to: "/admin/inventory", labelKey: "inventory", cap: "inventory.view", icon: <Inventory2Icon />, iconColor: "#0891B2" },
     ],
   },
   {
     labelKey: "group_sales",
     items: [
-      { to: "/admin/orders", labelKey: "orders", cap: "report.view", icon: <ReceiptLongIcon /> },
-      { to: "/admin/shifts", labelKey: "shifts", cap: "report.view", icon: <AccessTimeIcon /> },
-      { to: "/admin/reports", labelKey: "reports", cap: "report.view", icon: <BarChartIcon /> },
-      { to: "/admin/expenses", labelKey: "expenses", cap: "expense.manage", icon: <PaymentsIcon /> },
+      { to: "/admin/orders", labelKey: "orders", cap: "report.view", icon: <ReceiptLongIcon />, iconColor: "#2563EB" },
+      { to: "/admin/shifts", labelKey: "shifts", cap: "report.view", icon: <AccessTimeIcon />, iconColor: "#A16207" },
+      { to: "/admin/reports", labelKey: "reports", cap: "report.view", icon: <BarChartIcon />, iconColor: "#4F46E5" },
+      { to: "/admin/expenses", labelKey: "expenses", cap: "expense.manage", icon: <PaymentsIcon />, iconColor: "#DC2626" },
     ],
   },
   {
     labelKey: "group_administration",
     items: [
-      { to: "/admin/users", labelKey: "users", cap: "staff.manage", icon: <PeopleIcon /> },
-      { to: "/admin/receipt-customization", labelKey: "receipt", cap: "settings.manage", icon: <ReceiptIcon /> },
-      { to: "/admin/settings", labelKey: "settings", cap: "settings.manage", icon: <SettingsIcon /> },
-      { to: "/admin/backup", labelKey: "backup", cap: "backup.manage", icon: <BackupIcon /> },
-      { to: "/admin/audit", labelKey: "audit_logs", cap: "audit.view", icon: <HistoryIcon /> },
-      { to: "/admin/license", labelKey: "license", cap: "settings.manage", icon: <VpnKeyIcon /> },
+      { to: "/admin/users", labelKey: "users", cap: "staff.manage", icon: <PeopleIcon />, iconColor: "#DB2777" },
+      {
+        to: "/admin/receipt-customization",
+        labelKey: "receipt",
+        cap: "settings.manage",
+        icon: <ReceiptIcon />,
+        iconColor: "#A21CAF",
+      },
+      { to: "/admin/settings", labelKey: "settings", cap: "settings.manage", icon: <SettingsIcon />, iconColor: "#475569" },
+      { to: "/admin/backup", labelKey: "backup", cap: "backup.manage", icon: <BackupIcon />, iconColor: "#0369A1" },
+      { to: "/admin/audit", labelKey: "audit_logs", cap: "audit.view", icon: <HistoryIcon />, iconColor: "#65A30D" },
+      { to: "/admin/license", labelKey: "license", cap: "settings.manage", icon: <VpnKeyIcon />, iconColor: "#C2410C" },
     ],
   },
   {
     labelKey: "app_info",
-    items: [{ to: "/admin/about", labelKey: "about", cap: null, icon: <InfoIcon /> }],
+    items: [{ to: "/admin/about", labelKey: "about", cap: null, icon: <InfoIcon />, iconColor: "#0284C7" }],
   },
 ];
 
@@ -362,7 +371,7 @@ export default function DashboardLayout() {
                       minHeight: 42,
                       justifyContent: groupCollapsed ? "center" : "flex-start",
                       px: groupCollapsed ? 0 : 2,
-                      "& .MuiListItemIcon-root": { minWidth: groupCollapsed ? 0 : 36, justifyContent: "center", color: active ? "primary.main" : "text.secondary" },
+                      "& .MuiListItemIcon-root": { minWidth: groupCollapsed ? 0 : 36, justifyContent: "center", color: item.iconColor },
                     }}
                   >
                     <ListItemIcon>{item.icon}</ListItemIcon>
