@@ -199,5 +199,12 @@
   "floor_res_party_label": "ဧည့်သည်အရေအတွက်",
   "floor_res_time": "အချိန်",
   "floor_res_duration": "ကြာချိန် (မိနစ်)",
-  "floor_res_notes": "မှတ်ချက် (မဖြစ်မနေမဟုတ်)"
+  "floor_res_notes": "မှတ်ချက် (မဖြစ်မနေမဟုတ်)",
+  "pos_serve_title": "ပို့ဆောင်ပြီးအဖြစ်မှတ်ရန် — အော်ဒါ #{{number}}",
+  "pos_serve_all": "ကျန်ရှိသမျှ ပို့ဆောင်ပြီးမှတ်ရန်",
+  "pos_serve_progress": "{{served}}/{{total}} ပို့ဆောင်ပြီး",
+  "pos_lines_served_toast": "ပစ္စည်း {{count}} ခု ပို့ဆောင်ပြီးအဖြစ် သတ်မှတ်ပြီးပါပြီ",
+  "kds_all_ready_toast": "အော်ဒါ #{{number}} — ဌာနအားလုံး အသင့်ဖြစ်ပြီ",
+  "kds_overdue_toast": "လက်မှတ် #{{number}} ({{station}}) နောက်ကျနေပြီ · {{minutes}} မိနစ်",
+  "res_reminder_toast": "{{minutes}} မိနစ်အတွင်း ကြိုတင်မှာယူမှု: {{name}} · စားပွဲ {{table}} ({{count}} ဦး)"
 }

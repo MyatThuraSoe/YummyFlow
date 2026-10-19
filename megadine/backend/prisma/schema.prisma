@@ -472,11 +472,14 @@ model OrderLine {
   notes             String?
   isVoided          Boolean   @default(false)
   voidReason        String?
+  servedQuantity    Int       @default(0)
+  servedAt          DateTime?
 
   modifiers         OrderLineModifier[]
 
   @@index([orderId])
   @@index([menuItemId])
+  @@index([orderId, servedQuantity])
 }
 
 model OrderLineModifier {

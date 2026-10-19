@@ -18,7 +18,7 @@ interface Category { id: string; name: string; items: MenuItem[] }
 interface TableRow { id: string; number: number; name: string | null; status: string; capacity: number; zone: string }
 interface Settings { restaurant: { currency: string; taxRate: string; taxInclusive: boolean; serviceChargePct: string } | null }
 
-interface ServerLine { id: string; menuItemId: string; itemNameSnapshot: string; variantSnapshot: string | null; unitPriceSnapshot: string; quantity: number; lineTotal: string; isVoided: boolean; notes: string | null; modifiers: { id: string; nameSnapshot: string; priceSnapshot: string }[] }
+interface ServerLine { id: string; menuItemId: string; itemNameSnapshot: string; variantSnapshot: string | null; unitPriceSnapshot: string; quantity: number; lineTotal: string; isVoided: boolean; notes: string | null; servedQuantity?: number; modifiers: { id: string; nameSnapshot: string; priceSnapshot: string }[] }
 interface OrderShape {
   id: string; orderNumber: number; total: string; subtotal: string; taxAmount: string; serviceCharge: string; discountAmount: string; amountPaid: string; paymentStatus: string;
   status: string; priority?: string; channel: string; tableId: string | null; lines: ServerLine[];
@@ -39,6 +39,7 @@ export default function Pos() {
   const [showPay, setShowPay] = useState(false);
   const [showDiscount, setShowDiscount] = useState(false);
   const [showOrders, setShowOrders] = useState(false);
+  const [showServe, setShowServe] = useState(false);
   const [order, setOrder] = useState<OrderShape | null>(null);
   const [voidTarget, setVoidTarget] = useState<ServerLine | null>(null);
   const [busy] = useState(false);
@@ -72,6 +73,11 @@ export default function Pos() {
 
   const channelLabel = (channel: string) => t(`ops:channel_${String(channel).toLowerCase()}`, { defaultValue: String(channel).replace("_", " ") });
   const statusLabel = (status: string) => t(`ops:order_status_${String(status).toLowerCase()}`, { defaultValue: String(status).replaceAll("_", " ") });
+
+  const serveableLines = order?.lines.filter((l) => !l.isVoided) ?? [];
+  const serveTotal = serveableLines.reduce((s, l) => s + l.quantity, 0);
+  const serveDone = serveableLines.reduce((s, l) => s + Math.min(l.servedQuantity ?? 0, l.quantity), 0);
+  const canServe = !!order && !["DRAFT", "COMPLETED", "CANCELLED"].includes(order.status) && serveDone < serveTotal;
 
   function recallOrder(o: OrderShape) {
     cart.loadFromServer({
@@ -303,16 +309,12 @@ export default function Pos() {
     }
   }
 
-  async function markServed() {
-    if (!order) return;
-    try {
-      const res = await apiPost<{ order: OrderShape }>(`/orders/${order.id}/mark-served`);
-      setOrder(res.order);
-      push(t("ops:pos_served_toast"), "ok");
-      qc.invalidateQueries({ queryKey: ["tables"] });
-    } catch (e) {
-      push(e instanceof Error ? e.message : t("ops:failed"), "error");
-    }
+  function onServed(saved: OrderShape, newlyServed: number) {
+    setOrder(saved);
+    const fully = saved.lines.filter((l) => !l.isVoided).every((l) => (l.servedQuantity ?? 0) >= l.quantity);
+    push(fully ? t("ops:pos_served_toast") : t("ops:pos_lines_served_toast", { count: newlyServed }), "ok");
+    qc.invalidateQueries({ queryKey: ["tables"] });
+    setShowServe(false);
   }
 
   async function voidLine(lineId: string, reason: string, managerPin?: string) {
@@ -407,6 +409,9 @@ export default function Pos() {
                   </span>
                 )}
                 <span className={`badge ${order.status === "DRAFT" ? "muted" : "ok"}`}>{statusLabel(order.status)}</span>
+                {serveDone > 0 && serveDone < serveTotal && (
+                  <span className="badge warn">{t("ops:pos_serve_progress", { served: serveDone, total: serveTotal })}</span>
+                )}
               </div>
               {order.lines.filter((l) => !l.isVoided).map((l) => (
                 <div className="cart-line" key={l.id}>
@@ -415,6 +420,9 @@ export default function Pos() {
                       <div className="lname">{l.quantity}× {l.itemNameSnapshot}</div>
                       {l.modifiers.length > 0 && <div className="small muted">+ {l.modifiers.map((m) => m.nameSnapshot).join(", ")}</div>}
                       {l.notes && <div className="small muted">{l.notes}</div>}
+                      {(l.servedQuantity ?? 0) > 0 && (
+                        <div className="small muted">{t("ops:pos_serve_progress", { served: l.servedQuantity, total: l.quantity })}</div>
+                      )}
                     </div>
                     <div className="mono">{formatMoney(toCents(l.lineTotal), currency)}</div>
                     {order.status !== "COMPLETED" && order.status !== "CANCELLED" && (
@@ -502,8 +510,8 @@ export default function Pos() {
           <div className="row" style={{ marginTop: 8, gap: 8 }}>
             <button className="btn" style={{ flex: 1 }} disabled={(!cart.lines.length && !order) || busy} onClick={holdOrder}>{t("ops:pos_hold")}</button>
             {order && <button className="btn" onClick={() => reprint(order.id)}>{t("ops:pos_reprint")}</button>}
-            {order?.status === "READY" && (
-              <button className="btn ok" onClick={markServed}>{t("ops:pos_mark_served")}</button>
+            {canServe && (
+              <button className="btn ok" onClick={() => setShowServe(true)}>{t("ops:pos_mark_served")}</button>
             )}
             {order && (
               <button className="btn ghost" onClick={() => { cart.reset(); setOrder(null); setNotes(""); setPickupName(""); }}>{t("ops:pos_new")}</button>
@@ -534,6 +542,14 @@ export default function Pos() {
       )}
 
       {showPay && <PaymentModal currency={currency} total={chargeTotal} onClose={() => setShowPay(false)} onPay={pay} />}
+
+      {showServe && order && (
+        <ServeModal
+          order={order}
+          onClose={() => setShowServe(false)}
+          onSaved={onServed}
+        />
+      )}
 
       {receipt && (
         <ReceiptModal
@@ -699,6 +715,81 @@ function RefundModal({ order, currency, onClose, onDone }: { order: OrderShape; 
       <label className="row small" style={{ gap: 6 }}>
         <input type="checkbox" checked={restock} onChange={(e) => setRestock(e.target.checked)} /> {t("ops:refund_restock")}
       </label>
+      {err && <p className="badge danger">{err}</p>}
+    </Modal>
+  );
+}
+
+function ServeModal({
+  order,
+  onClose,
+  onSaved,
+}: {
+  order: OrderShape;
+  onClose: () => void;
+  onSaved: (saved: OrderShape, newlyServed: number) => void;
+}) {
+  const { t } = useTranslation(["ops", "common"]);
+  const active = order.lines.filter((l) => !l.isVoided);
+  const [qty, setQty] = useState<Record<string, number>>(() =>
+    Object.fromEntries(active.map((l) => [l.id, Math.min(l.servedQuantity ?? 0, l.quantity)])),
+  );
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const totalServedNow = active.reduce((s, l) => s + (qty[l.id] ?? 0), 0);
+  const totalServedBefore = active.reduce((s, l) => s + Math.min(l.servedQuantity ?? 0, l.quantity), 0);
+
+  function bump(line: ServerLine, delta: number) {
+    setQty((prev) => {
+      const next = Math.max(0, Math.min(line.quantity, (prev[line.id] ?? 0) + delta));
+      return { ...prev, [line.id]: next };
+    });
+  }
+
+  function serveAll() {
+    setQty(Object.fromEntries(active.map((l) => [l.id, l.quantity])));
+  }
+
+  async function submit() {
+    setBusy(true);
+    setErr("");
+    try {
+      const res = await apiPost<{ order: OrderShape }>(`/orders/${order.id}/serve-lines`, {
+        lines: active.map((l) => ({ lineId: l.id, quantity: qty[l.id] ?? 0 })),
+      });
+      onSaved(res.order, totalServedNow - totalServedBefore);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : t("ops:failed"));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={t("ops:pos_serve_title", { number: order.orderNumber })}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn ghost" onClick={onClose}>{t("ops:cancel")}</button>
+          <button className="btn" onClick={serveAll}>{t("ops:pos_serve_all")}</button>
+          <button className="btn ok" disabled={busy || totalServedNow === totalServedBefore} onClick={submit}>
+            {busy ? "…" : t("ops:done")}
+          </button>
+        </>
+      }
+    >
+      {active.map((l) => (
+        <div key={l.id} className="row" style={{ padding: "6px 0", borderBottom: "1px solid var(--line)" }}>
+          <div style={{ flex: 1 }}>
+            <div className="lname">{l.itemNameSnapshot}</div>
+            <div className="small muted">{t("ops:pos_serve_progress", { served: qty[l.id] ?? 0, total: l.quantity })}</div>
+          </div>
+          <button className="qty-btn" onClick={() => bump(l, -1)}>−</button>
+          <span className="mono" style={{ minWidth: 32, textAlign: "center" }}>{qty[l.id] ?? 0}/{l.quantity}</span>
+          <button className="qty-btn" onClick={() => bump(l, 1)}>+</button>
+        </div>
+      ))}
       {err && <p className="badge danger">{err}</p>}
     </Modal>
   );

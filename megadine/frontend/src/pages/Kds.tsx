@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { apiGet, apiPatch, apiPost } from "../lib/api";
@@ -30,7 +30,7 @@ export default function Kds() {
   const qc = useQueryClient();
   const { push } = useToast();
   const { t } = useTranslation(["ops", "common"]);
-  const [station, setStation] = useState("ALL");
+  const [station, setStation] = useState(() => localStorage.getItem("kds_station") ?? "ALL");
   const [show86, setShow86] = useState(false);
   const [cancelTarget, setCancelTarget] = useState<Ticket | null>(null);
   const [priorityTarget, setPriorityTarget] = useState<Ticket | null>(null);
@@ -39,6 +39,10 @@ export default function Kds() {
     queryFn: () => apiGet<{ tickets: Ticket[] }>("/kitchen/tickets", { station: station === "ALL" ? undefined : station, active: "true" }),
     refetchInterval: 10000,
   });
+
+  useEffect(() => {
+    localStorage.setItem("kds_station", station);
+  }, [station]);
 
   const statusMut = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => apiPost(`/kitchen/tickets/${id}/status`, { status }),

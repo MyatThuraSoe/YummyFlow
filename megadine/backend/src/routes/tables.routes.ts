@@ -29,6 +29,7 @@ tablesRouter.get(
       const session = t.sessions[0] ?? null;
       const order = session?.order ?? null;
       const itemCount = order?.lines.reduce((s, l) => s + l.quantity, 0) ?? 0;
+      const servedCount = order?.lines.reduce((s, l) => s + Math.min(l.servedQuantity, l.quantity), 0) ?? 0;
       return {
         ...t,
         sessions: undefined,
@@ -40,6 +41,7 @@ tablesRouter.get(
               orderNumber: order?.orderNumber ?? null,
               total: order?.total ?? "0",
               itemCount,
+              servedCount,
               status: order?.status ?? null,
             }
           : null,

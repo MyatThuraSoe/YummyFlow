@@ -199,5 +199,12 @@
   "floor_res_party_label": "Party size",
   "floor_res_time": "Time",
   "floor_res_duration": "Duration (min)",
-  "floor_res_notes": "Notes (optional)"
+  "floor_res_notes": "Notes (optional)",
+  "pos_serve_title": "Mark served — order #{{number}}",
+  "pos_serve_all": "Serve all remaining",
+  "pos_serve_progress": "{{served}}/{{total}} served",
+  "pos_lines_served_toast": "{{count}} item(s) marked served",
+  "kds_all_ready_toast": "Order #{{number}} — all stations ready",
+  "kds_overdue_toast": "Ticket #{{number}} ({{station}}) overdue · {{minutes}}m",
+  "res_reminder_toast": "Reservation in {{minutes}} min: {{name}} · Table {{table}} ({{count}} ppl)"
 }

@@ -15,6 +15,7 @@ import {
   createOrder,
   markOrderServed,
   sendToKitchen,
+  serveOrderLines,
   setOrderPriority,
   voidOrderLine,
 } from "../services/order.service.js";
@@ -152,6 +153,21 @@ ordersRouter.post(
   requirePermission("pos.use"),
   asyncHandler(async (req, res) => {
     const order = await markOrderServed(String(req.params.id), req.auth!.userId);
+    res.json({ order });
+  }),
+);
+
+const serveLinesSchema = z.object({
+  lines: z.array(z.object({ lineId: z.string().uuid(), quantity: z.number().int().min(0).max(99) })).min(1),
+});
+
+ordersRouter.post(
+  "/:id/serve-lines",
+  requirePermission("pos.use"),
+  validate({ body: serveLinesSchema }),
+  asyncHandler(async (req, res) => {
+    const { lines } = req.body as z.infer<typeof serveLinesSchema>;
+    const order = await serveOrderLines(String(req.params.id), req.auth!.userId, lines);
     res.json({ order });
   }),
 );

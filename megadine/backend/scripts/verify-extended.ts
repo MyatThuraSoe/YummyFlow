@@ -809,7 +809,7 @@ async function main() {
     const readyOrder = await api<{ order: { status: string } }>(`/orders/${servedId}`, { token: cashier.token });
     assert.equal(readyOrder.data.order.status, "READY");
 
-    const servedRes = await api<{ order: { status: string; servedAt: string | null; servedBy: string | null; lines: unknown[] } }>(
+    const servedRes = await api<{ order: { status: string; servedAt: string | null; servedBy: string | null; lines: { quantity: number; servedQuantity: number; isVoided: boolean }[] } }>(
       `/orders/${servedId}/mark-served`,
       { method: "POST", token: cashier.token },
     );
@@ -818,6 +818,10 @@ async function main() {
     assert.ok(servedRes.data.order.servedAt);
     assert.ok(servedRes.data.order.servedBy);
     assert.ok(Array.isArray(servedRes.data.order.lines) && servedRes.data.order.lines.length > 0, "mark-served must return the hydrated order");
+    assert.ok(
+      servedRes.data.order.lines.filter((l) => !l.isVoided).every((l) => l.servedQuantity === l.quantity),
+      "mark-served must mark every active line as served",
+    );
     const servedAgain = await api(`/orders/${servedId}/mark-served`, { method: "POST", token: cashier.token });
     assert.equal(servedAgain.status, 200, "mark-served must be idempotent");
     const openNow = await api<{ orders: { id: string }[] }>("/orders/open", { token: cashier.token });
@@ -865,6 +869,90 @@ async function main() {
     assert.equal(stillOpen.data.order.status, "SENT_TO_KITCHEN", "all tickets cancelled must not roll the order to READY/SERVED");
     await api(`/orders/${cancelledId}/cancel`, { method: "POST", token: admin.token, body: { reason: "cleanup after verify" } });
     ok("cancelling all kitchen tickets leaves the order unserved");
+
+    // ── Phase 2: partial (line-level) serving ────────────────────────────────
+    const menuItems = menuNow.data.categories.flatMap((c) => c.items);
+    const partialItemA = menuItems[0].id;
+    const partialItemB = (menuItems.find((i) => i.id !== partialItemA) ?? menuItems[0]).id;
+    const partialFlow = await api<{ order: { id: string; total: string } }>("/orders", {
+      method: "POST",
+      token: cashier.token,
+      body: {
+        channel: "TAKEAWAY",
+        items: [
+          { menuItemId: partialItemA, quantity: 2 },
+          { menuItemId: partialItemB, quantity: 1 },
+        ],
+      },
+    });
+    assert.equal(partialFlow.status, 201, JSON.stringify(partialFlow.data));
+    const partialId = partialFlow.data.order.id;
+
+    const partialOrder = await api<{ order: { lines: { id: string; quantity: number; servedQuantity: number; isVoided: boolean }[] } }>(
+      `/orders/${partialId}`,
+      { token: cashier.token },
+    );
+    const partialLines = partialOrder.data.order.lines.filter((l) => !l.isVoided);
+    assert.ok(partialLines.length >= 2, "partial-serving flow needs at least two lines");
+    const [lineA] = partialLines;
+
+    const serveTooEarly = await api(`/orders/${partialId}/serve-lines`, {
+      method: "POST",
+      token: cashier.token,
+      body: { lines: [{ lineId: lineA.id, quantity: 1 }] },
+    });
+    assert.equal(serveTooEarly.status, 409, "serving an order that was never sent to the kitchen must be rejected");
+
+    await api(`/orders/${partialId}/send-to-kitchen`, { method: "POST", token: cashier.token });
+    const partialTickets = await api<{ tickets: { id: string; orderId: string }[] }>("/kitchen/tickets", { token: admin.token });
+    for (const tk of partialTickets.data.tickets.filter((t) => t.orderId === partialId)) {
+      await api(`/kitchen/tickets/${tk.id}/status`, { method: "POST", token: admin.token, body: { status: "PREPARING" } });
+      await api(`/kitchen/tickets/${tk.id}/status`, { method: "POST", token: admin.token, body: { status: "READY" } });
+    }
+
+    const serveUnknown = await api(`/orders/${partialId}/serve-lines`, {
+      method: "POST",
+      token: cashier.token,
+      body: { lines: [{ lineId: "00000000-0000-0000-0000-000000000000", quantity: 1 }] },
+    });
+    assert.equal(serveUnknown.status, 400, "unknown line ids must be rejected");
+    const serveOver = await api(`/orders/${partialId}/serve-lines`, {
+      method: "POST",
+      token: cashier.token,
+      body: { lines: [{ lineId: lineA.id, quantity: 99 }] },
+    });
+    assert.equal(serveOver.status, 400, "over-serving a line must be rejected");
+    ok("serve-lines rejects unsent orders, unknown lines and over-serving");
+
+    const serveOne = await api<{ order: { status: string; lines: { id: string; quantity: number; servedQuantity: number; isVoided: boolean }[] } }>(
+      `/orders/${partialId}/serve-lines`,
+      { method: "POST", token: cashier.token, body: { lines: [{ lineId: lineA.id, quantity: 1 }] } },
+    );
+    assert.equal(serveOne.status, 200, JSON.stringify(serveOne.data));
+    assert.notEqual(serveOne.data.order.status, "SERVED", "a partially served order must not flip to SERVED");
+    const lineAAfter = serveOne.data.order.lines.find((l) => l.id === lineA.id)!;
+    assert.equal(lineAAfter.servedQuantity, 1, "partial serving must persist the per-line quantity");
+    ok("line-level serving tracks partial delivery without closing the order");
+
+    const serveRest = await api<{ order: { status: string; servedAt: string | null; lines: { quantity: number; servedQuantity: number; isVoided: boolean }[] } }>(
+      `/orders/${partialId}/serve-lines`,
+      {
+        method: "POST",
+        token: cashier.token,
+        body: {
+          lines: partialLines.map((l) => ({ lineId: l.id, quantity: l.quantity })),
+        },
+      },
+    );
+    assert.equal(serveRest.status, 200, JSON.stringify(serveRest.data));
+    assert.equal(serveRest.data.order.status, "SERVED", "serving every remaining item must auto-complete to SERVED");
+    assert.ok(serveRest.data.order.servedAt);
+    assert.ok(
+      serveRest.data.order.lines.filter((l) => !l.isVoided).every((l) => l.servedQuantity === l.quantity),
+      "every active line must be fully served",
+    );
+    await api(`/orders/${partialId}/cancel`, { method: "POST", token: admin.token, body: { reason: "cleanup after verify" } });
+    ok("serving the last remaining items auto-transitions the order to SERVED");
 
     // Settle the SERVED order (covers paying after service) and free the table.
     if (availTable) {

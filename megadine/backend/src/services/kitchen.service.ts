@@ -70,6 +70,7 @@ export async function updateTicketStatus(
   const rollable = ["DRAFT", "SENT_TO_KITCHEN", "IN_PROGRESS", "READY"].includes(ticket.order.status);
   const allReady = active.length > 0 && active.every((t) => t.status === "READY" || t.status === "SERVED");
   const allServed = active.length > 0 && active.every((t) => t.status === "SERVED");
+  const justBecameReady = allReady && !["READY", "SERVED"].includes(ticket.order.status);
   if (allReady && rollable) {
     await prisma.order.update({
       where: { id: ticket.orderId },
@@ -77,6 +78,13 @@ export async function updateTicketStatus(
         ? { status: "SERVED", servedAt: now }
         : { status: "READY" },
     });
+    if (justBecameReady && !allServed) {
+      emitToWorkspace(EVENTS.ORDER_ALL_READY, {
+        orderId: ticket.orderId,
+        orderNumber: ticket.order.orderNumber,
+        tableId: ticket.order.tableId,
+      });
+    }
   } else if (siblings.some((t) => t.status === "PREPARING") && rollable) {
     await prisma.order.update({ where: { id: ticket.orderId }, data: { status: "IN_PROGRESS" } });
   }

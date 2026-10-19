@@ -199,5 +199,12 @@
   "floor_res_party_label": "Nombre de personnes",
   "floor_res_time": "Heure",
   "floor_res_duration": "Durée (min)",
-  "floor_res_notes": "Remarques (facultatif)"
+  "floor_res_notes": "Remarques (facultatif)",
+  "pos_serve_title": "Marquer servi — commande #{{number}}",
+  "pos_serve_all": "Servir tout le reste",
+  "pos_serve_progress": "{{served}}/{{total}} servi(s)",
+  "pos_lines_served_toast": "{{count}} article(s) marqué(s) servi(s)",
+  "kds_all_ready_toast": "Commande #{{number}} — tous les postes sont prêts",
+  "kds_overdue_toast": "Ticket #{{number}} ({{station}}) en retard · {{minutes}} min",
+  "res_reminder_toast": "Réservation dans {{minutes}} min : {{name}} · Table {{table}} ({{count}} pers.)"
 }

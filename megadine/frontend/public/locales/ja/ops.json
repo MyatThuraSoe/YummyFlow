@@ -199,5 +199,12 @@
   "floor_res_party_label": "人数",
   "floor_res_time": "時間",
   "floor_res_duration": "滞在時間（分）",
-  "floor_res_notes": "メモ（任意）"
+  "floor_res_notes": "メモ（任意）",
+  "pos_serve_title": "提供済みにする — 注文 #{{number}}",
+  "pos_serve_all": "残りをすべて提供済みにする",
+  "pos_serve_progress": "{{served}}/{{total}} 提供済み",
+  "pos_lines_served_toast": "{{count}} 件を提供済みにしました",
+  "kds_all_ready_toast": "注文 #{{number}} — 全ステーション準備完了",
+  "kds_overdue_toast": "チケット #{{number}}（{{station}}）が遅延 · {{minutes}}分",
+  "res_reminder_toast": "{{minutes}}分後に予約: {{name}} · テーブル {{table}}（{{count}}名）"
 }

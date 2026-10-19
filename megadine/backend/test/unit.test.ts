@@ -7,6 +7,11 @@ import { addDays, businessDateFor, endOfDay, isSameDay, startOfDay } from "../sr
 import { assertWithinLimit, getFeatures, getLimits } from "../src/lib/license.js";
 import { expectedCash, varianceExceedsTolerance } from "../src/lib/cashVariance.js";
 import { releaseUnique } from "../src/lib/userGuards.js";
+import {
+  overdueBand,
+  pickOverdueTickets,
+  pickReservationReminders,
+} from "../src/services/notifications.service.js";
 
 // ── money ───────────────────────────────────────────────
 test("toCents rounds to nearest cent without float drift", () => {
@@ -157,4 +162,51 @@ test("releaseUnique appends a deletion suffix and respects max length", () => {
   assert.equal(freed, "u".repeat(242) + "#del-12345678");
   assert.equal(freed.length, 255);
   assert.equal(releaseUnique("ab", "12345678", 10), "#del-12345678");
+});
+
+// ── kitchen notifications (Phase 2) ─────────────────────────────────────────
+test("overdueBand escalates at 15 and 30 minutes", () => {
+  assert.equal(overdueBand(0), null);
+  assert.equal(overdueBand(14), null);
+  assert.equal(overdueBand(15), "warn");
+  assert.equal(overdueBand(29), "warn");
+  assert.equal(overdueBand(30), "overdue");
+  assert.equal(overdueBand(90), "overdue");
+});
+
+test("pickOverdueTickets notifies once per band and re-notifies on escalation", () => {
+  const now = new Date("2026-10-19T12:00:00Z");
+  const seen = new Map<string, string>();
+  const ticket = (sentAtIso: string) => ({ id: "t1", orderNumber: 7, station: "GRILL", sentAt: new Date(sentAtIso) });
+
+  const fresh = pickOverdueTickets(now, [ticket("2026-10-19T11:50:00Z")], seen);
+  assert.equal(fresh.length, 0, "10 minutes old is not overdue yet");
+
+  const warn = pickOverdueTickets(now, [ticket("2026-10-19T11:44:00Z")], seen);
+  assert.deepEqual(warn.map((n) => n.band), ["warn"]);
+  assert.equal(warn[0].minutes, 16);
+  assert.equal(pickOverdueTickets(now, [ticket("2026-10-19T11:44:00Z")], seen).length, 0, "same band must not re-notify");
+
+  const escalate = pickOverdueTickets(now, [ticket("2026-10-19T11:29:00Z")], seen);
+  assert.deepEqual(escalate.map((n) => n.band), ["overdue"]);
+});
+
+test("pickReservationReminders fires once inside the 15 minute window", () => {
+  const now = new Date("2026-10-19T12:00:00Z");
+  const reminded = new Set<string>();
+  const res = (id: string, minutesAhead: number) => ({
+    id,
+    customerName: `Guest ${id}`,
+    partySize: 4,
+    tableNumber: 5,
+    reservationTime: new Date(now.getTime() + minutesAhead * 60000),
+  });
+
+  const due = pickReservationReminders(now, [res("past", -5), res("soon", 10), res("later", 45)], reminded);
+  assert.deepEqual(due.map((n) => n.reservationId), ["soon"]);
+  assert.equal(due[0].minutesUntil, 10);
+  assert.equal(pickReservationReminders(now, [res("soon", 10)], reminded).length, 0, "must not re-notify");
+
+  const boundary = pickReservationReminders(now, [res("edge", 15)], new Set());
+  assert.deepEqual(boundary.map((n) => n.reservationId), ["edge"]);
 });

@@ -199,5 +199,12 @@
   "floor_res_party_label": "จำนวนท่าน",
   "floor_res_time": "เวลา",
   "floor_res_duration": "ระยะเวลา (นาที)",
-  "floor_res_notes": "หมายเหตุ (ไม่บังคับ)"
+  "floor_res_notes": "หมายเหตุ (ไม่บังคับ)",
+  "pos_serve_title": "ทำเครื่องหมายเสิร์ฟแล้ว — ออร์เดอร์ #{{number}}",
+  "pos_serve_all": "เสิร์ฟที่เหลือทั้งหมด",
+  "pos_serve_progress": "เสิร์ฟแล้ว {{served}}/{{total}}",
+  "pos_lines_served_toast": "ทำเครื่องหมายเสิร์ฟแล้ว {{count}} รายการ",
+  "kds_all_ready_toast": "ออร์เดอร์ #{{number}} — ทุกสถานีพร้อมแล้ว",
+  "kds_overdue_toast": "ตั๋ว #{{number}} ({{station}}) ล่าช้า · {{minutes}} นาที",
+  "res_reminder_toast": "อีก {{minutes}} นาทีถึงเวลาจอง: {{name}} · โต๊ะ {{table}} ({{count}} ท่าน)"
 }

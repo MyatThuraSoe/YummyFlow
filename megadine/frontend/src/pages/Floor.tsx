@@ -8,7 +8,7 @@ import { Badge, Field, Modal, useToast } from "../components/ui";
 import { useCart } from "../store/cart";
 import { useNavigate } from "react-router-dom";
 
-interface TableCurrent { sessionId: string; orderId: string | null; orderNumber: number | null; total: string; itemCount: number; status: string | null }
+interface TableCurrent { sessionId: string; orderId: string | null; orderNumber: number | null; total: string; itemCount: number; servedCount?: number; status: string | null }
 interface TableRow { id: string; number: number; name: string | null; capacity: number; zone: string; status: string; version: number; current: TableCurrent | null }
 interface OrderLine { id: string; itemNameSnapshot: string; quantity: number; lineTotal: string; isVoided: boolean }
 interface OrderShape { id: string; orderNumber: number; status: string; total: string; lines: OrderLine[]; tableSession?: { table: { number: number } } | null }
@@ -152,6 +152,15 @@ export default function Floor() {
                     <span className="badge ok">{t("ops:floor_served")}</span>
                   </div>
                 )}
+                {(tbl.current.servedCount ?? 0) > 0 &&
+                  (tbl.current.servedCount ?? 0) < tbl.current.itemCount &&
+                  tbl.current.status !== "SERVED" && (
+                    <div className="row" style={{ marginTop: 6 }}>
+                      <span className="badge warn">
+                        {t("ops:pos_serve_progress", { served: tbl.current.servedCount, total: tbl.current.itemCount })}
+                      </span>
+                    </div>
+                  )}
               </div>
             )}
             {reservationsFor(tbl.id)[0] && (
@@ -201,6 +210,14 @@ export default function Floor() {
                 <div className="spacer" />
                 <span className="mono">{formatMoney(toCents(selected.current.total), currency)}</span>
               </div>
+              {selected.current.itemCount > 0 && (
+                <div className="small muted" style={{ marginTop: 4 }}>
+                  {t("ops:pos_serve_progress", {
+                    served: selected.current.servedCount ?? 0,
+                    total: selected.current.itemCount,
+                  })}
+                </div>
+              )}
             </div>
           )}
           {selectedHasOpenOrder && (
