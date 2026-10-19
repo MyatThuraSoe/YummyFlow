@@ -12,18 +12,15 @@
   "receipt_sent": "ပြေစာကို ပရင်တာသို့ ပေးပို့ပြီးပါပြီ",
   "order_number": "အော်ဒါ #{{number}}",
   "loading": "ဖွင့်နေသည်…",
-
   "channel_dine_in": "ဆိုင်တွင်စား",
   "channel_takeaway": "အပြင်ယူ",
   "channel_parcel": "ပါဆယ်",
-
   "order_status_draft": "မူကြမ်း",
   "order_status_sent_to_kitchen": "မီးဖိုချောင်သို့ ပေးပို့ပြီး",
   "order_status_in_progress": "ပြင်ဆင်နေသည်",
   "order_status_ready": "အသင့်ဖြစ်ပြီး",
   "order_status_completed": "ပြီးစီးပြီး",
   "order_status_cancelled": "ပယ်ဖျက်ပြီး",
-
   "pos_held_orders": "ဆိုင်းထားသော အော်ဒါများ",
   "pos_queued_count": "{{count}} ခု တန်းစီထား",
   "pos_offline_queued": "{{count}} ခု အော့ဖ်လိုင်း တန်းစီထား",
@@ -68,7 +65,6 @@
   "pos_line_voided": "စာကြောင်း ပယ်ပြီး",
   "pos_shift_opened": "Shift ဖွင့်ပြီး",
   "pos_failed_open_shift": "Shift ဖွင့်ခြင်း မအောင်မြင်ပါ",
-
   "orders_title": "အော်ဒါများ",
   "orders_held_open": "ဆိုင်းထား / ဖွင့်ထား",
   "orders_recent": "မကြာသေးမီ (ပေးချေပြီး)",
@@ -78,14 +74,12 @@
   "orders_recall": "ပြန်ခေါ်ရန်",
   "orders_refund": "ငွေပြန်အမ်းရန်",
   "orders_nothing": "ဒီမှာ ဘာမှ မရှိပါ။",
-
   "void_title": "ပယ်ရန် · {{name}}",
   "void_reason": "အကြောင်းရင်း",
   "void_reason_placeholder": "ဘာကြောင့် ပယ်တာလဲ။",
   "void_manager_pin": "Manager PIN (မီးဖိုချောင်သို့ ပို့ပြီးဖြစ်လျှင်)",
   "void_submit": "စာကြောင်း ပယ်ရန်",
   "void_failed": "ပယ်ခြင်း မအောင်မြင်ပါ",
-
   "refund_title": "ငွေပြန်အမ်းရန် · အော်ဒါ #{{number}}",
   "refund_order_total": "အော်ဒါ စုစုပေါင်း {{amount}}",
   "refund_amount": "ပြန်အမ်းငွေ ({{currency}})",
@@ -95,7 +89,6 @@
   "refund_submit": "ပြန်အမ်းရန်",
   "refund_failed": "ပြန်အမ်းခြင်း မအောင်မြင်ပါ",
   "refund_recorded": "ငွေပြန်အမ်းမှု မှတ်တမ်းတင်ပြီး",
-
   "mod_variant": "အမျိုးအစားခွဲ",
   "mod_required": "(မဖြစ်မနေ)",
   "mod_max": "· အများဆုံး {{count}}",
@@ -103,7 +96,6 @@
   "mod_notes": "မှတ်ချက်",
   "mod_notes_placeholder": "ကြက်သွန်မထည့်ပါ…",
   "mod_add": "ထည့်ရန် · {{amount}}",
-
   "disc_title": "လျှော့စျေး သုံးရန်",
   "disc_percent": "ရာခိုင်နှုန်း %",
   "disc_amount": "ပမာဏ",
@@ -112,7 +104,6 @@
   "disc_total": "လျှော့စျေး: {{amount}}",
   "disc_manager_pin": "Manager PIN (10% အထက် လိုအပ်သည်)",
   "disc_apply": "သုံးရန်",
-
   "pay_title": "အော်ဒါ ကောက်ခံရန်",
   "pay_due": "ပေးရမည့်ငွေ",
   "pay_amount_placeholder": "ပမာဏ",
@@ -126,12 +117,10 @@
   "pay_pay": "{{amount}} ပေးချေရန်",
   "pay_processing": "လုပ်ဆောင်နေသည်…",
   "pay_failed": "ငွေပေးချေမှု မအောင်မြင်ပါ",
-
   "receipt_title": "ငွေပေးချေမှု ပြီးစီး — အော်ဒါ #{{number}}",
   "receipt_print": "ပြေစာ ပရင့်ထုတ်ရန်",
   "receipt_change_due": "ပြန်အမ်းငွေ",
   "reprint_failed": "ပြန်ပရင့်ထုတ်ခြင်း မအောင်မြင်ပါ",
-
   "floor_live_tables": "· တိုက်ရိုက် · စားပွဲ {{count}} လုံး",
   "floor_table_title": "စားပွဲ #{{number}}",
   "floor_seats": "{{zone}} · နေရာ {{capacity}}",
@@ -153,14 +142,12 @@
   "floor_item_header": "ပစ္စည်း",
   "floor_qty_header": "အရေအတွက်",
   "floor_total_header": "စုစုပေါင်း",
-
   "table_status_available": "လွတ်နေသည်",
   "table_status_occupied": "အသုံးပြုနေသည်",
   "table_status_needs_bill": "ဘေလ်လိုသည်",
   "table_status_needs_cleaning": "ရှင်းလင်းရန် လိုသည်",
   "table_status_reserved": "ကြိုတင်မှာထားသည်",
   "table_status_out_of_service": "ဝန်ဆောင်မှု ပိတ်ထားသည်",
-
   "kds_86_btn": "ပစ္စည်း 86 သတ်မှတ်ရန်",
   "kds_queued": "တန်းစီ",
   "kds_preparing": "ပြင်ဆင်နေသည်",
@@ -175,5 +162,8 @@
   "kds_minutes": "{{count}} မိနစ်",
   "kds_86_title": "ပစ္စည်းများကို လက်ကျန် ရှိ/ကုန် သတ်မှတ်ရန်",
   "kds_86_suffix": "(86)",
-  "kds_availability_updated": "ရရှိနိုင်မှု အခြေအနေ ပြင်ပြီး"
+  "kds_availability_updated": "ရရှိနိုင်မှု အခြေအနေ ပြင်ပြီး",
+  "kds_cancel_title": "လက်မှတ် #{{number}} ပယ်ဖျက်ရန်",
+  "kds_cancel_submit": "လက်မှတ် ပယ်ဖျက်ရန်",
+  "kds_cancelled": "လက်မှတ် ပယ်ဖျက်ပြီး"
 }

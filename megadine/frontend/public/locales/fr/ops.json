@@ -12,18 +12,15 @@
   "receipt_sent": "Ticket envoyé à l'imprimante",
   "order_number": "Commande #{{number}}",
   "loading": "Chargement…",
-
   "channel_dine_in": "Sur place",
   "channel_takeaway": "À emporter",
   "channel_parcel": "Colis",
-
   "order_status_draft": "Brouillon",
   "order_status_sent_to_kitchen": "Envoyée en cuisine",
   "order_status_in_progress": "En préparation",
   "order_status_ready": "Prête",
   "order_status_completed": "Terminée",
   "order_status_cancelled": "Annulée",
-
   "pos_held_orders": "Commandes en attente",
   "pos_queued_count": "{{count}} en file",
   "pos_offline_queued": "{{count}} en file hors ligne",
@@ -68,7 +65,6 @@
   "pos_line_voided": "Ligne annulée",
   "pos_shift_opened": "Service ouvert",
   "pos_failed_open_shift": "Échec de l'ouverture du service",
-
   "orders_title": "Commandes",
   "orders_held_open": "En attente / ouvertes",
   "orders_recent": "Récentes (payées)",
@@ -78,14 +74,12 @@
   "orders_recall": "Rappeler",
   "orders_refund": "Rembourser",
   "orders_nothing": "Rien ici.",
-
   "void_title": "Annulation · {{name}}",
   "void_reason": "Motif",
   "void_reason_placeholder": "Pourquoi annuler cet article ?",
   "void_manager_pin": "PIN gérant (si déjà envoyé en cuisine)",
   "void_submit": "Annuler la ligne",
   "void_failed": "Échec de l'annulation",
-
   "refund_title": "Remboursement · commande #{{number}}",
   "refund_order_total": "Total commande {{amount}}",
   "refund_amount": "Montant du remboursement ({{currency}})",
@@ -95,7 +89,6 @@
   "refund_submit": "Rembourser",
   "refund_failed": "Échec du remboursement",
   "refund_recorded": "Remboursement enregistré",
-
   "mod_variant": "Variante",
   "mod_required": "(obligatoire)",
   "mod_max": "· max {{count}}",
@@ -103,7 +96,6 @@
   "mod_notes": "Notes",
   "mod_notes_placeholder": "Sans oignons…",
   "mod_add": "Ajouter · {{amount}}",
-
   "disc_title": "Appliquer une remise",
   "disc_percent": "Pourcentage %",
   "disc_amount": "Montant",
@@ -112,7 +104,6 @@
   "disc_total": "Remise : {{amount}}",
   "disc_manager_pin": "PIN gérant (requis au-delà de 10 %)",
   "disc_apply": "Appliquer",
-
   "pay_title": "Encaisser la commande",
   "pay_due": "Montant dû",
   "pay_amount_placeholder": "Montant",
@@ -126,12 +117,10 @@
   "pay_pay": "Payer {{amount}}",
   "pay_processing": "Traitement…",
   "pay_failed": "Échec du paiement",
-
   "receipt_title": "Paiement terminé — commande #{{number}}",
   "receipt_print": "Imprimer le ticket",
   "receipt_change_due": "Monnaie",
   "reprint_failed": "Échec de la réimpression",
-
   "floor_live_tables": "· en direct · {{count}} tables",
   "floor_table_title": "Table #{{number}}",
   "floor_seats": "{{zone}} · {{capacity}} places",
@@ -153,14 +142,12 @@
   "floor_item_header": "Article",
   "floor_qty_header": "Qté",
   "floor_total_header": "Total",
-
   "table_status_available": "Libre",
   "table_status_occupied": "Occupée",
   "table_status_needs_bill": "Addition demandée",
   "table_status_needs_cleaning": "À nettoyer",
   "table_status_reserved": "Réservée",
   "table_status_out_of_service": "Hors service",
-
   "kds_86_btn": "Marquer 86 un article",
   "kds_queued": "En file",
   "kds_preparing": "En préparation",
@@ -175,5 +162,8 @@
   "kds_minutes": "{{count}} min",
   "kds_86_title": "Marquer les articles en / hors stock",
   "kds_86_suffix": "(86)",
-  "kds_availability_updated": "Disponibilité mise à jour"
+  "kds_availability_updated": "Disponibilité mise à jour",
+  "kds_cancel_title": "Annuler le ticket #{{number}}",
+  "kds_cancel_submit": "Annuler le ticket",
+  "kds_cancelled": "Ticket annulé"
 }

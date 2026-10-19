@@ -12,18 +12,15 @@
   "receipt_sent": "Receipt sent to printer",
   "order_number": "Order #{{number}}",
   "loading": "Loading…",
-
   "channel_dine_in": "Dine-in",
   "channel_takeaway": "Takeaway",
   "channel_parcel": "Parcel",
-
   "order_status_draft": "Draft",
   "order_status_sent_to_kitchen": "Sent to kitchen",
   "order_status_in_progress": "In progress",
   "order_status_ready": "Ready",
   "order_status_completed": "Completed",
   "order_status_cancelled": "Cancelled",
-
   "pos_held_orders": "Held orders",
   "pos_queued_count": "{{count}} queued",
   "pos_offline_queued": "{{count}} offline queued",
@@ -68,7 +65,6 @@
   "pos_line_voided": "Line voided",
   "pos_shift_opened": "Shift opened",
   "pos_failed_open_shift": "Failed to open shift",
-
   "orders_title": "Orders",
   "orders_held_open": "Held / open",
   "orders_recent": "Recent (paid)",
@@ -78,14 +74,12 @@
   "orders_recall": "Recall",
   "orders_refund": "Refund",
   "orders_nothing": "Nothing here.",
-
   "void_title": "Void · {{name}}",
   "void_reason": "Reason",
   "void_reason_placeholder": "Why is this being voided?",
   "void_manager_pin": "Manager PIN (if already sent to kitchen)",
   "void_submit": "Void line",
   "void_failed": "Void failed",
-
   "refund_title": "Refund · order #{{number}}",
   "refund_order_total": "Order total {{amount}}",
   "refund_amount": "Refund amount ({{currency}})",
@@ -95,7 +89,6 @@
   "refund_submit": "Refund",
   "refund_failed": "Refund failed",
   "refund_recorded": "Refund recorded",
-
   "mod_variant": "Variant",
   "mod_required": "(required)",
   "mod_max": "· max {{count}}",
@@ -103,7 +96,6 @@
   "mod_notes": "Notes",
   "mod_notes_placeholder": "No onions…",
   "mod_add": "Add · {{amount}}",
-
   "disc_title": "Apply discount",
   "disc_percent": "Percent %",
   "disc_amount": "Amount",
@@ -112,7 +104,6 @@
   "disc_total": "Discount: {{amount}}",
   "disc_manager_pin": "Manager PIN (required above 10%)",
   "disc_apply": "Apply",
-
   "pay_title": "Charge order",
   "pay_due": "Amount due",
   "pay_amount_placeholder": "Amount",
@@ -126,12 +117,10 @@
   "pay_pay": "Pay {{amount}}",
   "pay_processing": "Processing…",
   "pay_failed": "Payment failed",
-
   "receipt_title": "Payment complete — order #{{number}}",
   "receipt_print": "Print receipt",
   "receipt_change_due": "Change due",
   "reprint_failed": "Reprint failed",
-
   "floor_live_tables": "· live · {{count}} tables",
   "floor_table_title": "Table #{{number}}",
   "floor_seats": "{{zone}} · seats {{capacity}}",
@@ -153,14 +142,12 @@
   "floor_item_header": "Item",
   "floor_qty_header": "Qty",
   "floor_total_header": "Total",
-
   "table_status_available": "Available",
   "table_status_occupied": "Occupied",
   "table_status_needs_bill": "Needs bill",
   "table_status_needs_cleaning": "Needs cleaning",
   "table_status_reserved": "Reserved",
   "table_status_out_of_service": "Out of service",
-
   "kds_86_btn": "86 an item",
   "kds_queued": "Queued",
   "kds_preparing": "Preparing",
@@ -175,5 +162,8 @@
   "kds_minutes": "{{count}}m",
   "kds_86_title": "Mark items in / out of stock",
   "kds_86_suffix": "(86)",
-  "kds_availability_updated": "Availability updated"
+  "kds_availability_updated": "Availability updated",
+  "kds_cancel_title": "Cancel ticket #{{number}}",
+  "kds_cancel_submit": "Cancel ticket",
+  "kds_cancelled": "Ticket cancelled"
 }

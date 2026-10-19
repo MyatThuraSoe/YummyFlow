@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { apiGet, apiPost } from "../lib/api";
-import { Badge, Modal, useToast } from "../components/ui";
+import { Badge, Field, Modal, useToast } from "../components/ui";
 
 interface TicketLine { id: string; itemName: string; quantity: number; modifiers: { name: string }[] | null; notes: string | null; status: string }
 interface Ticket {
@@ -27,6 +27,7 @@ export default function Kds() {
   const { t } = useTranslation(["ops", "common"]);
   const [station, setStation] = useState("ALL");
   const [show86, setShow86] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState<Ticket | null>(null);
   const { data } = useQuery({
     queryKey: ["tickets", station],
     queryFn: () => apiGet<{ tickets: Ticket[] }>("/kitchen/tickets", { station: station === "ALL" ? undefined : station, active: "true" }),
@@ -96,7 +97,7 @@ export default function Kds() {
                           {t(`ops:${col.next.labelKey}`)}
                         </button>
                       )}
-                      <button className="btn ghost small" onClick={() => statusMut.mutate({ id: tk.id, status: "CANCELLED" })}>
+                      <button className="btn ghost small" onClick={() => setCancelTarget(tk)}>
                         {t("ops:kds_cancel")}
                       </button>
                     </div>
@@ -110,7 +111,54 @@ export default function Kds() {
       </div>
 
       {show86 && <EightySixModal onClose={() => setShow86(false)} />}
+      {cancelTarget && <CancelTicketModal ticket={cancelTarget} onClose={() => setCancelTarget(null)} />}
     </div>
+  );
+}
+
+function CancelTicketModal({ ticket, onClose }: { ticket: Ticket; onClose: () => void }) {
+  const qc = useQueryClient();
+  const { push } = useToast();
+  const { t } = useTranslation(["ops", "common"]);
+  const [reason, setReason] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    setBusy(true);
+    setErr("");
+    try {
+      await apiPost(`/kitchen/tickets/${ticket.id}/status`, { status: "CANCELLED", reason });
+      push(t("ops:kds_cancelled"), "ok");
+      qc.invalidateQueries({ queryKey: ["tickets"] });
+      onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : t("ops:failed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={t("ops:kds_cancel_title", { number: ticket.order.orderNumber })}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn ghost" onClick={onClose}>
+            {t("ops:cancel")}
+          </button>
+          <button className="btn danger" disabled={reason.trim().length < 2 || busy} onClick={submit}>
+            {busy ? "…" : t("ops:kds_cancel_submit")}
+          </button>
+        </>
+      }
+    >
+      <Field label={t("ops:void_reason")}>
+        <input className="input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder={t("ops:void_reason_placeholder")} autoFocus />
+      </Field>
+      {err && <p className="badge danger">{err}</p>}
+    </Modal>
   );
 }
 
