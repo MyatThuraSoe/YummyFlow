@@ -51,7 +51,8 @@ const ROLES = ["OWNER", "ADMIN", "MANAGER", "CASHIER", "WAITER", "KITCHEN"];
 export default function UserFormAdmin() {
   const { id } = useParams();
   const editing = !!id;
-  const { t } = useTranslation(["users", "common"]);
+  const { t } = useTranslation(["users", "common", "admin"]);
+  const roleLabel = (r: string) => t(`admin:role_${r.toLowerCase()}`, { defaultValue: r });
   const nav = useNavigate();
   const qc = useQueryClient();
 
@@ -199,7 +200,7 @@ export default function UserFormAdmin() {
               <Select label={t("users:role")} value={form.role} onChange={(e) => set("role")(e.target.value)}>
                 {ROLES.map((r) => (
                   <MenuItem key={r} value={r}>
-                    {r}
+                    {roleLabel(r)}
                   </MenuItem>
                 ))}
               </Select>

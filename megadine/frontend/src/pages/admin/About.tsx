@@ -18,7 +18,7 @@ interface LicenseStatus {
 }
 
 export default function About() {
-  const { t } = useTranslation(["nav", "common"]);
+  const { t } = useTranslation(["nav", "common", "admin"]);
   const [copied, setCopied] = useState(false);
   const lanUrl = window.location.origin;
 
@@ -66,8 +66,8 @@ export default function About() {
               </Typography>
             </Box>
           </Stack>
-          <InfoRow label="Edition" value={data?.data.edition ?? "—"} />
-          <InfoRow label="Machine ID" value={data?.data.machineId ?? "—"} mono />
+          <InfoRow label={t("admin:abt_edition")} value={data?.data.edition ?? "—"} />
+          <InfoRow label={t("admin:abt_machine_id")} value={data?.data.machineId ?? "—"} mono />
           <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
             <Box sx={{ minWidth: 110 }}>
               <Typography variant="body2" color="text.secondary">

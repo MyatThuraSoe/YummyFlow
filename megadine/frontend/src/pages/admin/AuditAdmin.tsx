@@ -42,7 +42,7 @@ interface UserOption {
 }
 
 export default function AuditAdmin() {
-  const { t } = useTranslation(["nav"]);
+  const { t } = useTranslation(["nav", "admin"]);
   const { can } = useAuth();
   const [action, setAction] = useState("");
   const [userId, setUserId] = useState("");
@@ -76,15 +76,15 @@ export default function AuditAdmin() {
       <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
         <TextField
           size="small"
-          label="Action"
+          label={t("admin:aud_col_action")}
           placeholder="AUTH_LOGIN"
           value={action}
           onChange={(e) => setAction(e.target.value)}
           sx={{ minWidth: 200 }}
         />
         {can("staff.manage") && (
-          <TextField size="small" select label="User" value={userId} onChange={(e) => setUserId(e.target.value)} sx={{ minWidth: 200 }}>
-            <MenuItem value="">All users</MenuItem>
+          <TextField size="small" select label={t("admin:aud_col_user")} value={userId} onChange={(e) => setUserId(e.target.value)} sx={{ minWidth: 200 }}>
+            <MenuItem value="">{t("admin:aud_all_users")}</MenuItem>
             {users.map((u) => (
               <MenuItem key={u.id} value={u.id}>
                 {u.name} {u.username ? `(@${u.username})` : ""}
@@ -95,7 +95,7 @@ export default function AuditAdmin() {
         <TextField
           size="small"
           type="date"
-          label="From"
+          label={t("admin:fld_from")}
           value={from}
           onChange={(e) => setFrom(e.target.value)}
           slotProps={{ inputLabel: { shrink: true } }}
@@ -103,7 +103,7 @@ export default function AuditAdmin() {
         <TextField
           size="small"
           type="date"
-          label="To"
+          label={t("admin:fld_to")}
           value={to}
           onChange={(e) => setTo(e.target.value)}
           slotProps={{ inputLabel: { shrink: true } }}
@@ -114,11 +114,11 @@ export default function AuditAdmin() {
         <Table size="small">
           <TableHead>
             <TableRow>
-              <TableCell>When</TableCell>
-              <TableCell>User</TableCell>
-              <TableCell>Action</TableCell>
-              <TableCell>Entity</TableCell>
-              <TableCell>Reason</TableCell>
+              <TableCell>{t("admin:inv_col_when")}</TableCell>
+              <TableCell>{t("admin:aud_col_user")}</TableCell>
+              <TableCell>{t("admin:aud_col_action")}</TableCell>
+              <TableCell>{t("admin:aud_col_entity")}</TableCell>
+              <TableCell>{t("admin:col_reason")}</TableCell>
               <TableCell>IP</TableCell>
             </TableRow>
           </TableHead>
@@ -126,7 +126,7 @@ export default function AuditAdmin() {
             {(data?.logs ?? []).map((l) => (
               <TableRow key={l.id} hover sx={{ cursor: "pointer" }} onClick={() => setSelected(l)}>
                 <TableCell>{new Date(l.createdAt).toLocaleString()}</TableCell>
-                <TableCell>{l.user ? `${l.user.name} (${l.user.role})` : "system"}</TableCell>
+                <TableCell>{l.user ? `${l.user.name} (${l.user.role})` : t("admin:aud_system")}</TableCell>
                 <TableCell>
                   <Chip size="small" label={l.action} variant="outlined" />
                 </TableCell>
@@ -153,17 +153,17 @@ export default function AuditAdmin() {
             <Stack spacing={1.5}>
               <Typography variant="body2" color="text.secondary">
                 {new Date(selected.createdAt).toLocaleString()}
-                {selected.user ? ` · ${selected.user.name} (${selected.user.role})` : " · system"}
+                {selected.user ? ` · ${selected.user.name} (${selected.user.role})` : ` · ${t("admin:aud_system")}`}
                 {selected.ipAddress ? ` · ${selected.ipAddress}` : ""}
               </Typography>
               <Box>
                 <Typography variant="subtitle2">
-                  Entity: {selected.entityType ?? "—"} {selected.entityId ?? ""}
+                  {t("admin:aud_entity_line", { type: selected.entityType ?? "—", id: selected.entityId ?? "" })}
                 </Typography>
-                {selected.reason && <Typography variant="body2">Reason: {selected.reason}</Typography>}
+                {selected.reason && <Typography variant="body2">{t("admin:aud_reason_line", { reason: selected.reason })}</Typography>}
               </Box>
-              <JsonBlock title="Before" value={selected.before} />
-              <JsonBlock title="After" value={selected.after} />
+              <JsonBlock title={t("admin:aud_before")} value={selected.before} />
+              <JsonBlock title={t("admin:aud_after")} value={selected.after} />
             </Stack>
           )}
         </DialogContent>

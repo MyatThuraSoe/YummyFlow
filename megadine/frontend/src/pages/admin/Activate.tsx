@@ -36,21 +36,18 @@ interface LicenseStatus {
   daysLeft: number | null;
 }
 
-const REASON_MESSAGE: Record<string, string> = {
-  no_license: "No license installed. Paste your key to unlock.",
-  wrong_machine: "This key is bound to a different machine.",
-  expired: "This license has expired. Paste a renewed key.",
-  invalid: "The key did not verify. Check you pasted the full key.",
-};
+const REASON_IDS = ["no_license", "wrong_machine", "expired", "invalid"];
 
-const ERROR_MESSAGE: Record<string, string> = {
-  LICENSE_INVALID: REASON_MESSAGE.invalid,
-  LICENSE_EXPIRED: REASON_MESSAGE.expired,
-  LICENSE_MACHINE_MISMATCH: REASON_MESSAGE.wrong_machine,
+const ERROR_REASON: Record<string, string> = {
+  LICENSE_INVALID: "invalid",
+  LICENSE_EXPIRED: "expired",
+  LICENSE_MACHINE_MISMATCH: "wrong_machine",
 };
 
 export default function Activate() {
-  const { t } = useTranslation(["common", "nav"]);
+  const { t } = useTranslation(["common", "nav", "admin"]);
+  const reasonText = (reason: string | null) =>
+    t(`admin:act_reason_${reason && REASON_IDS.includes(reason) ? reason : "no_license"}`);
   const qc = useQueryClient();
   const [key, setKey] = useState("");
   const [copied, setCopied] = useState(false);
@@ -66,12 +63,13 @@ export default function Activate() {
   const activate = useMutation({
     mutationFn: () => apiPost<Envelope<LicenseStatus>>("/license/activate", { licenseKey: key.trim() }),
     onSuccess: () => {
-      setResult({ kind: "success", message: "Activated!" });
+      setResult({ kind: "success", message: t("admin:act_activated") });
       setKey("");
       qc.invalidateQueries({ queryKey: ["license"] });
     },
     onError: (e) => {
-      const msg = e instanceof ApiError && ERROR_MESSAGE[e.code] ? ERROR_MESSAGE[e.code] : e instanceof Error ? e.message : "Activation failed";
+      const reason = e instanceof ApiError ? ERROR_REASON[e.code] : undefined;
+      const msg = reason ? reasonText(reason) : e instanceof Error ? e.message : t("admin:act_failed");
       setResult({ kind: "error", message: msg });
     },
   });
@@ -100,14 +98,14 @@ export default function Activate() {
       <Typography variant="h5">{t("nav:license")}</Typography>
 
       {status.licensed ? (
-        <Alert severity="success">This installation is licensed. Edition: {status.edition}</Alert>
+        <Alert severity="success">{t("admin:act_licensed_banner", { edition: status.edition })}</Alert>
       ) : (
-        <Alert severity="warning">{REASON_MESSAGE[status.reason ?? "no_license"] ?? REASON_MESSAGE.no_license}</Alert>
+        <Alert severity="warning">{reasonText(status.reason)}</Alert>
       )}
 
       <Paper variant="outlined" sx={{ p: 2.5 }}>
         <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-          Your Machine ID
+          {t("admin:act_machine_id")}
         </Typography>
         <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
           <Box
@@ -133,7 +131,7 @@ export default function Activate() {
 
       <Paper variant="outlined" sx={{ p: 2.5 }}>
         <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-          License key
+          {t("admin:act_license_key")}
         </Typography>
         {result && (
           <Alert severity={result.kind} sx={{ mb: 2 }}>
@@ -144,7 +142,7 @@ export default function Activate() {
           multiline
           minRows={4}
           fullWidth
-          placeholder="Paste your license key here"
+          placeholder={t("admin:act_key_placeholder")}
           value={key}
           onChange={(e) => {
             setKey(e.target.value);
@@ -157,13 +155,13 @@ export default function Activate() {
           disabled={key.trim().length < 16 || activate.isPending}
           onClick={() => activate.mutate()}
         >
-          {activate.isPending ? <CircularProgress size={20} color="inherit" /> : "Activate"}
+          {activate.isPending ? <CircularProgress size={20} color="inherit" /> : t("admin:act_activate")}
         </Button>
       </Paper>
 
       <Paper variant="outlined" sx={{ p: 2.5 }}>
         <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-          Current plan
+          {t("admin:act_current_plan")}
         </Typography>
         <Stack direction="row" spacing={1} sx={{ alignItems: "baseline", mb: 1 }}>
           <Typography variant="h6" sx={{ fontSize: 20 }}>
@@ -171,23 +169,23 @@ export default function Activate() {
           </Typography>
           {status.expiresAt && (
             <Typography variant="body2" color="text.secondary">
-              expires {new Date(status.expiresAt).toLocaleDateString()}
-              {status.daysLeft !== null ? ` · ${status.daysLeft} days left` : ""}
+              {t("admin:act_expires", { date: new Date(status.expiresAt).toLocaleDateString() })}
+              {status.daysLeft !== null ? ` · ${t("admin:act_days_left", { num: status.daysLeft })}` : ""}
             </Typography>
           )}
         </Stack>
         <Table size="small">
           <TableHead>
             <TableRow>
-              <TableCell>Resource</TableCell>
-              <TableCell align="right">Used</TableCell>
-              <TableCell align="right">Limit</TableCell>
+              <TableCell>{t("admin:act_col_resource")}</TableCell>
+              <TableCell align="right">{t("admin:act_col_used")}</TableCell>
+              <TableCell align="right">{t("admin:act_col_limit")}</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            <UsageRow label="Terminals" used={status.usage.terminals} max={status.limits.maxTerminals} />
-            <UsageRow label="Tables" used={status.usage.tables} max={status.limits.maxTables} />
-            <UsageRow label="Menu items" used={status.usage.menuItems} max={status.limits.maxMenuItems} />
+            <UsageRow label={t("admin:act_terminals")} used={status.usage.terminals} max={status.limits.maxTerminals} />
+            <UsageRow label={t("admin:act_tables")} used={status.usage.tables} max={status.limits.maxTables} />
+            <UsageRow label={t("admin:act_menu_items")} used={status.usage.menuItems} max={status.limits.maxMenuItems} />
           </TableBody>
         </Table>
       </Paper>

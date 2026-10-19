@@ -56,7 +56,8 @@ const ROLE_COLOR: Record<string, "error" | "warning" | "info" | "success" | "def
 };
 
 export default function UsersAdmin() {
-  const { t } = useTranslation(["users", "common"]);
+  const { t } = useTranslation(["users", "common", "admin"]);
+  const roleLabel = (r: string) => t(`admin:role_${r.toLowerCase()}`, { defaultValue: r });
   const nav = useNavigate();
   const qc = useQueryClient();
   const [deleting, setDeleting] = useState<UserRow | null>(null);
@@ -122,7 +123,7 @@ export default function UsersAdmin() {
                   <TableCell>{u.name}</TableCell>
                   <TableCell>{u.phone ?? "—"}</TableCell>
                   <TableCell>
-                    <Chip size="small" label={u.role} color={ROLE_COLOR[u.role] ?? "default"} variant="outlined" />
+                    <Chip size="small" label={roleLabel(u.role)} color={ROLE_COLOR[u.role] ?? "default"} variant="outlined" />
                   </TableCell>
                   <TableCell>
                     <Chip
@@ -132,7 +133,7 @@ export default function UsersAdmin() {
                     />
                   </TableCell>
                   <TableCell align="right" onClick={(e) => e.stopPropagation()}>
-                    <IconButton size="small" onClick={() => nav(`/admin/users/${u.id}`)} aria-label="Edit">
+                    <IconButton size="small" onClick={() => nav(`/admin/users/${u.id}`)} aria-label={t("admin:tba_edit")}>
                       <EditIcon fontSize="small" />
                     </IconButton>
                     <IconButton
@@ -142,7 +143,7 @@ export default function UsersAdmin() {
                         setDeleteError("");
                         setDeleting(u);
                       }}
-                      aria-label="Delete"
+                       aria-label={t("users:delete")}
                     >
                       <DeleteIcon fontSize="small" />
                     </IconButton>
