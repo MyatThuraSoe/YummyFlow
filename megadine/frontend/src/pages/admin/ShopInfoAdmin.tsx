@@ -19,7 +19,7 @@ const CURRENCIES = ["USD", "MMK", "THB", "JPY", "EUR", "GBP", "SGD", "MYR"];
 
 export default function ShopInfoAdmin() {
   const qc = useQueryClient();
-  const { t } = useTranslation(["settings", "common"]);
+  const { t } = useTranslation(["settings", "common", "admin"]);
   const { data, isLoading } = useQuery({
     queryKey: ["settings"],
     queryFn: () => apiGet<{ restaurant: Restaurant }>("/admin/settings"),
@@ -90,11 +90,11 @@ export default function ShopInfoAdmin() {
       {error && <Alert severity="error">{error}</Alert>}
       <Paper variant="outlined" sx={{ p: 3 }}>
         <Stack spacing={2}>
-          <TextField label="Name" value={form.name} onChange={(e) => set("name")(e.target.value)} required fullWidth />
+          <TextField label={t("admin:col_name")} value={form.name} onChange={(e) => set("name")(e.target.value)} required fullWidth />
           <TextField label={t("settings:address")} value={form.address} onChange={(e) => set("address")(e.target.value)} fullWidth />
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
             <TextField label={t("settings:phone")} value={form.phone} onChange={(e) => set("phone")(e.target.value)} fullWidth />
-            <TextField label="Email" type="email" value={form.email} onChange={(e) => set("email")(e.target.value)} fullWidth />
+            <TextField label={t("admin:set_fld_email")} type="email" value={form.email} onChange={(e) => set("email")(e.target.value)} fullWidth />
           </Stack>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
             <TextField label={t("settings:tax_id")} value={form.taxId} onChange={(e) => set("taxId")(e.target.value)} fullWidth />
@@ -107,10 +107,10 @@ export default function ShopInfoAdmin() {
             </TextField>
           </Stack>
           <TextField
-            label="Logo URL"
+            label={t("admin:set_fld_logo_url")}
             value={form.logo}
             onChange={(e) => set("logo")(e.target.value)}
-            helperText="Paste a URL to a hosted logo image"
+            helperText={t("admin:set_logo_hint")}
             fullWidth
           />
           <Button variant="contained" disabled={save.isPending || !form.name} onClick={() => save.mutate()} sx={{ alignSelf: "flex-start" }}>

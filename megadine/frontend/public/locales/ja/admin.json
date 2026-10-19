@@ -268,5 +268,17 @@
   "stn_salad": "サラダ",
   "stn_bar": "バー",
   "stn_dessert": "デザート",
-  "stn_kitchen": "キッチン"
+  "stn_kitchen": "キッチン",
+  "hub_shop_desc": "店名、住所、電話、税務ID、ロゴ",
+  "hub_system_desc": "通貨、営業日の締め時刻、税、サービス料、現金差異の許容範囲",
+  "hub_receipt_desc": "WYSIWYGレシートエディタ: 識別情報、項目、レイアウト、QRコード、テスト印刷",
+  "hub_backup_desc": "データベースのバックアップ実行・エクスポート・復元",
+  "hub_license_desc": "マシンID、ライセンスキー、プラン使用状況",
+  "hub_language_desc": "インターフェース言語",
+  "hub_about_desc": "バージョン、エディション、LAN URL",
+  "set_fld_email": "メールアドレス",
+  "set_fld_logo_url": "ロゴURL",
+  "set_logo_hint": "ホストされているロゴ画像のURLを貼り付けてください",
+  "set_yes": "はい",
+  "set_no": "いいえ"
 }

@@ -19,7 +19,7 @@ const CURRENCIES = ["USD", "MMK", "THB", "JPY", "EUR", "GBP", "SGD", "MYR"];
 
 export default function SystemSettingsAdmin() {
   const qc = useQueryClient();
-  const { t } = useTranslation(["settings", "common"]);
+  const { t } = useTranslation(["settings", "common", "admin"]);
   const { data, isLoading } = useQuery({
     queryKey: ["settings"],
     queryFn: () => apiGet<{ restaurant: Restaurant }>("/admin/settings"),
@@ -90,7 +90,7 @@ export default function SystemSettingsAdmin() {
       {error && <Alert severity="error">{error}</Alert>}
       <Paper variant="outlined" sx={{ p: 3 }}>
         <Stack spacing={2}>
-          <TextField label="Name" value={form.name} onChange={(e) => set("name")(e.target.value)} fullWidth />
+          <TextField label={t("admin:col_name")} value={form.name} onChange={(e) => set("name")(e.target.value)} fullWidth />
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
             <TextField select label={t("settings:currency")} value={form.currency} onChange={(e) => set("currency")(e.target.value)} fullWidth>
               {[...new Set([form.currency, ...CURRENCIES])].map((c) => (
@@ -126,8 +126,8 @@ export default function SystemSettingsAdmin() {
               onChange={(e) => set("taxInclusive")(e.target.value === "yes")}
               sx={{ maxWidth: 280 }}
             >
-              <MenuItem value="yes">Yes</MenuItem>
-              <MenuItem value="no">No</MenuItem>
+              <MenuItem value="yes">{t("admin:set_yes")}</MenuItem>
+              <MenuItem value="no">{t("admin:set_no")}</MenuItem>
             </TextField>
           </Stack>
           <Button variant="contained" disabled={save.isPending} onClick={() => save.mutate()} sx={{ alignSelf: "flex-start" }}>

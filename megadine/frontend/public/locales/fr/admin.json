@@ -268,5 +268,17 @@
   "stn_salad": "Salade",
   "stn_bar": "Bar",
   "stn_dessert": "Dessert",
-  "stn_kitchen": "Cuisine"
+  "stn_kitchen": "Cuisine",
+  "hub_shop_desc": "Nom, adresse, téléphone, numéro fiscal et logo",
+  "hub_system_desc": "Devise, heure de clôture du jour d'exploitation, taxe, frais de service et tolérance d'écart de caisse",
+  "hub_receipt_desc": "Éditeur de reçus WYSIWYG : identité, champs, mise en page, QR code et test d'impression",
+  "hub_backup_desc": "Exécuter, exporter et restaurer les sauvegardes de la base de données",
+  "hub_license_desc": "ID machine, clé de licence et utilisation du forfait",
+  "hub_language_desc": "Langue de l'interface",
+  "hub_about_desc": "Version, édition et URL LAN",
+  "set_fld_email": "E-mail",
+  "set_fld_logo_url": "URL du logo",
+  "set_logo_hint": "Collez l'URL d'une image de logo hébergée",
+  "set_yes": "Oui",
+  "set_no": "Non"
 }

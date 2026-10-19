@@ -268,5 +268,17 @@
   "stn_salad": "Salad",
   "stn_bar": "Bar",
   "stn_dessert": "Dessert",
-  "stn_kitchen": "Kitchen"
+  "stn_kitchen": "Kitchen",
+  "hub_shop_desc": "Name, address, phone, tax ID and logo",
+  "hub_system_desc": "Currency, business day cutoff, tax, service charge and cash tolerance",
+  "hub_receipt_desc": "WYSIWYG receipt editor: identity, fields, layout, QR code and print test",
+  "hub_backup_desc": "Run, export and restore database backups",
+  "hub_license_desc": "Machine ID, license key and plan usage",
+  "hub_language_desc": "Interface language",
+  "hub_about_desc": "Version, edition and LAN URL",
+  "set_fld_email": "Email",
+  "set_fld_logo_url": "Logo URL",
+  "set_logo_hint": "Paste a URL to a hosted logo image",
+  "set_yes": "Yes",
+  "set_no": "No"
 }
