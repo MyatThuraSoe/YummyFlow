@@ -101,7 +101,7 @@ interface Envelope<T> {
   data: T;
 }
 
-const STATUSES = ["DRAFT", "SENT_TO_KITCHEN", "IN_PROGRESS", "READY", "COMPLETED", "CANCELLED"];
+const STATUSES = ["DRAFT", "SENT_TO_KITCHEN", "IN_PROGRESS", "READY", "SERVED", "COMPLETED", "CANCELLED"];
 const CHANNELS = ["DINE_IN", "TAKEAWAY", "PARCEL"];
 
 const STATUS_COLORS: Record<string, "default" | "info" | "warning" | "success" | "error"> = {
@@ -109,6 +109,7 @@ const STATUS_COLORS: Record<string, "default" | "info" | "warning" | "success" |
   SENT_TO_KITCHEN: "info",
   IN_PROGRESS: "warning",
   READY: "success",
+  SERVED: "info",
   COMPLETED: "success",
   CANCELLED: "error",
 };

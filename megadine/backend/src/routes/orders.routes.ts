@@ -13,7 +13,9 @@ import {
   applyDiscount,
   cancelOrder,
   createOrder,
+  markOrderServed,
   sendToKitchen,
+  setOrderPriority,
   voidOrderLine,
 } from "../services/order.service.js";
 import { receiptTextForOrder } from "../services/receipt.service.js";
@@ -95,7 +97,7 @@ ordersRouter.get(
     const orders = await prisma.order.findMany({
       where: {
         restaurantId: req.auth!.restaurantId,
-        status: { in: ["DRAFT", "SENT_TO_KITCHEN", "IN_PROGRESS", "READY"] },
+        status: { in: ["DRAFT", "SENT_TO_KITCHEN", "IN_PROGRESS", "READY", "SERVED"] },
         ...(tableId ? { tableId } : {}),
       },
       include: { lines: { include: { modifiers: true } }, payments: true, tableSession: { include: { table: true } } },
@@ -142,6 +144,31 @@ ordersRouter.post(
   asyncHandler(async (req, res) => {
     const result = await sendToKitchen(String(req.params.id), req.auth!.userId, req.auth!.role);
     res.json(result);
+  }),
+);
+
+ordersRouter.post(
+  "/:id/mark-served",
+  requirePermission("pos.use"),
+  asyncHandler(async (req, res) => {
+    const order = await markOrderServed(String(req.params.id), req.auth!.userId);
+    res.json({ order });
+  }),
+);
+
+const prioritySchema = z.object({
+  priority: z.enum(["NORMAL", "RUSH", "VIP", "CATERING"]),
+  managerPin: z.string().regex(/^\d{4,6}$/).optional(),
+});
+
+ordersRouter.patch(
+  "/:id/priority",
+  requirePermission("pos.use"),
+  validate({ body: prioritySchema }),
+  asyncHandler(async (req, res) => {
+    const { priority, managerPin } = req.body as z.infer<typeof prioritySchema>;
+    const order = await setOrderPriority(String(req.params.id), req.auth!.userId, req.auth!.role, priority, managerPin);
+    res.json({ order });
   }),
 );
 

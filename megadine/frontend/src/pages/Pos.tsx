@@ -21,7 +21,7 @@ interface Settings { restaurant: { currency: string; taxRate: string; taxInclusi
 interface ServerLine { id: string; menuItemId: string; itemNameSnapshot: string; variantSnapshot: string | null; unitPriceSnapshot: string; quantity: number; lineTotal: string; isVoided: boolean; notes: string | null; modifiers: { id: string; nameSnapshot: string; priceSnapshot: string }[] }
 interface OrderShape {
   id: string; orderNumber: number; total: string; subtotal: string; taxAmount: string; serviceCharge: string; discountAmount: string; amountPaid: string; paymentStatus: string;
-  status: string; channel: string; tableId: string | null; lines: ServerLine[];
+  status: string; priority?: string; channel: string; tableId: string | null; lines: ServerLine[];
   tableSession?: { table: { number: number; name: string | null } } | null;
 }
 
@@ -303,6 +303,18 @@ export default function Pos() {
     }
   }
 
+  async function markServed() {
+    if (!order) return;
+    try {
+      const res = await apiPost<{ order: OrderShape }>(`/orders/${order.id}/mark-served`);
+      setOrder(res.order);
+      push(t("ops:pos_served_toast"), "ok");
+      qc.invalidateQueries({ queryKey: ["tables"] });
+    } catch (e) {
+      push(e instanceof Error ? e.message : t("ops:failed"), "error");
+    }
+  }
+
   async function voidLine(lineId: string, reason: string, managerPin?: string) {
     const o = order!;
     await apiPost(`/orders/${o.id}/void-line`, { lineId, reason, managerPin });
@@ -389,6 +401,11 @@ export default function Pos() {
               <div className="row" style={{ padding: 12 }}>
                 <strong>{t("ops:order_number", { number: order.orderNumber })}</strong>
                 <div className="spacer" />
+                {order.priority && order.priority !== "NORMAL" && (
+                  <span className={`badge ${order.priority === "RUSH" ? "danger" : order.priority === "VIP" ? "warn" : "info"}`}>
+                    {t(`ops:priority_${order.priority.toLowerCase()}`)}
+                  </span>
+                )}
                 <span className={`badge ${order.status === "DRAFT" ? "muted" : "ok"}`}>{statusLabel(order.status)}</span>
               </div>
               {order.lines.filter((l) => !l.isVoided).map((l) => (
@@ -485,6 +502,9 @@ export default function Pos() {
           <div className="row" style={{ marginTop: 8, gap: 8 }}>
             <button className="btn" style={{ flex: 1 }} disabled={(!cart.lines.length && !order) || busy} onClick={holdOrder}>{t("ops:pos_hold")}</button>
             {order && <button className="btn" onClick={() => reprint(order.id)}>{t("ops:pos_reprint")}</button>}
+            {order?.status === "READY" && (
+              <button className="btn ok" onClick={markServed}>{t("ops:pos_mark_served")}</button>
+            )}
             {order && (
               <button className="btn ghost" onClick={() => { cart.reset(); setOrder(null); setNotes(""); setPickupName(""); }}>{t("ops:pos_new")}</button>
             )}

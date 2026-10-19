@@ -12,8 +12,11 @@ const NEXT: Record<KitchenItemStatus, KitchenItemStatus | null> = {
   CANCELLED: null,
 };
 
+/** Most urgent first; keeps the KDS queue sorted by priority then age. */
+const PRIORITY_RANK: Record<string, number> = { RUSH: 0, VIP: 1, CATERING: 2, NORMAL: 3 };
+
 export async function listTickets(restaurantId: string, opts: { station?: Station; active?: boolean }) {
-  return prisma.kitchenTicket.findMany({
+  const tickets = await prisma.kitchenTicket.findMany({
     where: {
       order: { restaurantId },
       ...(opts.station ? { station: opts.station } : {}),
@@ -21,9 +24,13 @@ export async function listTickets(restaurantId: string, opts: { station?: Statio
     },
     include: {
       lines: true,
-      order: { select: { orderNumber: true, channel: true, tableId: true, notes: true } },
+      order: { select: { orderNumber: true, channel: true, tableId: true, notes: true, priority: true } },
     },
     orderBy: { sentAt: "asc" },
+  });
+  return tickets.sort((a, b) => {
+    const rank = (PRIORITY_RANK[a.order.priority] ?? 9) - (PRIORITY_RANK[b.order.priority] ?? 9);
+    return rank !== 0 ? rank : a.sentAt.getTime() - b.sentAt.getTime();
   });
 }
 
@@ -55,15 +62,22 @@ export async function updateTicketStatus(
     include: { lines: true, order: true },
   });
 
-  // Roll the order status up once every ticket is ready / served.
+  // Roll the order status up once every ticket is ready / served. Never touch
+  // orders that are already closed or confirmed as served by the waiter, and
+  // never treat an all-cancelled line-up as "ready" (food was not served).
   const siblings = await prisma.kitchenTicket.findMany({ where: { orderId: ticket.orderId } });
-  const allReady = siblings.every((t) => t.status === "READY" || t.status === "SERVED" || t.status === "CANCELLED");
-  const allServed = siblings.every((t) => t.status === "SERVED" || t.status === "CANCELLED");
-  if (allServed) {
-    await prisma.order.update({ where: { id: ticket.orderId }, data: { status: "READY" } });
-  } else if (allReady) {
-    await prisma.order.update({ where: { id: ticket.orderId }, data: { status: "READY" } });
-  } else if (siblings.some((t) => t.status === "PREPARING")) {
+  const active = siblings.filter((t) => t.status !== "CANCELLED");
+  const rollable = ["DRAFT", "SENT_TO_KITCHEN", "IN_PROGRESS", "READY"].includes(ticket.order.status);
+  const allReady = active.length > 0 && active.every((t) => t.status === "READY" || t.status === "SERVED");
+  const allServed = active.length > 0 && active.every((t) => t.status === "SERVED");
+  if (allReady && rollable) {
+    await prisma.order.update({
+      where: { id: ticket.orderId },
+      data: allServed
+        ? { status: "SERVED", servedAt: now }
+        : { status: "READY" },
+    });
+  } else if (siblings.some((t) => t.status === "PREPARING") && rollable) {
     await prisma.order.update({ where: { id: ticket.orderId }, data: { status: "IN_PROGRESS" } });
   }
 

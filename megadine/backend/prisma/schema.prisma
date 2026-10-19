@@ -31,7 +31,22 @@ enum OrderStatus {
   SENT_TO_KITCHEN
   IN_PROGRESS
   READY
+  SERVED
   COMPLETED
+  CANCELLED
+}
+
+enum OrderPriority {
+  NORMAL
+  RUSH
+  VIP
+  CATERING
+}
+
+enum ReservationStatus {
+  CONFIRMED
+  SEATED
+  NO_SHOW
   CANCELLED
 }
 
@@ -119,6 +134,7 @@ model Restaurant {
   terminals      Terminal[]
   menuCategories MenuCategory[]
   tables         RestaurantTable[]
+  reservations   Reservation[]
   orders         Order[]
   ingredients    Ingredient[]
   expenses       Expense[]
@@ -334,6 +350,7 @@ model RestaurantTable {
   isActive     Boolean     @default(true)
 
   sessions     TableSession[]
+  reservations Reservation[]
 
   @@unique([restaurantId, number])
   @@index([restaurantId, status])
@@ -346,10 +363,39 @@ model TableSession {
   orderId   String?         @unique
   order     Order?          @relation(fields: [orderId], references: [id])
   openedAt  DateTime        @default(now())
+  seatedAt  DateTime?
+  servedAt  DateTime?
+  billRequestedAt DateTime?
+  clearedAt DateTime?
   closedAt  DateTime?
   status    String          @default("OPEN") // OPEN, CLOSED
 
   @@index([tableId, status])
+  @@index([tableId, seatedAt])
+}
+
+model Reservation {
+  id              String            @id @default(uuid())
+  restaurantId    String
+  restaurant      Restaurant        @relation(fields: [restaurantId], references: [id])
+  tableId         String
+  table           RestaurantTable   @relation(fields: [tableId], references: [id])
+
+  customerName    String
+  customerPhone   String?
+  partySize       Int
+  reservationTime DateTime
+  durationMinutes Int               @default(90)
+
+  status          ReservationStatus @default(CONFIRMED)
+  notes           String?
+  createdById     String?
+
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([restaurantId, reservationTime])
+  @@index([tableId, reservationTime])
 }
 
 // ═══════════════════════════════════════
@@ -363,6 +409,7 @@ model Order {
   orderNumber    Int
   channel        OrderChannel  @default(DINE_IN)
   status         OrderStatus   @default(DRAFT)
+  priority       OrderPriority @default(NORMAL)
   paymentStatus  PaymentStatus @default(PENDING)
 
   tableId        String? // denormalized for reporting; DINE_IN only
@@ -390,6 +437,8 @@ model Order {
   notes          String?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
+  servedAt       DateTime?
+  servedBy       String?
   completedAt    DateTime?
   cancelledAt    DateTime?
   cancelReason   String?

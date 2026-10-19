@@ -97,6 +97,12 @@ tablesRouter.patch(
       where: { id: String(req.params.id) },
       data: { ...data, version: { increment: 1 } },
     });
+    if (data.status === "NEEDS_BILL") {
+      await prisma.tableSession.updateMany({
+        where: { tableId: table.id, status: "OPEN" },
+        data: { billRequestedAt: new Date() },
+      });
+    }
     emitToWorkspace(EVENTS.TABLE_UPDATED, { tableId: table.id, status: table.status });
     res.json({ table });
   }),
@@ -116,6 +122,12 @@ tablesRouter.post(
       where: { id: String(req.params.id) },
       data: { status, version: { increment: 1 } },
     });
+    if (status === "NEEDS_BILL") {
+      await prisma.tableSession.updateMany({
+        where: { tableId: table.id, status: "OPEN" },
+        data: { billRequestedAt: new Date() },
+      });
+    }
     emitToWorkspace(EVENTS.TABLE_UPDATED, { tableId: table.id, status });
     res.json({ table });
   }),
@@ -138,7 +150,10 @@ tablesRouter.post(
       throw ApiError.conflict(`Table has an open order #${open.order.orderNumber}. Pay or cancel it first.`);
     }
     await prisma.$transaction([
-      prisma.tableSession.updateMany({ where: { tableId: table.id, status: "OPEN" }, data: { status: "CLOSED", closedAt: new Date() } }),
+      prisma.tableSession.updateMany({
+        where: { tableId: table.id, status: "OPEN" },
+        data: { status: "CLOSED", closedAt: new Date(), clearedAt: new Date() },
+      }),
       prisma.restaurantTable.update({ where: { id: table.id }, data: { status: "AVAILABLE", version: { increment: 1 } } }),
     ]);
     await audit({ restaurantId: req.auth!.restaurantId, userId: req.auth!.userId, action: "TABLE_CLEARED", entityType: "RestaurantTable", entityId: table.id });

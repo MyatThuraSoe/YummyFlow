@@ -14,6 +14,7 @@ export const EVENTS = {
   KITCHEN_NEW: "kitchen:new",
   KITCHEN_UPDATED: "kitchen:updated",
   TABLE_UPDATED: "table:updated",
+  RESERVATION_UPDATED: "reservation:updated",
   MENU_ITEM_86: "menu:item86",
   SHIFT_UPDATED: "shift:updated",
   INVENTORY_LOW: "inventory:low",

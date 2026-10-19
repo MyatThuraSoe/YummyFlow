@@ -776,6 +776,170 @@ async function main() {
     await api("/receipts/config", { method: "PUT", token: admin.token, body: { showTax: true } });
     ok("receipt config reset for repeat runs");
 
+    // ── Phase 1 roadmap: SERVED lifecycle, kitchen priority, reservations ──
+    const menuNow = await api<{ categories: { items: { id: string }[] }[] }>("/menu", { token: cashier.token });
+    const anyItemId = menuNow.data.categories.flatMap((c) => c.items)[0].id;
+    const tablesNow = await api<{ tables: { id: string; number: number; status: string }[] }>("/tables", { token: cashier.token });
+    const availTable = tablesNow.data.tables.find((t) => t.status === "AVAILABLE");
+
+    const servedOrder = await api<{ order: { id: string; total: string; status: string; priority: string } }>("/orders", {
+      method: "POST",
+      token: cashier.token,
+      body: {
+        channel: availTable ? "DINE_IN" : "TAKEAWAY",
+        tableId: availTable?.id ?? null,
+        items: [{ menuItemId: anyItemId, quantity: 1 }],
+      },
+    });
+    assert.equal(servedOrder.status, 201, JSON.stringify(servedOrder.data));
+    assert.equal(servedOrder.data.order.priority, "NORMAL");
+    const servedId = servedOrder.data.order.id;
+
+    const tooEarly = await api(`/orders/${servedId}/mark-served`, { method: "POST", token: cashier.token });
+    assert.equal(tooEarly.status, 409, "serving an order that is not READY must be rejected");
+
+    await api(`/orders/${servedId}/send-to-kitchen`, { method: "POST", token: cashier.token });
+    const ticketList = await api<{ tickets: { id: string; orderId: string }[] }>("/kitchen/tickets", { token: admin.token });
+    const myTickets = ticketList.data.tickets.filter((t) => t.orderId === servedId);
+    assert.ok(myTickets.length >= 1, "expected kitchen tickets for the served-flow order");
+    for (const tk of myTickets) {
+      await api(`/kitchen/tickets/${tk.id}/status`, { method: "POST", token: admin.token, body: { status: "PREPARING" } });
+      await api(`/kitchen/tickets/${tk.id}/status`, { method: "POST", token: admin.token, body: { status: "READY" } });
+    }
+    const readyOrder = await api<{ order: { status: string } }>(`/orders/${servedId}`, { token: cashier.token });
+    assert.equal(readyOrder.data.order.status, "READY");
+
+    const servedRes = await api<{ order: { status: string; servedAt: string | null; servedBy: string | null; lines: unknown[] } }>(
+      `/orders/${servedId}/mark-served`,
+      { method: "POST", token: cashier.token },
+    );
+    assert.equal(servedRes.status, 200, JSON.stringify(servedRes.data));
+    assert.equal(servedRes.data.order.status, "SERVED");
+    assert.ok(servedRes.data.order.servedAt);
+    assert.ok(servedRes.data.order.servedBy);
+    assert.ok(Array.isArray(servedRes.data.order.lines) && servedRes.data.order.lines.length > 0, "mark-served must return the hydrated order");
+    const servedAgain = await api(`/orders/${servedId}/mark-served`, { method: "POST", token: cashier.token });
+    assert.equal(servedAgain.status, 200, "mark-served must be idempotent");
+    const openNow = await api<{ orders: { id: string }[] }>("/orders/open", { token: cashier.token });
+    assert.ok(openNow.data.orders.some((o) => o.id === servedId), "SERVED order must stay recallable from the open list");
+    if (availTable) {
+      const session = await prisma.tableSession.findFirst({ where: { tableId: availTable.id, status: "OPEN" } });
+      assert.ok(session?.servedAt, "dining session must record servedAt for turnover metrics");
+    }
+    ok("SERVED lifecycle: gated on READY, sets servedAt/servedBy, stays recallable");
+
+    const prRush = await api<{ order: { priority: string } }>(`/orders/${servedId}/priority`, {
+      method: "PATCH",
+      token: admin.token,
+      body: { priority: "RUSH" },
+    });
+    assert.equal(prRush.status, 200, JSON.stringify(prRush.data));
+    assert.equal(prRush.data.order.priority, "RUSH");
+    const prNoPin = await api(`/orders/${servedId}/priority`, { method: "PATCH", token: cashier.token, body: { priority: "VIP" } });
+    assert.equal(prNoPin.status, 400, "cashier escalation without a manager PIN must be rejected");
+    const prPin = await api<{ order: { priority: string } }>(`/orders/${servedId}/priority`, {
+      method: "PATCH",
+      token: cashier.token,
+      body: { priority: "VIP", managerPin: PIN_OWNER },
+    });
+    assert.equal(prPin.status, 200, JSON.stringify(prPin.data));
+    assert.equal(prPin.data.order.priority, "VIP");
+    await api(`/orders/${servedId}/priority`, { method: "PATCH", token: cashier.token, body: { priority: "NORMAL" } });
+    ok("kitchen priority: manager-PIN gated for cashiers and persists RUSH/VIP");
+
+    // Cancelling every kitchen ticket must NOT mark the order ready/served:
+    // a fully cancelled line-up means no food was cooked (regression guard).
+    const cancelledFlow = await api<{ order: { id: string; total: string } }>("/orders", {
+      method: "POST",
+      token: cashier.token,
+      body: { channel: "TAKEAWAY", items: [{ menuItemId: anyItemId, quantity: 1 }] },
+    });
+    assert.equal(cancelledFlow.status, 201, JSON.stringify(cancelledFlow.data));
+    const cancelledId = cancelledFlow.data.order.id;
+    await api(`/orders/${cancelledId}/send-to-kitchen`, { method: "POST", token: cashier.token });
+    const cancelTickets = await api<{ tickets: { id: string; orderId: string }[] }>("/kitchen/tickets", { token: admin.token });
+    for (const tk of cancelTickets.data.tickets.filter((t) => t.orderId === cancelledId)) {
+      await api(`/kitchen/tickets/${tk.id}/status`, { method: "POST", token: admin.token, body: { status: "CANCELLED", reason: "verify cancel rollup" } });
+    }
+    const stillOpen = await api<{ order: { status: string } }>(`/orders/${cancelledId}`, { token: cashier.token });
+    assert.equal(stillOpen.data.order.status, "SENT_TO_KITCHEN", "all tickets cancelled must not roll the order to READY/SERVED");
+    await api(`/orders/${cancelledId}/cancel`, { method: "POST", token: admin.token, body: { reason: "cleanup after verify" } });
+    ok("cancelling all kitchen tickets leaves the order unserved");
+
+    // Settle the SERVED order (covers paying after service) and free the table.
+    if (availTable) {
+      const payServed = await api("/payments", {
+        method: "POST",
+        token: cashier.token,
+        body: {
+          orderId: servedId,
+          shiftId: null,
+          idempotencyKey: `served-flow-${servedId}`,
+          payments: [{ method: "CASH", amount: Number(servedOrder.data.order.total) }],
+        },
+      });
+      assert.equal(payServed.status, 201, JSON.stringify(payServed.data));
+      await api(`/tables/${availTable.id}/clear`, { method: "POST", token: admin.token });
+    } else {
+      await api(`/orders/${servedId}/cancel`, { method: "POST", token: admin.token, body: { reason: "cleanup after verify" } });
+    }
+
+    const tablesAfterPay = await api<{ tables: { id: string; number: number; status: string }[] }>("/tables", { token: admin.token });
+    const resTable =
+      tablesAfterPay.data.tables.find((t) => t.id === availTable?.id && t.status === "AVAILABLE") ??
+      tablesAfterPay.data.tables.find((t) => t.status === "AVAILABLE");
+    assert.ok(resTable, "expected an available table for the reservation flow");
+    const resStart = new Date(Date.now() + 2 * 60 * 60 * 1000);
+    const resEnd = new Date(resStart.getTime() + 3 * 60 * 60 * 1000);
+    const newRes = await api<{ reservation: { id: string; status: string } }>("/reservations", {
+      method: "POST",
+      token: admin.token,
+      body: { tableId: resTable.id, customerName: "Verify Guest", partySize: 4, reservationTime: resStart.toISOString() },
+    });
+    assert.equal(newRes.status, 201, JSON.stringify(newRes.data));
+    assert.equal(newRes.data.reservation.status, "CONFIRMED");
+    const resList = await api<{ reservations: { id: string }[] }>(
+      `/reservations?from=${encodeURIComponent(new Date().toISOString())}&to=${encodeURIComponent(resEnd.toISOString())}&tableId=${resTable.id}`,
+      { token: admin.token },
+    );
+    assert.ok(resList.data.reservations.some((r) => r.id === newRes.data.reservation.id));
+    const clash = await api("/reservations", {
+      method: "POST",
+      token: admin.token,
+      body: {
+        tableId: resTable.id,
+        customerName: "Clash Guest",
+        partySize: 2,
+        reservationTime: new Date(resStart.getTime() + 30 * 60 * 1000).toISOString(),
+      },
+    });
+    assert.equal(clash.status, 409, "overlapping reservation on the same table must be rejected");
+    const seatRes = await api(`/reservations/${newRes.data.reservation.id}/seat`, { method: "POST", token: admin.token });
+    assert.equal(seatRes.status, 200, JSON.stringify(seatRes.data));
+    const seatedTable = await prisma.restaurantTable.findUnique({ where: { id: resTable.id } });
+    assert.equal(seatedTable?.status, "OCCUPIED");
+    const seatSession = await prisma.tableSession.findFirst({ where: { tableId: resTable.id, status: "OPEN" } });
+    assert.ok(seatSession?.seatedAt, "seating a reservation must stamp the session seatedAt");
+    const reseat = await api(`/reservations/${newRes.data.reservation.id}/seat`, { method: "POST", token: admin.token });
+    assert.equal(reseat.status, 409, "re-seating a SEATED reservation must be rejected");
+    await api(`/tables/${resTable.id}/clear`, { method: "POST", token: admin.token });
+    const noShowRes = await api<{ reservation: { id: string } }>("/reservations", {
+      method: "POST",
+      token: admin.token,
+      body: {
+        tableId: resTable.id,
+        customerName: "NoShow Guest",
+        partySize: 2,
+        reservationTime: new Date(resStart.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+      },
+    });
+    const noShow = await api(`/reservations/${noShowRes.data.reservation.id}/no-show`, { method: "POST", token: admin.token });
+    assert.equal(noShow.status, 200, JSON.stringify(noShow.data));
+    await prisma.reservation.deleteMany({
+      where: { restaurantId: restaurant.id, customerName: { in: ["Verify Guest", "Clash Guest", "NoShow Guest"] } },
+    });
+    ok("reservations create/conflict/list/seat with table + session timestamps");
+
     console.log(`\n\u2705 MegaDine Basic extended verification passed: ${passed} checks\n`);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
