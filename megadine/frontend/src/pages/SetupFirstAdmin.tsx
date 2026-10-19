@@ -68,7 +68,7 @@ export default function SetupFirstAdmin() {
         alignItems: "center",
         justifyContent: "center",
         bgcolor: "background.default",
-        backgroundImage: "radial-gradient(rgba(22,163,74,.16) 1px, transparent 1px)",
+        backgroundImage: "radial-gradient(rgba(111,78,55,.18) 1px, transparent 1px)",
         backgroundSize: "18px 18px",
         p: 2,
       }}
