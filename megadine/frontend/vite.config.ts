@@ -29,9 +29,19 @@ export default defineConfig({
             options: { cacheName: "menu-cache", networkTimeoutSeconds: 2 },
           },
           {
-            urlPattern: ({ url }) => url.pathname.startsWith("/api/v1/tables"),
+            urlPattern: ({ url }) => url.pathname.startsWith("/api/v1/shifts/current"),
             handler: "NetworkFirst",
-            options: { cacheName: "tables-cache", networkTimeoutSeconds: 2 },
+            options: { cacheName: "shift-cache", networkTimeoutSeconds: 2 },
+          },
+          {
+            urlPattern: ({ url }) => url.pathname.startsWith("/api/v1/admin/settings"),
+            handler: "NetworkFirst",
+            options: { cacheName: "settings-cache", networkTimeoutSeconds: 2 },
+          },
+          {
+            urlPattern: ({ url }) => url.pathname.startsWith("/api/v1/orders/open"),
+            handler: "NetworkFirst",
+            options: { cacheName: "open-orders-cache", networkTimeoutSeconds: 2 },
           },
         ],
       },
