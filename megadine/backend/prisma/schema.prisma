@@ -536,6 +536,8 @@ model Refund {
   amount     Decimal  @db.Decimal(12, 2)
   reason     String
   approvedBy String?
+  actorId    String?
+  shiftId    String?
   restockItems Boolean @default(false)
   // Line-level refund snapshot: [{ lineId, quantity, amountCents }]
   refundedLines Json?

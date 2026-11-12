@@ -75,6 +75,7 @@ export function decodeLicense(licenseKey: string): MegaDineLicense {
   const { signature, ...payload } = decoded;
   if (!signature) throw new Error("LICENSE_INVALID");
   const publicKey = publicKeyFromEnv();
+  if (!publicKey) throw new Error("LICENSE_INVALID");
   if (publicKey) {
     const ok = crypto.verify(
       "RSA-SHA256",

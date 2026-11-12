@@ -387,6 +387,15 @@ export async function closeBusinessDay(
   });
   if (existing) throw ApiError.conflict("Business day already closed");
 
+  const openOrders = await prisma.order.count({
+    where: { restaurantId, businessDate: day, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+  });
+  if (openOrders > 0) throw ApiError.conflict(`Cannot close business day: ${openOrders} open order(s) remain`);
+  const openShifts = await prisma.cashShift.count({
+    where: { restaurantId, businessDate: day, status: "OPEN" },
+  });
+  if (openShifts > 0) throw ApiError.conflict(`Cannot close business day: ${openShifts} open shift(s) remain`);
+
   const report = await zReport(restaurantId, businessDate);
   const expectedCash = report.cash.expectedCash;
   const variance = actualCash - expectedCash;

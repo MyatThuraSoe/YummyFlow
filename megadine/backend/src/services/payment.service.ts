@@ -340,6 +340,8 @@ export async function refundOrder(input: RefundInput) {
           amount: fromCents(amt),
           reason: input.reason,
           approvedBy: manager.id,
+          actorId: input.actorId,
+          shiftId: p.shiftId ?? null,
           restockItems: input.restock ?? false,
           // The per-line breakdown is stored once; totals aggregate fine.
           refundedLines: firstRow && lineSnapshot ? (lineSnapshot as unknown as Prisma.InputJsonValue) : undefined,

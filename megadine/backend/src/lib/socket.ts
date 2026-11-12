@@ -14,6 +14,7 @@ export const EVENTS = {
   KITCHEN_NEW: "kitchen:new",
   KITCHEN_UPDATED: "kitchen:updated",
   KITCHEN_OVERDUE: "kitchen:overdue",
+  KITCHEN_CANCELLED: "kitchen:cancelled",
   ORDER_ALL_READY: "order:all-ready",
   TABLE_UPDATED: "table:updated",
   RESERVATION_UPDATED: "reservation:updated",

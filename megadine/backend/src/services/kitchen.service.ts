@@ -2,6 +2,7 @@ import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
 import { audit } from "../lib/audit.js";
 import { EVENTS, emitToRole, emitToWorkspace } from "../lib/socket.js";
+import { recalcOrder } from "./order.service.js";
 import { consumeForOrder } from "./inventory.service.js";
 import type { KitchenItemStatus, Station } from "@prisma/client";
 
@@ -41,9 +42,13 @@ export async function updateTicketStatus(
   actorId: string,
   reason?: string,
 ) {
-  const ticket = await prisma.kitchenTicket.findUnique({ where: { id: ticketId }, include: { order: true } });
+  const ticket = await prisma.kitchenTicket.findUnique({ where: { id: ticketId }, include: { order: true, lines: true } });
   if (!ticket) throw ApiError.notFound("Ticket not found");
   if (ticket.isCancelled) throw ApiError.conflict("Ticket is cancelled");
+
+  if (status === "CANCELLED") {
+    if (!reason || reason.trim().length < 2) throw ApiError.badRequest("A reason is required to cancel a kitchen ticket");
+  }
 
   const allowed = status === "CANCELLED" || NEXT[ticket.status] === status || ticket.status === status;
   if (!allowed) throw ApiError.conflict(`Invalid transition ${ticket.status} -> ${status}`);
@@ -63,7 +68,25 @@ export async function updateTicketStatus(
     include: { lines: true, order: true },
   });
 
-  // Roll the order status up once every ticket is ready / served. Never touch
+  // Cancelling a kitchen ticket voids the billable lines it carried so the
+  // customer is not charged for food that will not be served (F-15).
+  if (status === "CANCELLED") {
+    const lineIds = ticket.lines.map((l) => l.orderLineId).filter(Boolean);
+    if (lineIds.length) {
+      await prisma.orderLine.updateMany({
+        where: { id: { in: lineIds }, isVoided: false },
+        data: { isVoided: true, voidReason: reason ?? null },
+      });
+      await recalcOrder(ticket.orderId);
+    }
+    emitToRole("WAITER", EVENTS.KITCHEN_CANCELLED, {
+      orderId: ticket.orderId,
+      orderNumber: ticket.order.orderNumber,
+      ticketId,
+      reason: reason ?? null,
+    });
+    emitToWorkspace(EVENTS.ORDER_UPDATED, { id: ticket.orderId });
+  }
   // orders that are already closed or confirmed as served by the waiter, and
   // never treat an all-cancelled line-up as "ready" (food was not served).
   const siblings = await prisma.kitchenTicket.findMany({ where: { orderId: ticket.orderId } });

@@ -15,12 +15,14 @@
 import "./_hermetic-env.js";
 import http from "node:http";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { createApp } from "../src/app.js";
 import { initSocket } from "../src/lib/socket.js";
 import { prisma } from "../src/lib/prisma.js";
 import { businessDateFor } from "../src/lib/businessDay.js";
 import { getMachineId } from "../src/lib/machine.js";
 import { setRuntimeLicenseKey } from "../src/lib/license.js";
+import { TEST_LICENSE_PRIVATE_KEY } from "./_hermetic-env.js";
 
 const PORT = 4598;
 const BASE = `http://127.0.0.1:${PORT}/api/v1`;
@@ -606,22 +608,24 @@ async function main() {
     assert.equal(garbage.data.error.code, "LICENSE_INVALID");
     ok("activation rejects a malformed key (LICENSE_INVALID)");
 
-    const synth = (over: Record<string, unknown>) =>
-      Buffer.from(
-        JSON.stringify({
-          restaurantName: "Verify",
-          edition: "PROFESSIONAL",
-          maxTerminals: 5,
-          maxTables: 50,
-          maxMenuItems: 200,
-          features: ["pos"],
-          issuedAt: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
-          hardwareFingerprint: getMachineId(),
-          signature: "verify-script",
-          ...over,
-        }),
-      ).toString("base64");
+    const synth = (over: Record<string, unknown>) => {
+      const payload = {
+        restaurantName: "Verify",
+        edition: "PROFESSIONAL",
+        maxTerminals: 5,
+        maxTables: 50,
+        maxMenuItems: 200,
+        features: ["pos"],
+        issuedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+        hardwareFingerprint: getMachineId(),
+        ...over,
+      };
+      const signature = crypto
+        .sign("RSA-SHA256", Buffer.from(JSON.stringify(payload)), TEST_LICENSE_PRIVATE_KEY)
+        .toString("base64");
+      return Buffer.from(JSON.stringify({ ...payload, signature })).toString("base64");
+    };
 
     const wrongMachine = await api<{ error: { code: string } }>("/license/activate", { method: "POST", token: ownerToken, body: { licenseKey: synth({ hardwareFingerprint: "not-this-machine" }) } });
     assert.equal(wrongMachine.status, 400);
