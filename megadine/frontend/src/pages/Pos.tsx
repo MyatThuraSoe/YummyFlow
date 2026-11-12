@@ -565,7 +565,14 @@ export default function Pos() {
                     <span className="mono" style={{ minWidth: 24, textAlign: "center" }}>{l.quantity}</span>
                     <button className="qty-btn" onClick={() => cart.incQty(l.key)}>+</button>
                     <div className="spacer" />
-                    <button className="btn ghost small" onClick={() => cart.removeLine(l.key)}>{t("ops:remove")}</button>
+                    <button className="btn ghost small" onClick={() => {
+                      const removed = l;
+                      cart.removeLine(l.key);
+                      push(t("ops:pos_removed_line", { defaultValue: "Removed" }), "info", {
+                        label: t("ops:pos_undo", { defaultValue: "Undo" }),
+                        onClick: () => cart.addLine(removed),
+                      });
+                    }}>{t("ops:remove")}</button>
                   </div>
                 </div>
               ))}

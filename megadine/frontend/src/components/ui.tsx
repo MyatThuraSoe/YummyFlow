@@ -1,8 +1,8 @@
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
 
 // ── Toasts ──────────────────────────────────────────────
-interface Toast { id: number; message: string; kind: "ok" | "error" | "info"; }
-interface ToastCtx { push: (message: string, kind?: Toast["kind"]) => void; }
+interface Toast { id: number; message: string; kind: "ok" | "error" | "info"; action?: { label: string; onClick: () => void } }
+interface ToastCtx { push: (message: string, kind?: Toast["kind"], action?: Toast["action"]) => void; }
 const ToastContext = createContext<ToastCtx>({ push: () => {} });
 
 export function useToast() {
@@ -11,10 +11,10 @@ export function useToast() {
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const push = useCallback((message: string, kind: Toast["kind"] = "info") => {
+  const push = useCallback((message: string, kind: Toast["kind"] = "info", action?: Toast["action"]) => {
     const id = Date.now() + Math.random();
-    setToasts((t) => [...t, { id, message, kind }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3500);
+    setToasts((t) => [...t, { id, message, kind, action }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 5000);
   }, []);
   return (
     <ToastContext.Provider value={{ push }}>
@@ -23,6 +23,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         {toasts.map((t) => (
           <div key={t.id} className={`toast-item ${t.kind}`}>
             {t.message}
+            {t.action && (
+              <button className="btn ghost small" style={{ marginLeft: 12 }} onClick={() => { t.action!.onClick(); setToasts((xs) => xs.filter((x) => x.id !== t.id)); }}>
+                {t.action.label}
+              </button>
+            )}
           </div>
         ))}
       </div>
