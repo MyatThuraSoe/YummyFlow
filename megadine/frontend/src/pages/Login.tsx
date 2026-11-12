@@ -67,7 +67,15 @@ export default function Login() {
   const { loginPin, loginCredentials } = useAuth();
   const nav = useNavigate();
   const { t } = useTranslation(["auth", "common", "errors", "admin"]);
-  const [tab, setTab] = useState<"password" | "pin">("password");
+  const [tab, setTab] = useState<"password" | "pin">(() => {
+    try {
+      const pref = localStorage.getItem("md_login_default");
+      if (pref === "pin" || pref === "password") return pref;
+    } catch { /* ignore */ }
+    // Floor/POS/KDS devices are usually touch tablets: default to staff tiles.
+    if (typeof navigator !== "undefined" && /Mobi|Android|iPad|iPhone/i.test(navigator.userAgent)) return "pin";
+    return "password";
+  });
   const [handle, setHandle] = useState("");
   const [password, setPassword] = useState("");
   const [selectedStaffId, setSelectedStaffId] = useState<string | null>(null);

@@ -35,6 +35,11 @@ export default function Dashboard() {
   const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: () => apiGet<Settings>("/admin/settings") });
   const { data: alertsData } = useQuery({ queryKey: ["admin-alerts"], queryFn: () => apiGet<{ alerts: AlertItem[] }>("/reports/alerts"), refetchInterval: 30000 });
   const { data: trendData } = useQuery({ queryKey: ["trend", 7], queryFn: () => apiGet<{ days: TrendDay[] }>("/reports/trend", { days: "7" }), refetchInterval: 60000 });
+  const { data: menuData } = useQuery({ queryKey: ["menu"], queryFn: () => apiGet<{ categories: { items: unknown[] }[] }>("/menu"), staleTime: 60_000 });
+  const { data: tablesData } = useQuery({ queryKey: ["tables"], queryFn: () => apiGet<{ tables: unknown[] }>("/tables"), staleTime: 60_000 });
+  const menuCount = (menuData?.categories ?? []).reduce((s, c) => s + (c.items?.length ?? 0), 0);
+  const tableCount = tablesData?.tables?.length ?? 0;
+  const showChecklist = menuCount === 0 || tableCount === 0;
   const currency = settings?.restaurant?.currency ?? "USD";
   const r = daily?.report;
   const alerts = alertsData?.alerts ?? [];
@@ -77,6 +82,15 @@ export default function Dashboard() {
 
   return (
     <div>
+      {showChecklist && (
+        <div className="card" style={{ marginBottom: 16, border: "1px solid var(--warn)" }}>
+          <h3 style={{ marginTop: 0 }}>{t("admin:first_run_title", { defaultValue: "First-run checklist" })}</h3>
+          <ul style={{ margin: 0, paddingLeft: 20 }}>
+            {menuCount === 0 && <li><button className="btn link" onClick={() => nav("/admin/menu")}>{t("admin:first_run_add_menu", { defaultValue: "Add menu items" })}</button></li>}
+            {tableCount === 0 && <li><button className="btn link" onClick={() => nav("/admin/tables")}>{t("admin:first_run_add_tables", { defaultValue: "Add tables" })}</button></li>}
+          </ul>
+        </div>
+      )}
       {alerts.length > 0 && (
         <div className="alerts-banner">
           <span className="alerts-icon">⚠</span>
