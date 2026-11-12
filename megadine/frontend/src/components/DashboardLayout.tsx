@@ -71,7 +71,17 @@ import { useTranslation } from "react-i18next";
 
 const WIDTH_EXPANDED = 240;
 const WIDTH_COLLAPSED = 68;
-const IDLE_MS = 5 * 60 * 1000;
+const IDLE_MS_BY_ROLE: Record<string, number> = {
+  KITCHEN: 0, // never auto-lock
+  CASHIER: 2 * 60 * 1000,
+  MANAGER: 10 * 60 * 1000,
+  WAITER: 5 * 60 * 1000,
+};
+function idleMsFor(role?: string | null): number {
+  if (!role) return 5 * 60 * 1000;
+  if (role === "KITCHEN") return 0;
+  return IDLE_MS_BY_ROLE[role] ?? 5 * 60 * 1000;
+}
 
 interface NavItem {
   to: string;
@@ -319,7 +329,8 @@ export default function DashboardLayout() {
   useEffect(() => {
     const reset = () => {
       if (idleRef.current) window.clearTimeout(idleRef.current);
-      idleRef.current = window.setTimeout(() => setLocked(true), IDLE_MS);
+      const ms = idleMsFor(user?.role);
+      if (ms > 0) idleRef.current = window.setTimeout(() => setLocked(true), ms);
     };
     const events = ["mousemove", "mousedown", "keydown", "touchstart", "scroll"];
     if (!locked) {
@@ -330,7 +341,7 @@ export default function DashboardLayout() {
       events.forEach((e) => window.removeEventListener(e, reset));
       if (idleRef.current) window.clearTimeout(idleRef.current);
     };
-  }, [locked]);
+  }, [locked, user?.role]);
 
   function toggleCollapsed() {
     setCollapsed((c) => {
