@@ -43,6 +43,7 @@ export default function Kds() {
   const [station, setStation] = useState(() => localStorage.getItem("kds_station") ?? "ALL");
   const [merge, setMerge] = useState(() => localStorage.getItem("kds_merge") === "1");
   const [show86, setShow86] = useState(false);
+  const [dark, setDark] = useState(() => localStorage.getItem("kds_dark") === "1");
   const [cancelTarget, setCancelTarget] = useState<Ticket | null>(null);
   const [priorityTarget, setPriorityTarget] = useState<Ticket | null>(null);
   const { data } = useQuery({
@@ -56,8 +57,8 @@ export default function Kds() {
   }, [station]);
 
   useEffect(() => {
-    localStorage.setItem("kds_merge", merge ? "1" : "0");
-  }, [merge]);
+    localStorage.setItem("kds_dark", dark ? "1" : "0");
+  }, [dark]);
 
   const statusMut = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => apiPost(`/kitchen/tickets/${id}/status`, { status }),
@@ -89,7 +90,7 @@ export default function Kds() {
   };
 
   return (
-    <div>
+    <div className={dark ? "kds-dark" : ""}>
       <div className="row wrap" style={{ marginBottom: 14 }}>
         {STATIONS.map((s) => (
           <button key={s} className={`cat-tab ${station === s ? "active" : ""}`} onClick={() => setStation(s)}>
@@ -100,6 +101,7 @@ export default function Kds() {
         <button className={`btn ${merge ? "primary" : ""}`} onClick={() => setMerge((m) => !m)}>
           🧩 {t("ops:kds_merge")}
         </button>
+        <button className="btn" onClick={() => setDark((d) => !d)}>{dark ? "☀" : "🌙"}</button>
         <button className="btn" onClick={() => setShow86(true)}>{t("ops:kds_86_btn")}</button>
       </div>
 
