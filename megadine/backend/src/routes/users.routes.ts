@@ -14,6 +14,7 @@ import { ADMIN_GUARD_ROLES, assertNotLastAdmin, assertNotSelfDeactivate, release
 import { SUPPORTED_LANGUAGES } from "../lib/env.js";
 import { startOfDay } from "../lib/businessDay.js";
 import { fromCents, toCents } from "../lib/money.js";
+import { disconnectUser } from "../lib/socket.js";
 import type { Role } from "@prisma/client";
 
 export const usersRouter = Router();
@@ -230,6 +231,7 @@ usersRouter.put(
       after: { role: user.role, isActive: user.isActive },
       ipAddress: clientIp(req),
     });
+    if (b.isActive === false) disconnectUser(id);
     ok(res, { user: toUserResponse(user) }, "User updated");
   }),
 );
@@ -264,6 +266,7 @@ usersRouter.delete(
       // Force logout everywhere.
       prisma.session.deleteMany({ where: { userId: target.id } }),
     ]);
+    disconnectUser(target.id);
     await audit({
       restaurantId: req.auth!.restaurantId,
       userId: req.auth!.userId,

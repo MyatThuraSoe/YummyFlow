@@ -38,6 +38,8 @@ export function startScheduler() {
           const rec = await runBackup({ kind: "AUTOMATIC", actorId: "system" });
           console.log(`[backup] nightly backup ${rec.status} -> ${rec.file ?? rec.note}`);
           await pruneBackups();
+          // Reset sold-out flags at the start of a new business day (F-29).
+          await prisma.menuItem.updateMany({ data: { isAvailable: true } });
         } catch (err) {
           console.error("[backup] nightly backup failed", err);
         }

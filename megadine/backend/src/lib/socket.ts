@@ -99,6 +99,14 @@ export function emitToRole(role: Role, event: string, payload: unknown) {
   io?.to(roleRoom(role)).emit(event, payload);
 }
 
+export function disconnectUser(userId: string): void {
+  const io = getIO();
+  if (!io) return;
+  for (const [, socket] of io.sockets.sockets) {
+    if (socket.data?.userId === userId) socket.disconnect(true);
+  }
+}
+
 export function getIO(): IOServer | null {
   return io;
 }
