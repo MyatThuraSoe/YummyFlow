@@ -125,6 +125,7 @@ model Restaurant {
   taxId             String?
   logo              String? // data URL or path
   cashVarianceTolerance Decimal @db.Decimal(12, 2) @default(10.00)
+  cashRoundingStep      Int     @default(0) // round cash totals to nearest N minor units (0 = none)
   licenseKey        String?
   trialExpiresAt    DateTime?
   createdAt         DateTime @default(now())

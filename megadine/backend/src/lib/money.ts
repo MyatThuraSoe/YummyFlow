@@ -11,10 +11,22 @@ export function toCents(value: number | string | { toString(): string }): number
   return Math.round(n * 100);
 }
 
-export function fromCents(cents: number): string {
+const CURRENCY_DECIMALS: Record<string, number> = {
+  MMK: 0, KHR: 0, JPY: 0, VND: 0,
+  USD: 2, THB: 2, CNY: 2, EUR: 2, GBP: 2,
+};
+
+export function currencyDecimals(currency = "USD"): number {
+  return CURRENCY_DECIMALS[currency.toUpperCase()] ?? 2;
+}
+
+export function fromCents(cents: number, decimals = 2): string {
   const sign = cents < 0 ? "-" : "";
   const abs = Math.abs(Math.round(cents));
-  return `${sign}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, "0")}`;
+  const factor = Math.pow(10, decimals);
+  const whole = Math.floor(abs / factor);
+  const frac = abs % factor;
+  return `${sign}${whole}.${String(frac).padStart(decimals, "0")}`;
 }
 
 export function round2(value: number): number {
@@ -25,9 +37,14 @@ export function round2(value: number): number {
 export function applyRate(cents: number, rate: number): number {
   return Math.round(cents * rate);
 }
+export function roundCash(cents: number, step: number): number {
+  if (!step || step <= 0) return cents;
+  return Math.round(cents / step) * step;
+}
 
 export function formatMoney(cents: number, currency = "USD"): string {
-  const symbols: Record<string, string> = { USD: "$", THB: "฿", MMK: "K", CNY: "¥" };
-  const sym = symbols[currency] ?? "";
-  return `${sym}${fromCents(cents)}`;
+  const decimals = currencyDecimals(currency);
+  const symbols: Record<string, string> = { USD: "$", THB: "฿", MMK: "K", CNY: "¥", EUR: "€", GBP: "£", JPY: "¥" };
+  const sym = symbols[currency.toUpperCase()] ?? "";
+  return `${sym}${fromCents(cents, decimals)}`;
 }

@@ -1,0 +1,1 @@
+ALTER TABLE "Restaurant" ADD COLUMN "cashRoundingStep" INTEGER NOT NULL DEFAULT 0;
