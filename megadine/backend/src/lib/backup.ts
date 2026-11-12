@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, readdir, stat, rm, writeFile, copyFile } from "node:fs/promises";
-import { createReadStream } from "node:fs";
+import { mkdir, readdir, stat, rm, copyFile } from "node:fs/promises";
 import path from "node:path";
 import { prisma } from "./prisma.js";
 import { env } from "./env.js";
@@ -14,51 +13,53 @@ function stamp(): string {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
-function run(cmd: string, args: string[], input?: NodeJS.ReadableStream): Promise<{ code: number; stdout: Buffer; stderr: string }> {
+function run(cmd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn(cmd, args);
-    const out: Buffer[] = [];
+    let out = "";
     let err = "";
-    child.stdout.on("data", (d: Buffer) => out.push(d));
+    child.stdout.on("data", (d: Buffer) => (out += d.toString()));
     child.stderr.on("data", (d: Buffer) => (err += d.toString()));
-    child.on("error", () => resolve({ code: 1, stdout: Buffer.concat([]), stderr: "spawn failed" }));
-    child.on("close", (code) => resolve({ code: code ?? 1, stdout: Buffer.concat(out), stderr: err }));
-    if (input) input.pipe(child.stdin);
+    child.on("error", (e) => resolve({ code: 1, stdout: out, stderr: `${err}${e.message}` }));
+    child.on("close", (code) => resolve({ code: code ?? 1, stdout: out, stderr: err }));
   });
 }
 
-/** Prefer a real pg_dump; fall back to a JSON snapshot if Docker/pg_dump absent. */
-async function produceDump(): Promise<{ file: string; size: number; engine: string }> {
+function databaseUrl(): string {
+  if (!env.DATABASE_URL) throw new Error("DATABASE_URL is not configured");
+  return env.DATABASE_URL;
+}
+
+/**
+ * Produce a real, restorable plain-SQL dump with the postgresql client tools
+ * talking straight to DATABASE_URL. No Docker socket, no JSON fallback: if
+ * pg_dump fails the caller records a FAILED backup instead of a fake success.
+ */
+async function produceDump(prefix = "megadine"): Promise<{ file: string; size: number }> {
   await mkdir(backupDir(), { recursive: true });
-  const name = `megadine-${stamp()}`;
+  const file = path.join(backupDir(), `${prefix}-${stamp()}.sql`);
 
-  const pg = await run("docker", ["exec", "megadine_db", "pg_dump", "-U", "megadine", "-d", "megadine_pos", "--no-owner"]);
-  if (pg.code === 0 && pg.stdout.length > 0) {
-    const file = path.join(backupDir(), `${name}.sql`);
-    await writeFile(file, pg.stdout);
-    return { file, size: pg.stdout.length, engine: "pg_dump" };
+  const result = await run("pg_dump", [
+    "--dbname",
+    databaseUrl(),
+    "--no-owner",
+    "--no-privileges",
+    "--clean",
+    "--if-exists",
+    "--format=plain",
+    "--file",
+    file,
+  ]);
+  if (result.code !== 0) {
+    await rm(file, { force: true }).catch(() => {});
+    throw new Error(`pg_dump failed: ${(result.stderr || "unknown error").slice(0, 400)}`);
   }
-
-  // Fallback: portable JSON snapshot of the core tables.
-  const data = {
-    generatedAt: new Date().toISOString(),
-    restaurant: await prisma.restaurant.findMany(),
-    users: await prisma.user.findMany({ select: { id: true, name: true, email: true, role: true, isActive: true } }),
-    menuCategories: await prisma.menuCategory.findMany(),
-    menuItems: await prisma.menuItem.findMany(),
-    ingredients: await prisma.ingredient.findMany(),
-    recipeLines: await prisma.recipeLine.findMany(),
-    orders: await prisma.order.findMany(),
-    orderLines: await prisma.orderLine.findMany(),
-    payments: await prisma.payment.findMany(),
-    cashShifts: await prisma.cashShift.findMany(),
-    expenses: await prisma.expense.findMany(),
-    auditLogs: await prisma.auditLog.findMany({ take: 10000, orderBy: { createdAt: "desc" } }),
-  };
-  const buf = Buffer.from(JSON.stringify(data, null, 2));
-  const file = path.join(backupDir(), `${name}.json`);
-  await writeFile(file, buf);
-  return { file, size: buf.length, engine: "json" };
+  const st = await stat(file).catch(() => null);
+  if (!st || st.size === 0) {
+    await rm(file, { force: true }).catch(() => {});
+    throw new Error("pg_dump produced an empty file");
+  }
+  return { file, size: st.size };
 }
 
 export async function runBackup(opts: { restaurantId?: string; kind: "AUTOMATIC" | "MANUAL" | "USB"; actorId: string }) {
@@ -69,17 +70,16 @@ export async function runBackup(opts: { restaurantId?: string; kind: "AUTOMATIC"
 
   try {
     const dump = await produceDump();
-    const rec = await prisma.backupRun.create({
+    return await prisma.backupRun.create({
       data: {
         restaurantId: restaurant.id,
         kind: opts.kind,
         status: "SUCCESS",
         file: dump.file,
         sizeBytes: dump.size,
-        note: `engine=${dump.engine}`,
+        note: "engine=pg_dump",
       },
     });
-    return rec;
   } catch (err) {
     return prisma.backupRun.create({
       data: {
@@ -122,11 +122,10 @@ export async function backupStatus() {
 }
 
 export async function usbExportAvailable(): Promise<boolean> {
-  // Detect a removable drive (USB) to offer "export to USB".
+  // A USB export target is only "available" when a directory has been mounted.
+  if (!env.USB_EXPORT_DIR) return false;
   try {
-    const drives = process.platform === "win32" ? [] : [];
-    void drives;
-    const dir = await stat(backupDir());
+    const dir = await stat(env.USB_EXPORT_DIR);
     return dir.isDirectory();
   } catch {
     return false;
@@ -144,7 +143,9 @@ export async function listBackupFiles(): Promise<{ name: string; size: number; m
         return st && st.isFile() ? { name, size: st.size, modifiedAt: st.mtime } : null;
       }),
     );
-    return out.filter((f): f is { name: string; size: number; modifiedAt: Date } => f !== null).sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime());
+    return out
+      .filter((f): f is { name: string; size: number; modifiedAt: Date } => f !== null)
+      .sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime());
   } catch {
     return [];
   }
@@ -160,33 +161,41 @@ export function resolveBackupFile(name: string): string {
   return resolved;
 }
 
-/** Export the most recent backup to a configured USB mount (or just re-run a USB backup). */
+/** Export the most recent backup to the configured USB mount. */
 export async function exportToUsb(opts: { restaurantId: string; actorId: string; fileName?: string }) {
   const rec = await runBackup({ restaurantId: opts.restaurantId, kind: "USB", actorId: opts.actorId });
   if (rec.status !== "SUCCESS" || !rec.file) return rec;
 
   const target = env.USB_EXPORT_DIR;
-  if (target) {
-    await mkdir(target, { recursive: true });
-    const dest = path.join(target, path.basename(rec.file));
-    await copyFile(rec.file, dest);
-    await prisma.backupRun.update({ where: { id: rec.id }, data: { note: `exported to ${dest}` } });
-  }
-  return rec;
+  if (!target) throw ApiError.badRequest("USB_EXPORT_DIR is not configured");
+  await mkdir(target, { recursive: true });
+  const dest = path.join(target, path.basename(rec.file));
+  await copyFile(rec.file, dest);
+  return prisma.backupRun.update({ where: { id: rec.id }, data: { note: `exported to ${dest}` } });
 }
 
-/** Restore the database from a pg_dump .sql backup (runs psql inside the db container). */
+/**
+ * Restore the database from a pg_dump .sql backup. A fresh dump is taken first
+ * so a mistaken restore can itself be undone. The restore runs in a single
+ * transaction; any SQL error rolls the whole thing back.
+ */
 export async function restoreFromSql(name: string, actorId: string) {
   const file = resolveBackupFile(name);
   const st = await stat(file).catch(() => null);
   if (!st || !st.isFile()) throw ApiError.notFound("Backup file not found");
   if (!name.endsWith(".sql")) throw ApiError.badRequest("Only .sql pg_dump backups can be restored automatically");
 
-  const result = await run(
-    "docker",
-    ["exec", "-i", "megadine_db", "psql", "-U", "megadine", "-d", "megadine_pos", "-v", "ON_ERROR_STOP=1"],
-    createReadStream(file),
-  );
+  const pre = await produceDump("pre-restore").catch(() => null);
+
+  const result = await run("psql", [
+    "--dbname",
+    databaseUrl(),
+    "--set",
+    "ON_ERROR_STOP=1",
+    "--single-transaction",
+    "--file",
+    file,
+  ]);
   const ok = result.code === 0;
   await prisma.backupRun.create({
     data: {
@@ -198,5 +207,5 @@ export async function restoreFromSql(name: string, actorId: string) {
     },
   });
   if (!ok) throw new ApiError(500, "RESTORE_FAILED", `Restore failed: ${result.stderr.slice(0, 400)}`);
-  return { restored: name, bytes: st.size };
+  return { restored: name, bytes: st.size, preRestoreBackup: pre?.file ?? null };
 }

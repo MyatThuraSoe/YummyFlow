@@ -85,7 +85,7 @@ async function main() {
     assert.equal(admin.role, "ADMIN");
     ok("PIN login resolves the ADMIN role");
 
-    const forbidden = await api("/admin/users", { token: cashier.token });
+    const forbidden = await api("/users", { token: cashier.token });
     assert.equal(forbidden.status, 403, "cashier must not read the staff list");
     ok("RBAC rejects unauthorized access with 403");
 

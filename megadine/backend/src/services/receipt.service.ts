@@ -180,6 +180,7 @@ async function dataForOrder(order: ReceiptOrder, config: ReceiptConfigShape, rep
     orderNumber: order.orderNumber,
     tableName: order.tableSession?.table ? `#${order.tableSession.table.number}` : null,
     createdAt: order.createdAt,
+    timeZone: restaurant.timezone,
     cashierName: order.cashier?.name ?? null,
     channel: order.channel,
     lines: order.lines
@@ -236,6 +237,7 @@ export interface SampleRestaurant {
   address: string | null;
   phone: string | null;
   logo: string | null;
+  timezone: string | null;
 }
 
 /** Fixed example items so operators can evaluate layout before saving. */
@@ -283,6 +285,7 @@ export async function buildSampleReceiptData(
     orderNumber: 1001,
     tableName: "#7",
     createdAt: new Date(),
+    timeZone: restaurant.timezone,
     cashierName: "Demo Cashier",
     channel: "DINE_IN",
     lines,

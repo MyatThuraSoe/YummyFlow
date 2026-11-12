@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { applyRate, fromCents, round2, toCents } from "../src/lib/money.js";
 import { computeOrderTotals, lineTotalCents, toDb } from "../src/lib/calculations.js";
-import { addDays, businessDateFor, endOfDay, isSameDay, startOfDay } from "../src/lib/businessDay.js";
+import { addDays, businessDateFor, dateKey, endOfDay, isSameDay, setBusinessTimezone, startOfDay } from "../src/lib/businessDay.js";
 import { assertWithinLimit, getFeatures, getLimits } from "../src/lib/license.js";
 import { expectedCash, varianceExceedsTolerance } from "../src/lib/cashVariance.js";
 import { releaseUnique } from "../src/lib/userGuards.js";
@@ -88,30 +88,51 @@ test("toDb formats cents back to fixed-precision strings", () => {
 });
 
 // ── business day ────────────────────────────────────────
+// Business dates are date-only values stored at UTC midnight, computed in the
+// restaurant's own zone (Asia/Yangon = UTC+6:30, no DST).
+const YANGON = "Asia/Yangon";
+
 test("sales after midnight but before cutoff belong to the previous business day", () => {
-  const late = new Date(2026, 5, 11, 2, 30); // 11 Jun 02:30
-  const bd = businessDateFor(late, "04:00");
-  assert.equal(bd.getDate(), 10);
-  assert.equal(bd.getHours(), 0);
+  const late = new Date(Date.UTC(2026, 5, 10, 20, 0)); // 11 Jun 02:30 in Yangon
+  const bd = businessDateFor(late, "04:00", YANGON);
+  assert.equal(bd.getUTCDate(), 10);
+  assert.equal(bd.getUTCHours(), 0);
 });
 
 test("sales after cutoff belong to the current business day", () => {
-  const day = new Date(2026, 5, 11, 12, 0);
-  const bd = businessDateFor(day, "04:00");
-  assert.equal(bd.getDate(), 11);
+  const day = new Date(Date.UTC(2026, 5, 11, 5, 30)); // 11 Jun 12:00 in Yangon
+  const bd = businessDateFor(day, "04:00", YANGON);
+  assert.equal(bd.getUTCDate(), 11);
 });
 
 test("exactly at cutoff rolls to the new business day", () => {
-  const at = new Date(2026, 5, 11, 4, 0);
-  assert.equal(businessDateFor(at, "04:00").getDate(), 11);
+  const at = new Date(Date.UTC(2026, 5, 10, 21, 30)); // 11 Jun 04:00 in Yangon
+  assert.equal(businessDateFor(at, "04:00", YANGON).getUTCDate(), 11);
 });
 
-test("startOfDay/endOfDay/isSameDay/addDays behave as expected", () => {
-  const d = new Date(2026, 0, 15, 13, 45, 30);
-  assert.equal(startOfDay(d).getHours(), 0);
-  assert.equal(endOfDay(d).getHours(), 23);
+test("the server's own time zone never changes a business date", () => {
+  // 10 Jun 18:00 UTC is already 11 Jun 00:30 in Yangon: the date comes from the
+  // restaurant zone, not from wherever the container clock is set.
+  const instant = new Date(Date.UTC(2026, 5, 10, 18, 0));
+  assert.equal(dateKey(businessDateFor(instant, "04:00", YANGON)), "2026-06-10");
+  assert.equal(dateKey(businessDateFor(instant, "04:00", "UTC")), "2026-06-10");
+  assert.equal(dateKey(businessDateFor(new Date(Date.UTC(2026, 5, 11, 2, 0)), "04:00", "UTC")), "2026-06-10");
+});
+
+test("startOfDay/endOfDay/isSameDay/addDays use UTC date-only semantics", () => {
+  const d = new Date(Date.UTC(2026, 0, 15, 13, 45, 30));
+  assert.equal(startOfDay(d).getUTCHours(), 0);
+  assert.equal(endOfDay(d).getUTCHours(), 23);
   assert.ok(isSameDay(startOfDay(d), d));
-  assert.equal(addDays(d, 1).getDate(), 16);
+  assert.equal(addDays(d, 1).getUTCDate(), 16);
+  assert.equal(dateKey(addDays(d, 1)), "2026-01-16");
+});
+
+test("setBusinessTimezone changes the default zone", () => {
+  setBusinessTimezone("UTC");
+  const instant = new Date(Date.UTC(2026, 5, 10, 2, 30));
+  assert.equal(dateKey(businessDateFor(instant, "04:00")), "2026-06-09");
+  setBusinessTimezone(null);
 });
 
 // ── plan limits ─────────────────────────────────────────

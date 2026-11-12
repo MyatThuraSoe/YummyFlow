@@ -716,6 +716,8 @@ async function main() {
     assert.equal(close3.data.varianceExceedsTolerance, false);
 
     // ── Receipt customization (spec: receipt config, preview, per-order) ──
+    // Reset the fields this block mutates so the script is repeatable.
+    await api("/receipts/config", { method: "PUT", token: admin.token, body: { showTax: true, paperWidth: 80, fontSize: "medium" } });
     const rc = await api<{ success: boolean; data: { config: { paperWidth: number; showTax: boolean; fontSize: string } } }>("/receipts/config", { token: cashier.token });
     assert.equal(rc.status, 200);
     assert.equal(rc.data.data.config.paperWidth, 80);
@@ -743,10 +745,10 @@ async function main() {
 
     const prevOff = await api<{ data: { html: string } }>("/receipts/preview", { method: "POST", token: admin.token, body: { showTax: false } });
     assert.equal(prevOff.status, 200);
-    assert.ok(!prevOff.data.data.html.includes("Tax"), "preview override should remove the tax line");
+    assert.ok(!prevOff.data.data.html.includes(">Tax<"), "preview override should remove the tax line");
     const prevOn = await api<{ data: { html: string } }>("/receipts/preview", { method: "POST", token: admin.token, body: { showTax: true, alignment: "center" } });
     assert.equal(prevOn.status, 200);
-    assert.ok(prevOn.data.data.html.includes("Tax"));
+    assert.ok(prevOn.data.data.html.includes(">Tax<"));
     assert.ok(prevOn.data.data.html.includes('class="r-center"'));
     ok("receipt preview reflects unsaved overrides");
 

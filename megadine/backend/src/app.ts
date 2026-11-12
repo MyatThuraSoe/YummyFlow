@@ -26,6 +26,10 @@ import { receiptsRouter } from "./routes/receipts.routes.js";
 export function createApp() {
   const app = express();
 
+  // Behind nginx (compose sets TRUST_PROXY=1) req.ip must be the client, not
+  // the proxy, or every terminal shares one rate-limit bucket.
+  if (env.TRUST_PROXY > 0) app.set("trust proxy", env.TRUST_PROXY);
+
   app.use(helmet({ crossOriginResourcePolicy: false }));
   app.use(
     cors({

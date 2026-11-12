@@ -246,5 +246,11 @@
   "floor_timeline_no_order": "เซสชันวอล์กอิน",
   "floor_timeline_open": "เปิดอยู่",
   "floor_timeline_closed": "ปิดแล้ว",
-  "floor_timeline_items": "{{count}} รายการ"
+  "floor_timeline_items": "{{count}} รายการ",
+  "pos_last_sent": "ส่งแล้ว {{time}}",
+  "pos_outbox_failed": "ส่งไม่สำเร็จ {{count}} รายการ",
+  "orders_outbox": "รายการที่ส่งไม่สำเร็จ",
+  "outbox_empty": "ไม่มีรายการที่ส่งไม่สำเร็จ",
+  "outbox_retry": "ลองใหม่",
+  "outbox_dismiss": "ปิด"
 }

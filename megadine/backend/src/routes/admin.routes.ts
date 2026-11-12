@@ -1,105 +1,23 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { ApiError, asyncHandler } from "../lib/errors.js";
+import { asyncHandler } from "../lib/errors.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/requirePermission.js";
 import { validate } from "../middleware/validate.js";
 import { audit } from "../lib/audit.js";
-import { hashPin, isValidPinFormat } from "../lib/auth.js";
 import { backupStatus, exportToUsb, listBackupFiles, listBackups, restoreFromSql, runBackup } from "../lib/backup.js";
 import { sendToPrinter } from "../lib/printers.js";
 import { env } from "../lib/env.js";
 import { toCents } from "../lib/money.js";
 import { assertWithinLimit, limitUsage } from "../lib/license.js";
+import { isValidTimeZone, setBusinessTimezone } from "../lib/businessDay.js";
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth);
 
-// ── Staff ───────────────────────────────────────────────
-adminRouter.get(
-  "/users",
-  requirePermission("staff.manage"),
-  asyncHandler(async (req, res) => {
-    const users = await prisma.user.findMany({
-      where: { restaurantId: req.auth!.restaurantId },
-      select: { id: true, name: true, email: true, role: true, isActive: true, lastLoginAt: true, createdAt: true },
-      orderBy: { name: "asc" },
-    });
-    res.json({ users });
-  }),
-);
-
-const userSchema = z.object({
-  name: z.string().min(1),
-  email: z.string().email().nullable().optional(),
-  role: z.enum(["OWNER", "ADMIN", "CASHIER", "WAITER", "KITCHEN"]),
-  pin: z.string().regex(/^\d{4,6}$/).optional(),
-  password: z.string().min(6).optional(),
-});
-
-adminRouter.post(
-  "/users",
-  requirePermission("staff.manage"),
-  validate({ body: userSchema }),
-  asyncHandler(async (req, res) => {
-    const b = req.body as z.infer<typeof userSchema>;
-    if (b.pin && !isValidPinFormat(b.pin)) throw ApiError.badRequest("PIN must be 4-6 digits");
-    const user = await prisma.user.create({
-      data: {
-        restaurantId: req.auth!.restaurantId,
-        name: b.name,
-        email: b.email ?? null,
-        role: b.role,
-        pinHash: b.pin ? await hashPin(b.pin) : null,
-      },
-      select: { id: true, name: true, email: true, role: true, isActive: true },
-    });
-    await audit({ restaurantId: req.auth!.restaurantId, userId: req.auth!.userId, action: "STAFF_CREATED", entityType: "User", entityId: user.id, after: { role: b.role } });
-    res.status(201).json({ user });
-  }),
-);
-
-const userPatchSchema = z.object({
-  name: z.string().min(1).optional(),
-  email: z.string().email().nullable().optional(),
-  role: z.enum(["OWNER", "ADMIN", "CASHIER", "WAITER", "KITCHEN"]).optional(),
-  isActive: z.boolean().optional(),
-  password: z.string().min(6).optional(),
-});
-
-adminRouter.patch(
-  "/users/:id",
-  requirePermission("staff.manage"),
-  validate({ body: userPatchSchema }),
-  asyncHandler(async (req, res) => {
-    const b = req.body as z.infer<typeof userPatchSchema>;
-    const user = await prisma.user.update({
-      where: { id: String(req.params.id) },
-      data: {
-        ...(b.name !== undefined ? { name: b.name } : {}),
-        ...(b.email !== undefined ? { email: b.email } : {}),
-        ...(b.role !== undefined ? { role: b.role } : {}),
-        ...(b.isActive !== undefined ? { isActive: b.isActive } : {}),
-      },
-      select: { id: true, name: true, email: true, role: true, isActive: true },
-    });
-    await audit({ restaurantId: req.auth!.restaurantId, userId: req.auth!.userId, action: "STAFF_UPDATED", entityType: "User", entityId: user.id });
-    res.json({ user });
-  }),
-);
-
-adminRouter.post(
-  "/users/:id/reset-pin",
-  requirePermission("staff.manage"),
-  validate({ body: z.object({ pin: z.string().regex(/^\d{4,6}$/) }) }),
-  asyncHandler(async (req, res) => {
-    const { pin } = req.body as { pin: string };
-    await prisma.user.update({ where: { id: String(req.params.id) }, data: { pinHash: await hashPin(pin) } });
-    await audit({ restaurantId: req.auth!.restaurantId, userId: req.auth!.userId, action: "STAFF_PIN_RESET", entityType: "User", entityId: String(req.params.id) });
-    res.json({ ok: true });
-  }),
-);
+// Staff accounts are managed by /users (single source of truth). The old
+// /admin/users aliases were removed so a role change cannot bypass the guards.
 
 // ── Audit log ───────────────────────────────────────────
 adminRouter.get(
@@ -142,6 +60,7 @@ const settingsSchema = z.object({
   name: z.string().min(1).optional(),
   currency: z.string().min(1).max(8).optional(),
   businessDayCutoff: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  timezone: z.string().min(1).max(60).refine((v) => isValidTimeZone(v), "Unknown time zone").optional(),
   taxRate: z.number().min(0).max(1).optional(),
   taxInclusive: z.boolean().optional(),
   serviceChargePct: z.number().min(0).max(1).optional(),
@@ -167,6 +86,7 @@ adminRouter.patch(
         ...(b.name !== undefined ? { name: b.name } : {}),
         ...(b.currency !== undefined ? { currency: b.currency } : {}),
         ...(b.businessDayCutoff !== undefined ? { businessDayCutoff: b.businessDayCutoff } : {}),
+        ...(b.timezone !== undefined ? { timezone: b.timezone } : {}),
         ...(b.taxRate !== undefined ? { taxRate: b.taxRate.toFixed(4) } : {}),
         ...(b.taxInclusive !== undefined ? { taxInclusive: b.taxInclusive } : {}),
         ...(b.serviceChargePct !== undefined ? { serviceChargePct: b.serviceChargePct.toFixed(4) } : {}),
@@ -181,6 +101,7 @@ adminRouter.patch(
       },
     });
     await audit({ restaurantId: req.auth!.restaurantId, userId: req.auth!.userId, action: "SETTINGS_UPDATED", entityType: "Restaurant", entityId: restaurant.id, after: b });
+    if (b.timezone !== undefined) setBusinessTimezone(restaurant.timezone);
     res.json({ restaurant });
   }),
 );

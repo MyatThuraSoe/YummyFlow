@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -6,7 +6,7 @@ import { apiGet, apiPost, apiPut } from "../lib/api";
 import { useCart, type CartLine } from "../store/cart";
 import { useAuth } from "../store/auth";
 import { computeTotals, formatMoney, fromCents, toCents } from "../lib/format";
-import { enqueueOrder, pendingCount, shouldQueue } from "../lib/outbox";
+import { dismissFailure, enqueueOrder, failedCount, failedOrders, pendingCount, retryFailure, shouldQueue } from "../lib/outbox";
 import { printOrderReceipt } from "../lib/receipts";
 import { Field, Modal, useToast } from "../components/ui";
 
@@ -44,13 +44,37 @@ export default function Pos() {
   const [splitPay, setSplitPay] = useState<{ id: string; name: string; total: number } | null>(null);
   const [order, setOrder] = useState<OrderShape | null>(null);
   const [voidTarget, setVoidTarget] = useState<ServerLine | null>(null);
-  const [busy] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [queued, setQueued] = useState(pendingCount());
+  const [failed, setFailed] = useState(failedCount());
+  const [lastSentAt, setLastSentAt] = useState<Date | null>(null);
+  // Stable idempotency ids: if a response is lost, the retry returns the same
+  // order/line batch instead of creating a duplicate.
+  const createKeyRef = useRef(crypto.randomUUID());
+  const itemsKeyRef = useRef(crypto.randomUUID());
   const [notes, setNotes] = useState("");
   const [pickupName, setPickupName] = useState("");
   const [receipt, setReceipt] = useState<{ orderId: string; orderNumber: number; preview: string; changeGiven: string | null } | null>(null);
   const [search, setSearch] = useState("");
   const [cartCollapsed, setCartCollapsed] = useState(() => localStorage.getItem("pos_cart_collapsed") === "1");
+
+  useEffect(() => {
+    const update = () => {
+      setQueued(pendingCount());
+      setFailed(failedCount());
+    };
+    window.addEventListener("md:outbox", update);
+    return () => window.removeEventListener("md:outbox", update);
+  }, []);
+
+  // A new sale gets fresh idempotency ids; recalling an open order keeps them.
+  useEffect(() => {
+    if (!order) {
+      createKeyRef.current = crypto.randomUUID();
+      itemsKeyRef.current = crypto.randomUUID();
+      setLastSentAt(null);
+    }
+  }, [order]);
 
   const { data: menu } = useQuery({ queryKey: ["menu"], queryFn: () => apiGet<{ categories: Category[] }>("/menu") });
   const { data: tables } = useQuery({ queryKey: ["tables"], queryFn: () => apiGet<{ tables: TableRow[] }>("/tables") });
@@ -174,6 +198,7 @@ export default function Pos() {
       items: cartToItems(),
       notes: notes || null,
       pickupName: cart.channel === "DINE_IN" ? null : pickupName || null,
+      idempotencyKey: createKeyRef.current,
     };
   }
 
@@ -190,8 +215,9 @@ export default function Pos() {
   /** Append not-yet-submitted cart lines to the server order (round 2+). */
   async function pushPendingItems(o: OrderShape): Promise<OrderShape> {
     if (!cart.lines.length) return o;
-    await apiPost(`/orders/${o.id}/items`, { items: cartToItems() });
+    await apiPost(`/orders/${o.id}/items`, { items: cartToItems(), requestId: itemsKeyRef.current });
     cart.clearLines();
+    itemsKeyRef.current = crypto.randomUUID();
     const fresh = await apiGet<{ order: OrderShape }>(`/orders/${o.id}`);
     setOrder(fresh.order);
     return fresh.order;
@@ -219,10 +245,13 @@ export default function Pos() {
   const sendMut = useMutation({
     mutationFn: async () => {
       let o: OrderShape | null = null;
+      const requestId = crypto.randomUUID();
       try {
         o = await ensureOrder();
         const withItems = await pushPendingItems(o);
-        return await apiPost<{ tickets: number }>(`/orders/${withItems.id}/send-to-kitchen`);
+        const res = await apiPost<{ tickets: number }>(`/orders/${withItems.id}/send-to-kitchen`, { requestId });
+        setLastSentAt(new Date());
+        return res;
       } catch (e) {
         if (!shouldQueue(e)) throw e;
         queueOffline(o, { sendToKitchen: true, payNow: false });
@@ -234,6 +263,8 @@ export default function Pos() {
         return null;
       }
     },
+    onMutate: () => setBusy(true),
+    onSettled: () => setBusy(false),
     onSuccess: (r) => {
       if (!r) {
         push(t("ops:pos_offline_queued_toast"), "info");
@@ -247,16 +278,30 @@ export default function Pos() {
   });
 
   async function doDiscount(type: "PERCENT" | "ABSOLUTE", value: number, managerPin?: string) {
-    const o = await ensureOrder();
-    await apiPost(`/orders/${o.id}/discount`, { type, value, managerPin });
-    const fresh = await apiGet<{ order: OrderShape }>(`/orders/${o.id}`);
-    setOrder(fresh.order);
-    setShowDiscount(false);
-    push(t("ops:pos_discount_applied"), "ok");
-    qc.invalidateQueries({ queryKey: ["orders"] });
+    setBusy(true);
+    try {
+      const o = await ensureOrder();
+      await apiPost(`/orders/${o.id}/discount`, { type, value, managerPin });
+      const fresh = await apiGet<{ order: OrderShape }>(`/orders/${o.id}`);
+      setOrder(fresh.order);
+      setShowDiscount(false);
+      push(t("ops:pos_discount_applied"), "ok");
+      qc.invalidateQueries({ queryKey: ["orders"] });
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function pay(tenders: Tender[], idemKey: string, splitId?: string) {
+    setBusy(true);
+    try {
+      await payOnce(tenders, idemKey, splitId);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function payOnce(tenders: Tender[], idemKey: string, splitId?: string) {
     let o: OrderShape | null = order;
     try {
       if (splitId && shouldQueue()) {
@@ -268,7 +313,7 @@ export default function Pos() {
         const withItems = await pushPendingItems(o);
         // Anything not yet in the kitchen must still reach it before the sale
         // completes (send-to-kitchen only creates tickets for unsent lines).
-        await apiPost(`/orders/${withItems.id}/send-to-kitchen`);
+        await apiPost(`/orders/${withItems.id}/send-to-kitchen`, { requestId: crypto.randomUUID() });
         const res = await apiPost<{ order: { orderNumber: number; paymentStatus: string; receiptPreview: string; changeGiven: string | null } }>("/payments", {
           orderId: withItems.id,
           shiftId: shiftRes?.shift?.id ?? null,
@@ -310,6 +355,16 @@ export default function Pos() {
   }
 
   async function holdOrder() {
+    if (!cart.lines.length && !order) return;
+    setBusy(true);
+    try {
+      await holdOrderOnce();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function holdOrderOnce() {
     if (!cart.lines.length && !order) return;
     let o: OrderShape | null = order;
     try {
@@ -376,6 +431,11 @@ export default function Pos() {
             {t("ops:pos_held_orders")}{queued > 0 ? ` · ${t("ops:pos_queued_count", { count: queued })}` : ""}
           </button>
           {queued > 0 && <span className="badge warn">{t("ops:pos_offline_queued", { count: queued })}</span>}
+          {failed > 0 && (
+            <button className="badge danger" onClick={() => setShowOrders(true)}>
+              {t("ops:pos_outbox_failed", { count: failed })}
+            </button>
+          )}
           <div className="spacer" />
           <input
             className="input pos-search"
@@ -553,6 +613,11 @@ export default function Pos() {
             </button>
             <button className="btn" disabled={(!cart.lines.length && !order) || busy} onClick={() => setShowDiscount(true)}>🏷 {t("ops:pos_discount_btn")}</button>
           </div>
+          {lastSentAt && (
+            <p className="small muted" style={{ margin: "6px 0 0" }}>
+              {t("ops:pos_last_sent", { time: lastSentAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) })}
+            </p>
+          )}
           <div className="row pos-fab-row" style={{ marginTop: 8, gap: 8 }}>
             <button className="btn" style={{ flex: 1 }} disabled={(!cart.lines.length && !order) || busy} onClick={holdOrder}>⏸ {t("ops:pos_hold")}</button>
             {order && <button className="btn" onClick={() => reprint(order.id)}>🖨 {t("ops:pos_reprint")}</button>}
@@ -653,8 +718,10 @@ function OrdersModal({
   const { push } = useToast();
   const qc = useQueryClient();
   const { t } = useTranslation(["ops", "common"]);
-  const [tab, setTab] = useState<"OPEN" | "RECENT">("OPEN");
+  const [tab, setTab] = useState<"OPEN" | "RECENT" | "OUTBOX">("OPEN");
   const [refundOrder, setRefundOrder] = useState<OrderShape | null>(null);
+  const [, setOutboxVersion] = useState(0);
+  const failures = failedOrders();
 
   const { data: open } = useQuery({ queryKey: ["orders", "open"], queryFn: () => apiGet<{ orders: OrderShape[] }>("/orders/open"), enabled: tab === "OPEN" });
   const { data: recent } = useQuery({
@@ -680,7 +747,32 @@ function OrdersModal({
       <div className="row" style={{ marginBottom: 12 }}>
         <button className={`cat-tab ${tab === "OPEN" ? "active" : ""}`} onClick={() => setTab("OPEN")}>{t("ops:orders_held_open")}</button>
         <button className={`cat-tab ${tab === "RECENT" ? "active" : ""}`} onClick={() => setTab("RECENT")}>{t("ops:orders_recent")}</button>
+        <button className={`cat-tab ${tab === "OUTBOX" ? "active" : ""}`} onClick={() => setTab("OUTBOX")}>
+          {t("ops:orders_outbox")}{failures.length > 0 ? ` · ${failures.length}` : ""}
+        </button>
       </div>
+      {tab === "OUTBOX" ? (
+        <div className="stack" style={{ gap: 8 }}>
+          {failures.length === 0 && <p className="muted">{t("ops:outbox_empty")}</p>}
+          {failures.map((f) => (
+            <div key={f.localId} className="card" style={{ padding: 10 }}>
+              <div className="row" style={{ alignItems: "flex-start", gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <strong>{f.label}</strong>
+                  <div className="small" style={{ color: "var(--danger, #b91c1c)" }}>{f.message}</div>
+                  <div className="small muted">{new Date(f.failedAt).toLocaleString()}</div>
+                </div>
+                <button className="btn small" onClick={() => { retryFailure(f.localId); setOutboxVersion((v) => v + 1); }}>
+                  {t("ops:outbox_retry")}
+                </button>
+                <button className="btn small ghost" onClick={() => { dismissFailure(f.localId); setOutboxVersion((v) => v + 1); }}>
+                  {t("ops:outbox_dismiss")}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
       <table className="tbl">
         <thead><tr><th>#</th><th>{t("ops:orders_items_header")}</th><th style={{ textAlign: "right" }}>{t("ops:orders_total_header")}</th><th /></tr></thead>
         <tbody>
@@ -701,6 +793,7 @@ function OrdersModal({
           {rows.length === 0 && <tr><td colSpan={4} className="muted">{t("ops:orders_nothing")}</td></tr>}
         </tbody>
       </table>
+      )}
 
       {refundOrder && (
         <RefundModal

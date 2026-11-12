@@ -38,6 +38,14 @@ const center = (s = "") => {
   const pad = Math.max(0, Math.floor((WIDTH - t.length) / 2));
   return " ".repeat(pad) + t;
 };
+/** Wall-clock time in the restaurant's zone (falls back to server zone). */
+function formatTime(d: Date, timeZone?: string | null): string {
+  try {
+    return d.toLocaleTimeString("en-GB", timeZone ? { timeZone } : undefined);
+  } catch {
+    return d.toLocaleTimeString("en-GB");
+  }
+}
 const cols = (left: string, right: string) => {
   const r = right.slice(0, WIDTH);
   const l = left.slice(0, WIDTH - r.length - 1);
@@ -50,13 +58,15 @@ export function buildKitchenTicketText(t: {
   tableLabel?: string | null;
   channel: string;
   sentAt: Date;
+  /** Restaurant zone; without it the server's own zone leaks onto the ticket. */
+  timeZone?: string | null;
   lines: { qty: number; name: string; modifiers?: string[]; notes?: string | null }[];
 }): string {
   const out: string[] = [];
   out.push(center(`*** ${t.station} ***`));
   out.push(center(`Order #${t.orderNumber}`));
   out.push(cols(t.channel.replace("_", "-"), t.tableLabel ? `Table ${t.tableLabel}` : ""));
-  out.push(cols("Sent", t.sentAt.toLocaleTimeString()));
+  out.push(cols("Sent", formatTime(t.sentAt, t.timeZone)));
   out.push(line());
   for (const l of t.lines) {
     out.push(`${l.qty}x  ${l.name}`.slice(0, WIDTH));

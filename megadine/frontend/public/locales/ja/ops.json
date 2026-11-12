@@ -246,5 +246,11 @@
   "floor_timeline_no_order": "ウォークイン",
   "floor_timeline_open": "進行中",
   "floor_timeline_closed": "終了",
-  "floor_timeline_items": "{{count}} 点"
+  "floor_timeline_items": "{{count}} 点",
+  "pos_last_sent": "{{time}} に送信済み",
+  "pos_outbox_failed": "送信失敗 {{count}} 件",
+  "orders_outbox": "送信失敗",
+  "outbox_empty": "送信に失敗した項目はありません",
+  "outbox_retry": "再試行",
+  "outbox_dismiss": "閉じる"
 }

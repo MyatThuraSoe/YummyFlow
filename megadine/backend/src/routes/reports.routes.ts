@@ -9,13 +9,20 @@ import { foodCostPercent } from "../services/inventory.service.js";
 import { prisma } from "../lib/prisma.js";
 import { fromCents, toCents } from "../lib/money.js";
 import { toCsv } from "../lib/csv.js";
+import { businessDateFor } from "../lib/businessDay.js";
 
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth, requirePermission("report.view"));
 
-function rangeFromQuery(query: Record<string, string | undefined>) {
+async function rangeFromQuery(query: Record<string, string | undefined>, restaurantId: string) {
   const now = new Date();
-  const from = query.from ? new Date(query.from) : new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: restaurantId },
+    select: { businessDayCutoff: true, timezone: true },
+  });
+  const from = query.from
+    ? new Date(query.from)
+    : businessDateFor(now, restaurant?.businessDayCutoff ?? "04:00", restaurant?.timezone);
   const to = query.to ? new Date(query.to) : from;
   return { from, to };
 }
@@ -56,7 +63,7 @@ reportsRouter.get(
 reportsRouter.get(
   "/items",
   asyncHandler(async (req, res) => {
-    const { from, to } = rangeFromQuery(req.query as Record<string, string | undefined>);
+    const { from, to } = await rangeFromQuery(req.query as Record<string, string | undefined>, req.auth!.restaurantId);
     const rows = await itemsReport(req.auth!.restaurantId, { from, to });
     if (req.query.format === "csv") {
       const csv = toCsv(["Item", "Category", "Qty", "Revenue"], rows.map((r) => [r.name, r.category, r.qty, fromCents(r.revenue)]));
@@ -70,7 +77,7 @@ reportsRouter.get(
 reportsRouter.get(
   "/hourly",
   asyncHandler(async (req, res) => {
-    const { from, to } = rangeFromQuery(req.query as Record<string, string | undefined>);
+    const { from, to } = await rangeFromQuery(req.query as Record<string, string | undefined>, req.auth!.restaurantId);
     const rows = await hourlyReport(req.auth!.restaurantId, { from, to });
     res.json({ rows });
   }),
@@ -79,7 +86,7 @@ reportsRouter.get(
 reportsRouter.get(
   "/employees",
   asyncHandler(async (req, res) => {
-    const { from, to } = rangeFromQuery(req.query as Record<string, string | undefined>);
+    const { from, to } = await rangeFromQuery(req.query as Record<string, string | undefined>, req.auth!.restaurantId);
     const employees = await prisma.user.findMany({
       where: { restaurantId: req.auth!.restaurantId, isActive: true },
       select: { id: true, name: true, role: true },
@@ -112,7 +119,7 @@ reportsRouter.get(
 reportsRouter.get(
   "/stock",
   asyncHandler(async (req, res) => {
-    const { from, to } = rangeFromQuery(req.query as Record<string, string | undefined>);
+    const { from, to } = await rangeFromQuery(req.query as Record<string, string | undefined>, req.auth!.restaurantId);
     const rows = await stockMovementReport(req.auth!.restaurantId, { from, to });
     if (req.query.format === "csv") {
       const csv = toCsv(
@@ -129,7 +136,7 @@ reportsRouter.get(
 reportsRouter.get(
   "/wastage",
   asyncHandler(async (req, res) => {
-    const { from, to } = rangeFromQuery(req.query as Record<string, string | undefined>);
+    const { from, to } = await rangeFromQuery(req.query as Record<string, string | undefined>, req.auth!.restaurantId);
     const report = await wastageReport(req.auth!.restaurantId, { from, to });
     res.json(report);
   }),
@@ -138,7 +145,7 @@ reportsRouter.get(
 reportsRouter.get(
   "/food-cost",
   asyncHandler(async (req, res) => {
-    const { from, to } = rangeFromQuery(req.query as Record<string, string | undefined>);
+    const { from, to } = await rangeFromQuery(req.query as Record<string, string | undefined>, req.auth!.restaurantId);
     const report = await foodCostPercent(req.auth!.restaurantId, from, to);
     res.json(report);
   }),

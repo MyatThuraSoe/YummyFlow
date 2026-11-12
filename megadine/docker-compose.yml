@@ -5,30 +5,18 @@ services:
     restart: always
     environment:
       POSTGRES_USER: ${DB_USER:-megadine}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-megadine_secure_2026}
+      # No default: a shipped password is the same as no password.
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
       POSTGRES_DB: ${DB_NAME:-megadine_pos}
+      TZ: ${TZ:-Asia/Yangon}
+    # Loopback only: the database is reached by the backend container over the
+    # compose network, never by another machine on the LAN.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - megadine_pgdata:/var/lib/postgresql/data
-      - ./backend/backups:/backups
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U megadine"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    container_name: megadine_redis
-    restart: always
-    command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "6379:6379"
-    volumes:
-      - megadine_redisdata:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-megadine} -d ${DB_NAME:-megadine_pos}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -39,24 +27,27 @@ services:
       dockerfile: Dockerfile
       args:
         NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org/}
+        APK_MIRROR: ${APK_MIRROR:-dl-cdn.alpinelinux.org}
     container_name: megadine_backend
     restart: always
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     environment:
       NODE_ENV: production
       PORT: 3001
-      DATABASE_URL: postgresql://megadine:${DB_PASSWORD:-megadine_secure_2026}@postgres:5432/megadine_pos
-      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://${DB_USER:-megadine}:${DB_PASSWORD:?set DB_PASSWORD in .env}@postgres:5432/${DB_NAME:-megadine_pos}
+      TZ: ${TZ:-Asia/Yangon}
       # Allow the LAN frontend origin; adjust to your host IP/domain.
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+      # Set to 1 only when nginx/another proxy sits in front of the backend.
+      TRUST_PROXY: ${TRUST_PROXY:-0}
       PRINTER_MODE: ${PRINTER_MODE:-simulate}
       RECEIPT_PRINTER_IP: ${RECEIPT_PRINTER_IP:-}
       KITCHEN_PRINTER_IP: ${KITCHEN_PRINTER_IP:-}
       BACKUP_DIR: /app/backups
+      # Where a mounted USB stick appears inside the container.
+      USB_EXPORT_DIR: ${USB_EXPORT_DIR:-/usb}
       SESSION_SECRET: ${SESSION_SECRET:-change-me-in-production}
       # false for plain-HTTP LAN installs; true only behind HTTPS.
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
@@ -65,10 +56,14 @@ services:
       LICENSE_KEY: ${LICENSE_KEY:-}
       MEGACODE_LICENSE_PUBLIC_KEY: ${MEGACODE_LICENSE_PUBLIC_KEY:-}
       MACHINE_ID: ${MACHINE_ID:-}
+    # The frontend's nginx proxies /api and /socket.io, so the API does not
+    # need to be published at all; loopback keeps it reachable for debugging.
     ports:
-      - "3001:3001"
+      - "127.0.0.1:3001:3001"
     volumes:
-      - megadine_backups:/app/backups
+      # One host directory, shared by dumps and the nightly off-machine copy.
+      - ./backend/backups:/app/backups
+      - ${USB_HOST_DIR:-./backend/usb}:/usb
 
   frontend:
     build:
@@ -85,5 +80,3 @@ services:
 
 volumes:
   megadine_pgdata:
-  megadine_redisdata:
-  megadine_backups:

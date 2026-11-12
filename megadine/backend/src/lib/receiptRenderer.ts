@@ -8,6 +8,19 @@
 import { fromCents } from "./money.js";
 import type { ReceiptConfigShape } from "./receiptDefaults.js";
 
+/** Local wall-clock date/time in the restaurant zone (server zone fallback). */
+function localDateTime(d: Date, timeZone?: string | null): string {
+  try {
+    return new Intl.DateTimeFormat("en-GB", {
+      dateStyle: "short",
+      timeStyle: "medium",
+      ...(timeZone ? { timeZone } : {}),
+    }).format(d);
+  } catch {
+    return d.toLocaleString("en-GB");
+  }
+}
+
 export interface ReceiptData {
   currency: string;
   // Identity (from Restaurant + ReceiptConfig)
@@ -19,6 +32,8 @@ export interface ReceiptData {
   orderNumber: number;
   tableName?: string | null;
   createdAt: Date;
+  /** Restaurant IANA zone used to print the local date/time. */
+  timeZone?: string | null;
   cashierName?: string | null;
   channel: string; // DINE_IN | TAKEAWAY | PARCEL
   lines: {
@@ -96,7 +111,7 @@ export function buildBlocks(data: ReceiptData): Block[] {
   if (data.reprint) blocks.push({ kind: "text", text: "*** REPRINT ***", align: "center", bold: true });
   if (c.showOrderNumber) blocks.push({ kind: "row", left: "Order #", right: String(data.orderNumber) });
   if (c.showTable && data.tableName) blocks.push({ kind: "row", left: "Table", right: data.tableName });
-  if (c.showDateTime) blocks.push({ kind: "row", left: "Date", right: data.createdAt.toLocaleString() });
+  if (c.showDateTime) blocks.push({ kind: "row", left: "Date", right: localDateTime(data.createdAt, data.timeZone) });
   if (c.showCashier && data.cashierName) blocks.push({ kind: "row", left: "Cashier", right: data.cashierName });
   blocks.push({ kind: "row", left: "Channel", right: CHANNEL_LABELS[data.channel] ?? data.channel });
   if (data.splitLabel) blocks.push({ kind: "text", text: `Split: ${data.splitLabel}`, align: "center", bold: true });

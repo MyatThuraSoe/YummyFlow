@@ -1,7 +1,7 @@
 import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
 import { toCents } from "../lib/money.js";
-import { businessDateFor, endOfDay, startOfDay } from "../lib/businessDay.js";
+import { businessDateFor, dateKey, endOfDay, localDateKey, startOfDay, zonedParts } from "../lib/businessDay.js";
 import { audit } from "../lib/audit.js";
 
 export interface Range {
@@ -114,7 +114,7 @@ export async function hourlyReport(restaurantId: string, range: Range) {
   });
   const buckets: Record<number, { orders: number; sales: number }> = {};
   for (const o of orders) {
-    const h = o.createdAt.getHours();
+    const h = zonedParts(o.createdAt).h;
     buckets[h] ??= { orders: 0, sales: 0 };
     buckets[h].orders += 1;
     buckets[h].sales += toCents(o.total);
@@ -168,7 +168,7 @@ export async function wastageReport(restaurantId: string, range: Range) {
 
   const byDayMap = new Map<string, number>();
   for (const r of rows) {
-    const key = `${r.at.getFullYear()}-${String(r.at.getMonth() + 1).padStart(2, "0")}-${String(r.at.getDate()).padStart(2, "0")}`;
+    const key = localDateKey(r.at);
     byDayMap.set(key, (byDayMap.get(key) ?? 0) + r.cost);
   }
 
@@ -183,9 +183,9 @@ export async function wastageReport(restaurantId: string, range: Range) {
 export async function dashboard(restaurantId: string) {
   const restaurant = await prisma.restaurant.findUnique({
     where: { id: restaurantId },
-    select: { businessDayCutoff: true },
+    select: { businessDayCutoff: true, timezone: true },
   });
-  const today = businessDateFor(new Date(), restaurant?.businessDayCutoff ?? "04:00");
+  const today = businessDateFor(new Date(), restaurant?.businessDayCutoff ?? "04:00", restaurant?.timezone);
   const [{ _sum, _count }, openShifts, lowStock, activeOrders, activeTables] = await Promise.all([
     prisma.order.aggregate({
       where: { restaurantId, status: "COMPLETED", businessDate: today },
@@ -215,16 +215,16 @@ export async function dashboard(restaurantId: string) {
 export async function salesTrend(restaurantId: string, days = 7) {
   const restaurant = await prisma.restaurant.findUnique({
     where: { id: restaurantId },
-    select: { businessDayCutoff: true },
+    select: { businessDayCutoff: true, timezone: true },
   });
-  const today = businessDateFor(new Date(), restaurant?.businessDayCutoff ?? "04:00");
+  const today = businessDateFor(new Date(), restaurant?.businessDayCutoff ?? "04:00", restaurant?.timezone);
   const start = new Date(today);
-  start.setDate(start.getDate() - (days - 1));
+  start.setUTCDate(start.getUTCDate() - (days - 1));
   const orders = await prisma.order.findMany({
     where: { restaurantId, status: "COMPLETED", businessDate: { gte: start, lte: endOfDay(today) } },
     select: { businessDate: true, total: true },
   });
-  const keyOf = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const keyOf = (d: Date) => dateKey(d);
   const map = new Map<string, { orders: number; sales: number }>();
   for (const o of orders) {
     const key = keyOf(o.businessDate);
@@ -236,7 +236,7 @@ export async function salesTrend(restaurantId: string, days = 7) {
   const rows = [];
   for (let i = 0; i < days; i++) {
     const d = new Date(start);
-    d.setDate(d.getDate() + i);
+    d.setUTCDate(d.getUTCDate() + i);
     const e = map.get(keyOf(d)) ?? { orders: 0, sales: 0 };
     rows.push({ date: keyOf(d), orders: e.orders, sales: e.sales });
   }

@@ -6,6 +6,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/requirePermission.js";
 import { validate } from "../middleware/validate.js";
 import { audit } from "../lib/audit.js";
+import { withRequestIdempotency } from "../lib/idempotency.js";
 import { sendToPrinter } from "../lib/printers.js";
 import { env } from "../lib/env.js";
 import {
@@ -129,14 +130,23 @@ ordersRouter.get(
   }),
 );
 
+const itemsSchema = z.object({
+  items: z.array(lineSchema).min(1),
+  requestId: z.string().max(120).optional(),
+});
+
 ordersRouter.post(
   "/:id/items",
   requirePermission("pos.use"),
-  validate({ body: z.object({ items: z.array(lineSchema).min(1) }) }),
+  validate({ body: itemsSchema }),
   asyncHandler(async (req, res) => {
-    const { items } = req.body as { items: z.infer<typeof lineSchema>[] };
-    const order = await addItemsToOrder(String(req.params.id), req.auth!.userId, items);
-    res.json({ order });
+    const { items, requestId } = req.body as z.infer<typeof itemsSchema>;
+    const orderId = String(req.params.id);
+    const { replayed, result } = await withRequestIdempotency(
+      { restaurantId: req.auth!.restaurantId, action: `order-items:${orderId}`, requestId },
+      () => addItemsToOrder(orderId, req.auth!.userId, items),
+    );
+    res.json({ order: result, replayed });
   }),
 );
 
@@ -144,8 +154,13 @@ ordersRouter.post(
   "/:id/send-to-kitchen",
   requirePermission("pos.use"),
   asyncHandler(async (req, res) => {
-    const result = await sendToKitchen(String(req.params.id), req.auth!.userId, req.auth!.role);
-    res.json(result);
+    const orderId = String(req.params.id);
+    const requestId = (req.body as { requestId?: string } | undefined)?.requestId;
+    const { replayed, result } = await withRequestIdempotency(
+      { restaurantId: req.auth!.restaurantId, action: `order-send:${orderId}`, requestId },
+      () => sendToKitchen(orderId, req.auth!.userId, req.auth!.role),
+    );
+    res.json({ ...result, replayed });
   }),
 );
 

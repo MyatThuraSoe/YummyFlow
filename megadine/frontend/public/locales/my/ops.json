@@ -246,5 +246,11 @@
   "floor_timeline_no_order": "ဧည့်သည် တိုက်ရိုက်လာပွဲ",
   "floor_timeline_open": "ဖွင့်ထားသည်",
   "floor_timeline_closed": "ပိတ်ပြီး",
-  "floor_timeline_items": "ပစ္စည်း {{count}} ခု"
+  "floor_timeline_items": "ပစ္စည်း {{count}} ခု",
+  "pos_last_sent": "{{time}} တွင် ပို့ပြီး",
+  "pos_outbox_failed": "မပို့နိုင်သော {{count}} ခု",
+  "orders_outbox": "မပို့နိုင်သောစာရင်း",
+  "outbox_empty": "မပို့နိုင်သော အရာမရှိပါ",
+  "outbox_retry": "ပြန်ကြိုးစား",
+  "outbox_dismiss": "ပယ်ဖျက်"
 }

@@ -206,6 +206,9 @@ model User {
   preferredLanguage String   @default("en")
   role             Role      @default(WAITER)
   isActive         Boolean   @default(true)
+  // Set when an admin issues a temporary password/PIN; the app prompts for a
+  // change at next sign-in.
+  mustChangeCredential Boolean @default(false)
   failedPinAttempts Int      @default(0)
   lockoutUntil     DateTime?
   lastLoginAt      DateTime?
@@ -776,4 +779,22 @@ model AuditLog {
   @@index([restaurantId, createdAt])
   @@index([userId, action])
   @@index([entityType, entityId])
+}
+
+// ═══════════════════════════════════════
+// REQUEST IDEMPOTENCY
+// ═══════════════════════════════════════
+
+// Remembers a client request id and the result it produced, so a retry after a
+// dropped response replays the original outcome instead of repeating the work.
+model RequestLog {
+  id           String   @id @default(uuid())
+  restaurantId String
+  requestId    String
+  action       String
+  resultJson   Json?
+  createdAt    DateTime @default(now())
+
+  @@unique([restaurantId, action, requestId])
+  @@index([createdAt])
 }

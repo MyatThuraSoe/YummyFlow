@@ -16,7 +16,7 @@ export interface OpenShiftInput {
 
 export async function openShift(input: OpenShiftInput) {
   const settings = await getSettings(input.restaurantId);
-  const businessDate = businessDateFor(new Date(), settings.businessDayCutoff);
+  const businessDate = businessDateFor(new Date(), settings.businessDayCutoff, settings.timezone);
 
   const conflict = await prisma.cashShift.findFirst({
     where: {

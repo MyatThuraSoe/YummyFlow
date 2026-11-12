@@ -1,3 +1,4 @@
+import { randomInt } from "node:crypto";
 import { prisma } from "../src/lib/prisma.js";
 import { hashPin, hashPassword } from "../src/lib/auth.js";
 import { env } from "../src/lib/env.js";
@@ -63,14 +64,23 @@ async function main() {
     },
   });
 
-  // ── Staff (PINs default to the demo values; override with PIN_<ROLE>) ──
+  // ── Staff ───────────────────────────────────────────────
+  // Demo installs keep the deterministic PINs the tests and quick-start docs
+  // use. A production seed generates fresh credentials and flags every account
+  // so the first sign-in must replace them.
+  const isProd = env.NODE_ENV === "production";
+  const randomPin = () => String(randomInt(100000, 1000000));
+  const randomPassword = () => randomInt(0, 2 ** 31).toString(36) + randomInt(0, 2 ** 31).toString(36);
   const pins = {
-    OWNER: process.env.PIN_OWNER ?? "0000",
-    ADMIN: process.env.PIN_ADMIN ?? "4444",
-    CASHIER: process.env.PIN_CASHIER ?? "1111",
-    WAITER: process.env.PIN_WAITER ?? "2222",
-    KITCHEN: process.env.PIN_KITCHEN ?? "3333",
+    OWNER: process.env.PIN_OWNER ?? (isProd ? randomPin() : "0000"),
+    ADMIN: process.env.PIN_ADMIN ?? (isProd ? randomPin() : "4444"),
+    CASHIER: process.env.PIN_CASHIER ?? (isProd ? randomPin() : "1111"),
+    WAITER: process.env.PIN_WAITER ?? (isProd ? randomPin() : "2222"),
+    KITCHEN: process.env.PIN_KITCHEN ?? (isProd ? randomPin() : "3333"),
   };
+  const ownerPassword = process.env.OWNER_PASSWORD ?? (isProd ? randomPassword() : "owner123");
+  const adminPassword = process.env.ADMIN_PASSWORD ?? (isProd ? randomPassword() : "admin123");
+  const mustChangeCredential = isProd;
   const ownerPin = await hashPin(pins.OWNER);
   const adminPin = await hashPin(pins.ADMIN);
   const cashierPin = await hashPin(pins.CASHIER);
@@ -79,11 +89,11 @@ async function main() {
 
   await prisma.user.createMany({
     data: [
-      { restaurantId: restaurant.id, name: "Olivia Owner", username: "owner", firstName: "Olivia", lastName: "Owner", email: "owner@megadine.local", role: "OWNER", pinHash: ownerPin, passwordHash: await hashPassword("owner123") },
-      { restaurantId: restaurant.id, name: "Adam Admin", username: "admin", firstName: "Adam", lastName: "Admin", email: "admin@megadine.local", role: "ADMIN", pinHash: adminPin, passwordHash: await hashPassword("admin123") },
-      { restaurantId: restaurant.id, name: "Cara Cashier", username: "cashier", firstName: "Cara", lastName: "Cashier", role: "CASHIER", pinHash: cashierPin },
-      { restaurantId: restaurant.id, name: "Will Waiter", username: "waiter", firstName: "Will", lastName: "Waiter", role: "WAITER", pinHash: waiterPin },
-      { restaurantId: restaurant.id, name: "Ken Kitchen", username: "kitchen", firstName: "Ken", lastName: "Kitchen", role: "KITCHEN", pinHash: kitchenPin },
+      { restaurantId: restaurant.id, name: "Olivia Owner", username: "owner", firstName: "Olivia", lastName: "Owner", email: "owner@megadine.local", role: "OWNER", pinHash: ownerPin, passwordHash: await hashPassword(ownerPassword), mustChangeCredential },
+      { restaurantId: restaurant.id, name: "Adam Admin", username: "admin", firstName: "Adam", lastName: "Admin", email: "admin@megadine.local", role: "ADMIN", pinHash: adminPin, passwordHash: await hashPassword(adminPassword), mustChangeCredential },
+      { restaurantId: restaurant.id, name: "Cara Cashier", username: "cashier", firstName: "Cara", lastName: "Cashier", role: "CASHIER", pinHash: cashierPin, mustChangeCredential },
+      { restaurantId: restaurant.id, name: "Will Waiter", username: "waiter", firstName: "Will", lastName: "Waiter", role: "WAITER", pinHash: waiterPin, mustChangeCredential },
+      { restaurantId: restaurant.id, name: "Ken Kitchen", username: "kitchen", firstName: "Ken", lastName: "Kitchen", role: "KITCHEN", pinHash: kitchenPin, mustChangeCredential },
     ],
   });
 
@@ -209,11 +219,12 @@ async function main() {
   void soup; void water; void icecream; void beer; void bacon;
 
   console.log("Seed complete.");
-  console.log(`  Owner   PIN ${pins.OWNER} (password owner123)`);
-  console.log(`  Admin   PIN ${pins.ADMIN} (password admin123)`);
+  console.log(`  Owner   PIN ${pins.OWNER} (password ${ownerPassword})`);
+  console.log(`  Admin   PIN ${pins.ADMIN} (password ${adminPassword})`);
   console.log(`  Cashier PIN ${pins.CASHIER}`);
   console.log(`  Waiter  PIN ${pins.WAITER}`);
   console.log(`  Kitchen PIN ${pins.KITCHEN}`);
+  if (mustChangeCredential) console.log("  Every account must change its credential at first sign-in.");
   console.log(`  Menu items: ${[burger, pizza, steak, salad, soup, wings, coke, beer, water, lava, icecream].length}`);
 }
 

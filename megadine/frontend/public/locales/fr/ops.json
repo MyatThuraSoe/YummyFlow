@@ -246,5 +246,11 @@
   "floor_timeline_no_order": "Session sans compte",
   "floor_timeline_open": "Ouverte",
   "floor_timeline_closed": "Fermée",
-  "floor_timeline_items": "{{count}} articles"
+  "floor_timeline_items": "{{count}} articles",
+  "pos_last_sent": "Envoyé à {{time}}",
+  "pos_outbox_failed": "{{count}} envoi(s) en échec",
+  "orders_outbox": "Envois en échec",
+  "outbox_empty": "Aucun envoi en échec",
+  "outbox_retry": "Réessayer",
+  "outbox_dismiss": "Ignorer"
 }

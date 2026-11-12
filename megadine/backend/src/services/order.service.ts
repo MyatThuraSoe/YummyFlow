@@ -46,18 +46,32 @@ export async function getSettings(restaurantId: string) {
     taxInclusive: r.taxInclusive,
     serviceChargePct: Number(r.serviceChargePct),
     businessDayCutoff: r.businessDayCutoff,
+    timezone: r.timezone,
     receiptHeader: r.receiptHeader,
     receiptFooter: r.receiptFooter,
   };
 }
 
 async function nextOrderNumber(tx: Prisma.TransactionClient, restaurantId: string): Promise<number> {
+  // Serialise number allocation per restaurant. Without this two terminals can
+  // read the same max and collide on @@unique([restaurantId, orderNumber]).
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${restaurantId})::bigint)`;
   const last = await tx.order.findFirst({
     where: { restaurantId },
     orderBy: { orderNumber: "desc" },
     select: { orderNumber: true },
   });
   return (last?.orderNumber ?? 1000) + 1;
+}
+
+/** True when Prisma reports a unique-constraint violation (P2002). */
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code?: string }).code === "P2002"
+  );
 }
 
 async function buildLines(
@@ -135,10 +149,11 @@ export async function createOrder(input: CreateOrderInput) {
   if (!input.items.length) throw ApiError.badRequest("Order must contain at least one item");
 
   const settings = await getSettings(input.restaurantId);
-  const businessDate = businessDateFor(new Date(), settings.businessDayCutoff);
+  const businessDate = businessDateFor(new Date(), settings.businessDayCutoff, settings.timezone);
 
-  const order = await prisma.$transaction(async (tx) => {
-    const { data, lineTotals } = await buildLines(tx, input.items);
+  const runCreate = () =>
+    prisma.$transaction(async (tx) => {
+      const { data, lineTotals } = await buildLines(tx, input.items);
     const totals = computeOrderTotals(lineTotals, input.orderDiscount ? toCents(input.orderDiscount) : 0, {
       taxRate: settings.taxRate,
       taxInclusive: settings.taxInclusive,
@@ -197,6 +212,33 @@ export async function createOrder(input: CreateOrderInput) {
 
     return created;
   });
+
+  let order: Awaited<ReturnType<typeof runCreate>> | null = null;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      order = await runCreate();
+      break;
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        // A competing request may have won the race with the same idempotency
+        // key: return that order instead of surfacing a conflict.
+        if (input.idempotencyKey) {
+          const existing = await prisma.order.findUnique({
+            where: { idempotencyKey: input.idempotencyKey },
+            include: { lines: { include: { modifiers: true } }, payments: true },
+          });
+          if (existing) {
+            order = existing;
+            break;
+          }
+        }
+        // Order-number collision (another terminal created #N first): retry.
+        if (attempt < 4) continue;
+      }
+      throw err;
+    }
+  }
+  if (!order) throw ApiError.conflict("Could not allocate an order number, please try again");
 
   await audit({
     restaurantId: input.restaurantId,
@@ -350,36 +392,44 @@ export async function applyDiscount(
 
 /** Create kitchen tickets for any lines not yet sent, and print them. */
 export async function sendToKitchen(orderId: string, actorId: string, actorRole: string) {
-  const order = await prisma.order.findUnique({
-    where: { id: orderId },
-    include: {
-      lines: { include: { modifiers: true, order: false } },
-      restaurant: true,
-      tableSession: { include: { table: true } },
-    },
-  });
-  if (!order) throw ApiError.notFound("Order not found");
-  if (order.status === "COMPLETED" || order.status === "CANCELLED") {
-    throw ApiError.conflict("Order is already closed");
-  }
+  // The order row is locked for the whole ticket-creation transaction, so two
+  // waiters tapping "send" at once cannot both create a ticket for the same
+  // line. Printing happens after commit: a dead printer must not roll back the
+  // tickets or lose the send.
+  const result = await prisma.$transaction(async (tx) => {
+    const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "Order" WHERE id = ${orderId} FOR UPDATE`;
+    if (!locked.length) throw ApiError.notFound("Order not found");
 
-  const existingTickets = await prisma.kitchenTicket.findMany({
-    where: { orderId },
-    select: { lines: { select: { orderLineId: true } } },
-  });
-  const sentIds = new Set(existingTickets.flatMap((t) => t.lines.map((l) => l.orderLineId)));
-  const pending = order.lines.filter((l) => !l.isVoided && !sentIds.has(l.id));
-  if (!pending.length) return { tickets: 0, printed: [] as string[] };
+    const order = await tx.order.findUnique({
+      where: { id: orderId },
+      include: {
+        lines: { include: { modifiers: true, order: false } },
+        restaurant: true,
+        tableSession: { include: { table: true } },
+      },
+    });
+    if (!order) throw ApiError.notFound("Order not found");
+    if (order.status === "COMPLETED" || order.status === "CANCELLED") {
+      throw ApiError.conflict("Order is already closed");
+    }
 
-  const byStation = new Map<Station, typeof pending>();
-  for (const line of pending) {
-    const arr = byStation.get(line.stationSnapshot) ?? [];
-    arr.push(line);
-    byStation.set(line.stationSnapshot, arr);
-  }
+    const existingTickets = await tx.kitchenTicket.findMany({
+      where: { orderId },
+      select: { lines: { select: { orderLineId: true } } },
+    });
+    const sentIds = new Set(existingTickets.flatMap((t) => t.lines.map((l) => l.orderLineId)));
+    const pending = order.lines.filter((l) => !l.isVoided && !sentIds.has(l.id));
+    type TicketWithLines = Prisma.KitchenTicketGetPayload<{ include: { lines: true } }>;
+    if (!pending.length) return { order, tickets: [] as { station: Station; ticket: TicketWithLines }[] };
 
-  const printed: string[] = [];
-  await prisma.$transaction(async (tx) => {
+    const byStation = new Map<Station, typeof pending>();
+    for (const line of pending) {
+      const arr = byStation.get(line.stationSnapshot) ?? [];
+      arr.push(line);
+      byStation.set(line.stationSnapshot, arr);
+    }
+
+    const tickets: { station: Station; ticket: TicketWithLines }[] = [];
     for (const [station, lines] of byStation) {
       const ticket = await tx.kitchenTicket.create({
         data: {
@@ -401,47 +451,59 @@ export async function sendToKitchen(orderId: string, actorId: string, actorRole:
         },
         include: { lines: true },
       });
-
-      const text = buildKitchenTicketText({
-        orderNumber: order.orderNumber,
-        station,
-        tableLabel: order.tableSession?.table?.name ?? (order.tableSession?.table?.number?.toString() ?? null),
-        channel: order.channel,
-        sentAt: ticket.sentAt,
-        lines: ticket.lines.map((tl) => ({
-          qty: tl.quantity,
-          name: tl.itemName,
-          modifiers: (tl.modifiers as { name: string }[] | null)?.map((m) => m.name) ?? [],
-          notes: tl.notes,
-        })),
-      });
-      const result = await sendToPrinter(env.KITCHEN_PRINTER_IP || null, text);
-      printed.push(result.preview);
-
-      emitToRole("KITCHEN", EVENTS.KITCHEN_NEW, {
-        ticketId: ticket.id,
-        orderNumber: order.orderNumber,
-        station,
-      });
+      tickets.push({ station, ticket });
     }
+
     await tx.order.update({
       where: { id: orderId },
       data: { status: order.status === "DRAFT" ? "SENT_TO_KITCHEN" : order.status },
     });
+
+    return { order, tickets };
   });
 
+  if (!result.tickets.length) return { tickets: 0, printed: [] as string[] };
+
+  const printed: string[] = [];
+  const printErrors: string[] = [];
+  for (const { station, ticket } of result.tickets) {
+    const text = buildKitchenTicketText({
+      orderNumber: result.order.orderNumber,
+      station,
+      tableLabel: result.order.tableSession?.table?.name ?? (result.order.tableSession?.table?.number?.toString() ?? null),
+      channel: result.order.channel,
+      sentAt: ticket.sentAt,
+      timeZone: result.order.restaurant.timezone,
+      lines: ticket.lines.map((tl) => ({
+        qty: tl.quantity,
+        name: tl.itemName,
+        modifiers: (tl.modifiers as { name: string }[] | null)?.map((m) => m.name) ?? [],
+        notes: tl.notes,
+      })),
+    });
+    const print = await sendToPrinter(env.KITCHEN_PRINTER_IP || null, text);
+    printed.push(print.preview);
+    if (!print.ok) printErrors.push(`${station}: ${print.error ?? "print failed"}`);
+
+    emitToRole("KITCHEN", EVENTS.KITCHEN_NEW, {
+      ticketId: ticket.id,
+      orderNumber: result.order.orderNumber,
+      station,
+    });
+  }
+
   await audit({
-    restaurantId: order.restaurantId,
+    restaurantId: result.order.restaurantId,
     userId: actorId,
     orderId,
     action: "ORDER_SENT_TO_KITCHEN",
     entityType: "Order",
     entityId: orderId,
-    after: { stations: [...byStation.keys()] },
+    after: { stations: result.tickets.map((t) => t.station), printErrors },
     approvedBy: actorRole === "KITCHEN" ? actorId : null,
   });
 
-  return { tickets: byStation.size, printed };
+  return { tickets: result.tickets.length, printed, printErrors };
 }
 
 /** Waiter confirms the food actually reached the table (READY -> SERVED). */

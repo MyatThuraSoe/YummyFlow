@@ -44,5 +44,6 @@
   "marked_available": "{{name}} พร้อมจำหน่ายแล้ว",
   "sync_sent": "ซิงค์ออเดอร์ที่รอ {{count}} รายการแล้ว",
   "sync_failed": "ออเดอร์ที่รอ {{count}} รายการยังล้มเหลว",
-  "shop_name_fallback": "MegaDine"
+  "shop_name_fallback": "MegaDine",
+  "sync_pending": "รอซิงค์ {{count}} รายการ"
 }

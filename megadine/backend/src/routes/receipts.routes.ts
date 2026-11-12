@@ -71,7 +71,7 @@ const configSchema = z.object({
 async function restaurantForReceipt(restaurantId: string): Promise<SampleRestaurant> {
   const r = await prisma.restaurant.findUnique({ where: { id: restaurantId } });
   if (!r) throw ApiError.notFound("Restaurant not found");
-  return { name: r.name, currency: r.currency, address: r.address, phone: r.phone, logo: r.logo };
+  return { name: r.name, currency: r.currency, address: r.address, phone: r.phone, logo: r.logo, timezone: r.timezone };
 }
 
 function assertOwnOrder(orderRestaurantId: string, authRestaurantId: string): void {

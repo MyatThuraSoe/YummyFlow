@@ -50,6 +50,8 @@ export const env = {
   // Set true only when serving over HTTPS; LAN installs run plain HTTP and a
   // Secure cookie would be dropped by the browser.
   COOKIE_SECURE: bool(process.env.COOKIE_SECURE, false),
+  // Number of proxy hops to trust for req.ip (rate limiting). 0 = direct.
+  TRUST_PROXY: num(process.env.TRUST_PROXY, 0),
   REDIS_URL: process.env.REDIS_URL ?? "",
 };
 

@@ -44,5 +44,6 @@
   "marked_available": "{{name}}を販売可能にしました",
   "sync_sent": "待機中の注文{{count}}件を同期しました",
   "sync_failed": "待機中の注文{{count}}件がまだ失敗しています",
-  "shop_name_fallback": "MegaDine"
+  "shop_name_fallback": "MegaDine",
+  "sync_pending": "{{count}} 件が同期待ちです"
 }

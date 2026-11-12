@@ -44,5 +44,6 @@
   "marked_available": "{{name}} ရရှိနိုင်ပြီ",
   "sync_sent": "တန်းစီထားသော အော်ဒါ {{count}} ခု ပေးပို့ပြီးပါပြီ",
   "sync_failed": "တန်းစီထားသော အော်ဒါ {{count}} ခု မအောင်မြင်သေးပါ",
-  "shop_name_fallback": "MegaDine"
+  "shop_name_fallback": "MegaDine",
+  "sync_pending": "ပို့ရန် {{count}} ခု ကျန်ရှိသည်"
 }

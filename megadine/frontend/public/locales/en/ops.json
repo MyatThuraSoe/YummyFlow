@@ -246,5 +246,11 @@
   "floor_timeline_no_order": "Walk-in session",
   "floor_timeline_open": "Open",
   "floor_timeline_closed": "Closed",
-  "floor_timeline_items": "{{count}} items"
+  "floor_timeline_items": "{{count}} items",
+  "pos_last_sent": "Sent {{time}}",
+  "pos_outbox_failed": "{{count}} failed to send",
+  "orders_outbox": "Failed sends",
+  "outbox_empty": "Nothing failed to send",
+  "outbox_retry": "Retry",
+  "outbox_dismiss": "Dismiss"
 }

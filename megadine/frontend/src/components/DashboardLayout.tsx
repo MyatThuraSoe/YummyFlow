@@ -62,7 +62,7 @@ import {
 import { apiGet, apiPost } from "../lib/api";
 import { errorMessage } from "../lib/errors";
 import { connectSocket, EVENTS } from "../lib/socket";
-import { flushOutbox, pendingCount } from "../lib/outbox";
+import { failedCount, flushOutbox, pendingCount } from "../lib/outbox";
 import LanguageSwitcher from "./LanguageSwitcher";
 import LockOverlay from "./LockOverlay";
 import { useToast } from "./ui";
@@ -183,6 +183,7 @@ export default function DashboardLayout() {
   const [socketUp, setSocketUp] = useState(false);
   const [online, setOnline] = useState(navigator.onLine);
   const [queued, setQueued] = useState(pendingCount());
+  const [failedOutbox, setFailedOutbox] = useState(failedCount());
   const [locked, setLocked] = useState(false);
   const idleRef = useRef<number | null>(null);
 
@@ -282,7 +283,10 @@ export default function DashboardLayout() {
   }, [qc, push, t]);
 
   useEffect(() => {
-    const update = () => setQueued(pendingCount());
+    const update = () => {
+      setQueued(pendingCount());
+      setFailedOutbox(failedCount());
+    };
     window.addEventListener("md:outbox", update);
     return () => window.removeEventListener("md:outbox", update);
   }, []);
@@ -291,10 +295,12 @@ export default function DashboardLayout() {
     const goOnline = async () => {
       setOnline(true);
       if (pendingCount() > 0) {
-        const { sent, failed } = await flushOutbox();
+        const { sent, failed, pending } = await flushOutbox();
         setQueued(pendingCount());
+        setFailedOutbox(failedCount());
         if (sent) push(t("nav:sync_sent", { count: sent }), "ok");
         if (failed) push(t("nav:sync_failed", { count: failed }), "error");
+        else if (pending) push(t("nav:sync_pending", { count: pending }), "info");
         qc.invalidateQueries({ queryKey: ["orders"] });
       }
     };
@@ -503,6 +509,16 @@ export default function DashboardLayout() {
                 variant="outlined"
                 color="warning"
                 label={t("nav:queued", { count: queued })}
+                sx={{ display: { xs: "none", sm: "flex" } }}
+              />
+            )}
+            {failedOutbox > 0 && (
+              <Chip
+                size="small"
+                variant="outlined"
+                color="error"
+                label={t("nav:sync_failed", { count: failedOutbox })}
+                onClick={() => nav("/pos")}
                 sx={{ display: { xs: "none", sm: "flex" } }}
               />
             )}
