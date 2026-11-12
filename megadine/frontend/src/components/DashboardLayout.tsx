@@ -71,6 +71,11 @@ import { useTranslation } from "react-i18next";
 
 const WIDTH_EXPANDED = 240;
 const WIDTH_COLLAPSED = 68;
+const TEXT_SIZES = ["normal", "large", "xl"] as const;
+function applyTextSize(size: string) {
+  const scale = size === "large" ? 1.12 : size === "xl" ? 1.25 : 1;
+  document.documentElement.style.fontSize = `${16 * scale}px`;
+}
 const IDLE_MS_BY_ROLE: Record<string, number> = {
   KITCHEN: 0, // never auto-lock
   CASHIER: 2 * 60 * 1000,
@@ -194,7 +199,9 @@ export default function DashboardLayout() {
   const [online, setOnline] = useState(navigator.onLine);
   const [queued, setQueued] = useState(pendingCount());
   const [failedOutbox, setFailedOutbox] = useState(failedCount());
+  const [textSize, setTextSize] = useState(() => localStorage.getItem("md_text_size") ?? "normal");
   const [locked, setLocked] = useState(false);
+  useEffect(() => { applyTextSize(textSize); localStorage.setItem("md_text_size", textSize); }, [textSize]);
   const idleRef = useRef<number | null>(null);
 
   const { data: settings } = useQuery({
@@ -562,6 +569,14 @@ export default function DashboardLayout() {
               </Tooltip>
             )}
             <LanguageSwitcher compact />
+            <Tooltip title={t("nav:text_size", { defaultValue: "Text size" })}>
+              <IconButton size="small" onClick={() => setTextSize((s) => {
+                const i = TEXT_SIZES.indexOf(s as any);
+                return TEXT_SIZES[(i + 1) % TEXT_SIZES.length];
+              })}>
+                <Typography variant="caption" sx={{ fontWeight: 700 }}>A</Typography>
+              </IconButton>
+            </Tooltip>
             <Tooltip title={isFullscreen ? t("nav:exit_fullscreen") : t("nav:fullscreen")}>
               <IconButton onClick={toggleFullscreen} size="small">
                 {isFullscreen ? <FullscreenExitIcon /> : <FullscreenIcon />}

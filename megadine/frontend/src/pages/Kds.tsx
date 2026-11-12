@@ -51,6 +51,12 @@ export default function Kds() {
     queryFn: () => apiGet<{ tickets: Ticket[] }>("/kitchen/tickets", { station: station === "ALL" ? undefined : station, active: "true" }),
     refetchInterval: 10000,
   });
+  const { data: tablesData } = useQuery({
+    queryKey: ["tables"],
+    queryFn: () => apiGet<{ tables: { id: string; number: number; name: string | null }[] }>("/tables"),
+    staleTime: 30000,
+  });
+  const tableMap = new Map((tablesData?.tables ?? []).map((t) => [t.id, t]));
 
   useEffect(() => {
     localStorage.setItem("kds_station", station);
@@ -145,11 +151,11 @@ export default function Kds() {
                       <div className="row">
                         <span className="tnum">#{first.order.orderNumber}</span>
                         <Badge kind="muted">{channelLabel(first.order.channel)}</Badge>
-                        {first.order.table && (
-                          <Badge kind="info">{t("ops:kds_table", { defaultValue: "Table" })} {first.order.table.name ?? first.order.table.number}</Badge>
+                        {first.order.tableId && tableMap.get(first.order.tableId) && (
+                          <Badge kind="info">{t("ops:kds_table", { defaultValue: "Table" })} {tableMap.get(first.order.tableId)!.name ?? tableMap.get(first.order.tableId)!.number}</Badge>
                         )}
-                        {first.order.table && (
-                          <Badge kind="info">{t("ops:kds_table", { defaultValue: "Table" })} {first.order.table.name ?? first.order.table.number}</Badge>
+                        {first.order.tableId && tableMap.get(first.order.tableId) && (
+                          <Badge kind="info">{t("ops:kds_table", { defaultValue: "Table" })} {tableMap.get(first.order.tableId)!.name ?? tableMap.get(first.order.tableId)!.number}</Badge>
                         )}
                         {priority !== "NORMAL" && (
                           <Badge kind={priorityKind(priority)}>{t(`ops:priority_${priority.toLowerCase()}`)}</Badge>
