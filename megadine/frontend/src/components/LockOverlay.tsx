@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
-export default function LockOverlay({ onUnlock, onSignOut }: { onUnlock: (pin: string) => Promise<void>; onSignOut: () => Promise<void> }) {
+export default function LockOverlay({ onUnlock, onSignOut, onSwitchUser }: { onUnlock: (pin: string) => Promise<void>; onSignOut: () => Promise<void>; onSwitchUser?: () => Promise<void> }) {
   const { t } = useTranslation("nav");
   const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
@@ -49,6 +49,11 @@ export default function LockOverlay({ onUnlock, onSignOut }: { onUnlock: (pin: s
           <button className="btn ghost block" style={{ marginTop: 8 }} onClick={onSignOut}>
             {t("logout")}
           </button>
+          {onSwitchUser && (
+            <button className="btn ghost block" style={{ marginTop: 8 }} onClick={onSwitchUser}>
+              {t("switch_user", { defaultValue: "Switch user" })}
+            </button>
+          )}
         </div>
       </div>
     </div>

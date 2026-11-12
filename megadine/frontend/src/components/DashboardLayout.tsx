@@ -649,6 +649,10 @@ export default function DashboardLayout() {
             await logout();
             nav("/login");
           }}
+          onSwitchUser={async () => {
+            await logout();
+            nav("/login");
+          }}
         />
       )}
     </Box>
