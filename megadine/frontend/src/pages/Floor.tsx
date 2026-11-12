@@ -74,7 +74,15 @@ export default function Floor() {
   const reservations = resData?.reservations ?? [];
   const reservationsFor = (tableId: string) => reservations.filter((r) => r.tableId === tableId);
 
-  const statusLabel = (s: string) => (STATUS_KEYS[s] ? t(`ops:${STATUS_KEYS[s]}`) : s);
+  const STATUS_ICON: Record<string, string> = {
+  AVAILABLE: "✓",
+  OCCUPIED: "●",
+  NEEDS_BILL: "🧾",
+  NEEDS_CLEANING: "🧹",
+  RESERVED: "📅",
+  OUT_OF_SERVICE: "⛔",
+};
+const statusLabel = (s: string) => (STATUS_KEYS[s] ? t(`ops:${STATUS_KEYS[s]}`) : s);
 
   const statusMut = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => apiPost(`/tables/${id}/status`, { status }),
@@ -138,7 +146,7 @@ export default function Floor() {
             <div className="row">
               <span style={{ fontSize: 22, fontWeight: 800 }}>#{tbl.number}</span>
               <div className="spacer" />
-              <Badge kind={statusKind(tbl.status)}>{statusLabel(tbl.status)}</Badge>
+              <Badge kind={statusKind(tbl.status)}>{STATUS_ICON[tbl.status] ?? ""} {statusLabel(tbl.status)}</Badge>
             </div>
             <div className="small muted" style={{ marginTop: 6 }}>
               {t("ops:floor_seats", { zone: tbl.zone, capacity: tbl.capacity })}

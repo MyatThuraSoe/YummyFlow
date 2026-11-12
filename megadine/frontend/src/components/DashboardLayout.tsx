@@ -412,7 +412,7 @@ export default function DashboardLayout() {
                       minHeight: 42,
                       justifyContent: groupCollapsed ? "center" : "flex-start",
                       px: groupCollapsed ? 0 : 2,
-                      "& .MuiListItemIcon-root": { minWidth: groupCollapsed ? 0 : 36, justifyContent: "center", color: item.iconColor },
+                      "& .MuiListItemIcon-root": { minWidth: groupCollapsed ? 0 : 36, justifyContent: "center", color: active ? "var(--primary, #6F4E37)" : "rgba(0,0,0,0.54)" },
                     }}
                   >
                     <ListItemIcon>{item.icon}</ListItemIcon>

@@ -48,7 +48,7 @@ html, body, #root { height: 100%; margin: 0; }
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-family: "Segoe UI", "Noto Sans Myanmar", "Myanmar Text", "Pyidaungsu", system-ui, -apple-system, sans-serif;
   font-size: 15px;
   -webkit-font-smoothing: antialiased;
 }

@@ -1546,6 +1546,17 @@ function PaymentModal({
                 <input className="input" type="number" value={tender.cash} onChange={(e) => update(i, { cash: e.target.value })} />
               </div>
             )}
+            {tender.method === "CASH" && (
+              <div className="row wrap" style={{ marginTop: 8, gap: 6 }}>
+                {[total, Math.ceil(total / 1000) * 1000, Math.ceil(total / 5000) * 5000, Math.ceil(total / 10000) * 10000]
+                  .filter((v, idx, arr) => arr.indexOf(v) === idx)
+                  .map((amt) => (
+                    <button key={amt} className="btn small" type="button" onClick={() => update(i, { cash: fromCents(amt) })}>
+                      {formatMoney(amt, currency)}
+                    </button>
+                  ))}
+              </div>
+            )}
             {tender.method !== "CASH" && (
               <div className="row" style={{ marginTop: 8 }}>
                 <span className="muted small" style={{ minWidth: 90 }}>{t("ops:pay_reference")}</span>

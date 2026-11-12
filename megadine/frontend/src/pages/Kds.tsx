@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { apiGet, apiPatch, apiPost } from "../lib/api";
@@ -11,7 +11,7 @@ interface Ticket {
   station: string;
   status: string;
   sentAt: string;
-  order: { orderNumber: number; channel: string; tableId: string | null; notes: string | null; priority: string };
+  order: { orderNumber: number; channel: string; tableId: string | null; notes: string | null; priority: string; table?: { number: number; name: string | null } | null };
   lines: TicketLine[];
 }
 
@@ -66,6 +66,22 @@ export default function Kds() {
   });
 
   const tickets = data?.tickets ?? [];
+  const seenIds = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const ids = new Set(tickets.map((t) => t.id));
+    const hasNew = tickets.some((t) => !seenIds.current.has(t.id));
+    if (hasNew && seenIds.current.size > 0) {
+      try {
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.frequency.value = 880; gain.gain.value = 0.08;
+        osc.start(); osc.stop(ctx.currentTime + 0.15);
+      } catch { /* ignore */ }
+    }
+    seenIds.current = ids;
+  }, [tickets]);
   const age = (iso: string) => Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
   const channelLabel = (channel: string) => {
     const key = `channel_${channel.toLowerCase()}`;
@@ -95,6 +111,15 @@ export default function Kds() {
             <div className="kds-col" key={col.key}>
               <h3>
                 {t(`ops:${col.labelKey}`)} · {list.length}
+                {col.next && list.length > 0 && (
+                  <button
+                    className="btn ok small"
+                    style={{ marginLeft: 8 }}
+                    onClick={() => list.forEach((tk) => statusMut.mutate({ id: tk.id, status: col.next!.to }))}
+                  >
+                    {t("ops:kds_bump_all", { defaultValue: "Bump all" })}
+                  </button>
+                )}
               </h3>
               {groups.map((group) => {
                 const first = group[0];
@@ -118,6 +143,12 @@ export default function Kds() {
                       <div className="row">
                         <span className="tnum">#{first.order.orderNumber}</span>
                         <Badge kind="muted">{channelLabel(first.order.channel)}</Badge>
+                        {first.order.table && (
+                          <Badge kind="info">{t("ops:kds_table", { defaultValue: "Table" })} {first.order.table.name ?? first.order.table.number}</Badge>
+                        )}
+                        {first.order.table && (
+                          <Badge kind="info">{t("ops:kds_table", { defaultValue: "Table" })} {first.order.table.name ?? first.order.table.number}</Badge>
+                        )}
                         {priority !== "NORMAL" && (
                           <Badge kind={priorityKind(priority)}>{t(`ops:priority_${priority.toLowerCase()}`)}</Badge>
                         )}
