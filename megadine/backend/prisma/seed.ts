@@ -1,6 +1,6 @@
 import { randomInt } from "node:crypto";
 import { prisma } from "../src/lib/prisma.js";
-import { hashPin, hashPassword } from "../src/lib/auth.js";
+import { hashPin, hashPassword, pinLookup } from "../src/lib/auth.js";
 import { env } from "../src/lib/env.js";
 
 async function main() {
@@ -89,11 +89,11 @@ async function main() {
 
   await prisma.user.createMany({
     data: [
-      { restaurantId: restaurant.id, name: "Olivia Owner", username: "owner", firstName: "Olivia", lastName: "Owner", email: "owner@megadine.local", role: "OWNER", pinHash: ownerPin, passwordHash: await hashPassword(ownerPassword), mustChangeCredential },
-      { restaurantId: restaurant.id, name: "Adam Admin", username: "admin", firstName: "Adam", lastName: "Admin", email: "admin@megadine.local", role: "ADMIN", pinHash: adminPin, passwordHash: await hashPassword(adminPassword), mustChangeCredential },
-      { restaurantId: restaurant.id, name: "Cara Cashier", username: "cashier", firstName: "Cara", lastName: "Cashier", role: "CASHIER", pinHash: cashierPin, mustChangeCredential },
-      { restaurantId: restaurant.id, name: "Will Waiter", username: "waiter", firstName: "Will", lastName: "Waiter", role: "WAITER", pinHash: waiterPin, mustChangeCredential },
-      { restaurantId: restaurant.id, name: "Ken Kitchen", username: "kitchen", firstName: "Ken", lastName: "Kitchen", role: "KITCHEN", pinHash: kitchenPin, mustChangeCredential },
+      { restaurantId: restaurant.id, name: "Olivia Owner", username: "owner", firstName: "Olivia", lastName: "Owner", email: "owner@megadine.local", role: "OWNER", pinHash: ownerPin, pinLookup: pinLookup(restaurant.id, pins.OWNER), passwordHash: await hashPassword(ownerPassword), mustChangeCredential },
+      { restaurantId: restaurant.id, name: "Adam Admin", username: "admin", firstName: "Adam", lastName: "Admin", email: "admin@megadine.local", role: "ADMIN", pinHash: adminPin, pinLookup: pinLookup(restaurant.id, pins.ADMIN), passwordHash: await hashPassword(adminPassword), mustChangeCredential },
+      { restaurantId: restaurant.id, name: "Cara Cashier", username: "cashier", firstName: "Cara", lastName: "Cashier", role: "CASHIER", pinHash: cashierPin, pinLookup: pinLookup(restaurant.id, pins.CASHIER), mustChangeCredential },
+      { restaurantId: restaurant.id, name: "Will Waiter", username: "waiter", firstName: "Will", lastName: "Waiter", role: "WAITER", pinHash: waiterPin, pinLookup: pinLookup(restaurant.id, pins.WAITER), mustChangeCredential },
+      { restaurantId: restaurant.id, name: "Ken Kitchen", username: "kitchen", firstName: "Ken", lastName: "Kitchen", role: "KITCHEN", pinHash: kitchenPin, pinLookup: pinLookup(restaurant.id, pins.KITCHEN), mustChangeCredential },
     ],
   });
 

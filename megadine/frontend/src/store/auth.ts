@@ -27,7 +27,7 @@ function applyUserLanguage(user: AuthUser) {
 interface AuthState {
   user: AuthUser | null;
   ready: boolean;
-  loginPin: (pin: string) => Promise<AuthUser>;
+  loginPin: (pin: string, userId?: string) => Promise<AuthUser>;
   loginCredentials: (handle: string, password: string) => Promise<AuthUser>;
   logout: () => Promise<void>;
   hydrate: () => Promise<void>;
@@ -37,8 +37,11 @@ interface AuthState {
 export const useAuth = create<AuthState>((set, get) => ({
   user: null,
   ready: false,
-  async loginPin(pin) {
-    const data = await api<{ user: AuthUser; token: string }>("/auth/login", { method: "POST", body: { pin } });
+  async loginPin(pin, userId) {
+    const data = await api<{ user: AuthUser; token: string }>("/auth/login", {
+      method: "POST",
+      body: userId ? { pin, userId } : { pin },
+    });
     setToken(data.token);
     connectSocket();
     applyUserLanguage(data.user);

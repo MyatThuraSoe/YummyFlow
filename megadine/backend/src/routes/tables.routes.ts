@@ -8,9 +8,37 @@ import { validate } from "../middleware/validate.js";
 import { audit } from "../lib/audit.js";
 import { assertWithinLimit } from "../lib/license.js";
 import { EVENTS, emitToWorkspace } from "../lib/socket.js";
+import type { Prisma } from "@prisma/client";
 
 export const tablesRouter = Router();
 tablesRouter.use(requireAuth);
+
+/**
+ * Lock the table row and, when it is being freed, refuse if a live order still
+ * sits on it. This is the same rule as `/clear`, reused by the free-form status
+ * writes so they cannot bypass it (F-12).
+ */
+async function lockTableForStatus(
+  tx: Prisma.TransactionClient,
+  tableId: string,
+  restaurantId: string,
+  freeing: boolean,
+) {
+  const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "RestaurantTable" WHERE id = ${tableId} FOR UPDATE`;
+  if (!locked.length) throw ApiError.notFound("Table not found");
+  const table = await tx.restaurantTable.findFirst({ where: { id: tableId, restaurantId } });
+  if (!table) throw ApiError.notFound("Table not found");
+  if (freeing) {
+    const open = await tx.tableSession.findFirst({
+      where: { tableId, status: "OPEN" },
+      include: { order: { select: { orderNumber: true, status: true } } },
+    });
+    if (open?.order && open.order.status !== "COMPLETED" && open.order.status !== "CANCELLED") {
+      throw ApiError.conflict(`Table has an open order #${open.order.orderNumber}. Pay or cancel it first.`);
+    }
+  }
+  return table;
+}
 
 tablesRouter.get(
   "/",
@@ -134,23 +162,34 @@ tablesRouter.patch(
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof patchSchema>;
     const { version, ...data } = body;
+    const id = String(req.params.id);
     const existing = await prisma.restaurantTable.findFirst({
-      where: { id: String(req.params.id), restaurantId: req.auth!.restaurantId },
+      where: { id, restaurantId: req.auth!.restaurantId },
     });
     if (!existing) throw ApiError.notFound("Table not found");
     if (version !== undefined && version !== existing.version) {
       throw new ApiError(409, "STALE", "Table was updated by someone else. Reload and try again.");
     }
-    const table = await prisma.restaurantTable.update({
-      where: { id: String(req.params.id) },
-      data: { ...data, version: { increment: 1 } },
-    });
-    if (data.status === "NEEDS_BILL") {
-      await prisma.tableSession.updateMany({
-        where: { tableId: table.id, status: "OPEN" },
-        data: { billRequestedAt: new Date() },
+    const table = await prisma.$transaction(async (tx) => {
+      await lockTableForStatus(tx, id, req.auth!.restaurantId, data.status === "AVAILABLE");
+      if (data.status === "AVAILABLE") {
+        await tx.tableSession.updateMany({
+          where: { tableId: id, status: "OPEN" },
+          data: { status: "CLOSED", closedAt: new Date(), clearedAt: new Date() },
+        });
+      }
+      const updated = await tx.restaurantTable.update({
+        where: { id },
+        data: { ...data, version: { increment: 1 } },
       });
-    }
+      if (data.status === "NEEDS_BILL") {
+        await tx.tableSession.updateMany({
+          where: { tableId: id, status: "OPEN" },
+          data: { billRequestedAt: new Date() },
+        });
+      }
+      return updated;
+    });
     emitToWorkspace(EVENTS.TABLE_UPDATED, { tableId: table.id, status: table.status });
     res.json({ table });
   }),
@@ -166,16 +205,27 @@ tablesRouter.post(
   validate({ body: statusSchema }),
   asyncHandler(async (req, res) => {
     const { status } = req.body as z.infer<typeof statusSchema>;
-    const table = await prisma.restaurantTable.update({
-      where: { id: String(req.params.id) },
-      data: { status, version: { increment: 1 } },
-    });
-    if (status === "NEEDS_BILL") {
-      await prisma.tableSession.updateMany({
-        where: { tableId: table.id, status: "OPEN" },
-        data: { billRequestedAt: new Date() },
+    const id = String(req.params.id);
+    const table = await prisma.$transaction(async (tx) => {
+      await lockTableForStatus(tx, id, req.auth!.restaurantId, status === "AVAILABLE");
+      if (status === "AVAILABLE") {
+        await tx.tableSession.updateMany({
+          where: { tableId: id, status: "OPEN" },
+          data: { status: "CLOSED", closedAt: new Date(), clearedAt: new Date() },
+        });
+      }
+      const updated = await tx.restaurantTable.update({
+        where: { id },
+        data: { status, version: { increment: 1 } },
       });
-    }
+      if (status === "NEEDS_BILL") {
+        await tx.tableSession.updateMany({
+          where: { tableId: id, status: "OPEN" },
+          data: { billRequestedAt: new Date() },
+        });
+      }
+      return updated;
+    });
     emitToWorkspace(EVENTS.TABLE_UPDATED, { tableId: table.id, status });
     res.json({ table });
   }),

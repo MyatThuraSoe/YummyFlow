@@ -201,6 +201,8 @@ model User {
   phone            String?
   email            String?   @unique
   pinHash          String?
+  // Keyed hash of the PIN so uniqueness can be checked without storing the PIN.
+  pinLookup        String?
   passwordHash     String? // Owner/Admin remote access
   passwordChangedAt DateTime?
   preferredLanguage String   @default("en")
@@ -221,6 +223,7 @@ model User {
   auditLogs AuditLog[]
   sessions Session[]
 
+  @@unique([restaurantId, pinLookup])
   @@index([restaurantId, role])
   @@index([isActive, deletedAt])
 }
@@ -373,6 +376,9 @@ model TableSession {
   closedAt  DateTime?
   status    String          @default("OPEN") // OPEN, CLOSED
 
+  // A partial unique index `TableSession_tableId_open_key` (WHERE status =
+  // 'OPEN') enforces one live session per table; Prisma cannot express partial
+  // indexes, so it lives in the migration.
   @@index([tableId, status])
   @@index([tableId, seatedAt])
 }
@@ -480,6 +486,8 @@ model OrderLine {
   voidReason        String?
   servedQuantity    Int       @default(0)
   servedAt          DateTime?
+  // 0 = not sent to the kitchen yet; N = sent in round N.
+  round             Int       @default(0)
 
   modifiers         OrderLineModifier[]
 
@@ -567,6 +575,8 @@ model KitchenTicket {
   order        Order             @relation(fields: [orderId], references: [id])
   station      Station
   status       KitchenItemStatus @default(QUEUED)
+  // 1 for the first send, 2 for later additions (round 2, 3, ...).
+  round        Int               @default(1)
   sentAt       DateTime          @default(now())
   preparingAt  DateTime?
   readyAt      DateTime?

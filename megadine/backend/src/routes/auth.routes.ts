@@ -3,7 +3,8 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { env } from "../lib/env.js";
 import { ApiError, asyncHandler } from "../lib/errors.js";
-import { verifyPin, verifyPassword, newSessionToken, hashPin, hashToken, hashPassword } from "../lib/auth.js";
+import { verifyPin, verifyPassword, newSessionToken, hashPin, hashToken, hashPassword, pinLookup } from "../lib/auth.js";
+import { pinForStorage } from "../lib/pin.js";
 import { SESSION_COOKIE, requireAuth } from "../middleware/auth.js";
 import { rateLimit } from "../middleware/rateLimit.js";
 import { validate } from "../middleware/validate.js";
@@ -45,6 +46,25 @@ async function registerFailure(userId: string) {
   });
 }
 
+/** A failed sign-in is worth an audit row: success, failure and lockout (§9). */
+async function auditLoginFailure(req: Parameters<typeof clientIp>[0], userId: string | null, method: "pin" | "password") {
+  // The audit row has a required user foreign key. When the handle matches no
+  // account there is nobody to attribute it to, so skip rather than write a
+  // dangling row (the API response already tells the caller it failed).
+  if (!userId) return;
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { restaurantId: true } });
+  if (!user) return;
+  await audit({
+    restaurantId: user.restaurantId,
+    userId,
+    action: "AUTH_LOGIN_FAILED",
+    entityType: "User",
+    entityId: userId,
+    after: { method },
+    ipAddress: clientIp(req),
+  });
+}
+
 /** Password path uses its own thresholds but the same counter columns (§4.1). */
 async function registerPasswordFailure(userId: string) {
   const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -60,6 +80,39 @@ async function registerPasswordFailure(userId: string) {
   });
 }
 
+// ── Staff tiles (F-19) ──────────────────────────────────────────────────────
+// Public, PIN-free list of the people who can sign in on the floor tablets.
+authRouter.get(
+  "/staff",
+  rateLimit({ key: "staff-list", windowMs: 60_000, max: 60 }),
+  asyncHandler(async (_req, res) => {
+    const restaurant = await prisma.restaurant.findFirst({
+      orderBy: { createdAt: "asc" },
+      select: { id: true },
+    });
+    if (!restaurant) {
+      res.json({ staff: [] });
+      return;
+    }
+    const staff = await prisma.user.findMany({
+      where: { restaurantId: restaurant.id, isActive: true, deletedAt: null, pinHash: { not: null } },
+      select: { id: true, name: true, firstName: true, lastName: true, role: true, lockoutUntil: true },
+      orderBy: [{ role: "asc" }, { name: "asc" }],
+    });
+    const now = Date.now();
+    res.json({
+      staff: staff.map((s) => ({
+        id: s.id,
+        name: s.name,
+        firstName: s.firstName,
+        lastName: s.lastName,
+        role: s.role,
+        locked: !!s.lockoutUntil && s.lockoutUntil.getTime() > now,
+      })),
+    });
+  }),
+);
+
 authRouter.post(
   "/login",
   // Per-account lockout (5 attempts) is the brute-force defense; this per-IP
@@ -72,10 +125,19 @@ authRouter.post(
     let user = null;
 
     if (pin) {
-      // Existing PIN flow (unchanged).
+      // Staff tiles send the chosen user id, so the PIN is checked against one
+      // person and a wrong entry counts against that person (F-19). The legacy
+      // "PIN only" call is still accepted for older clients.
       const candidates = userId
         ? await prisma.user.findMany({ where: { id: userId, isActive: true, deletedAt: null } })
         : await prisma.user.findMany({ where: { isActive: true, deletedAt: null, pinHash: { not: null } } });
+
+      if (userId && candidates[0]?.lockoutUntil && candidates[0].lockoutUntil > new Date()) {
+        const mins = Math.ceil((candidates[0].lockoutUntil.getTime() - Date.now()) / 60_000);
+        await auditLoginFailure(req, userId, "pin");
+        throw new ApiError(423, "auth.login.locked", `Account locked for ${mins} more minute(s)`);
+      }
+
       for (const c of candidates) {
         if (c.pinHash && (await verifyPin(pin, c.pinHash))) {
           user = c;
@@ -84,7 +146,15 @@ authRouter.post(
       }
       if (!user) {
         if (userId) await registerFailure(userId);
+        await auditLoginFailure(req, userId ?? null, "pin");
         throw ApiError.unauthorized("Invalid PIN");
+      }
+      // Legacy accounts predate the lookup column: remember this PIN's keyed
+      // value so uniqueness is enforced from now on.
+      if (!user.pinLookup) {
+        await prisma.user
+          .update({ where: { id: user.id }, data: { pinLookup: pinLookup(user.restaurantId, pin) } })
+          .catch(() => {});
       }
     } else if (password && (username || email)) {
       // Username/email + password flow.
@@ -102,6 +172,7 @@ authRouter.post(
       }
       if (!found || !found.passwordHash || !(await verifyPassword(password, found.passwordHash))) {
         if (found) await registerPasswordFailure(found.id);
+        await auditLoginFailure(req, found?.id ?? null, "password");
         throw new ApiError(401, "auth.login.failed", "Invalid username/email or password");
       }
       if (!found.isActive || found.deletedAt) {
@@ -341,7 +412,11 @@ authRouter.post(
     if (user.pinHash && (!currentPin || !(await verifyPin(currentPin, user.pinHash)))) {
       throw ApiError.forbidden("Current PIN is incorrect");
     }
-    await prisma.user.update({ where: { id: user.id }, data: { pinHash: await hashPin(newPin) } });
+    const lookup = await pinForStorage(user.restaurantId, newPin, user.id);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { pinHash: await hashPin(newPin), pinLookup: lookup },
+    });
     await audit({
       restaurantId: user.restaurantId,
       userId: user.id,

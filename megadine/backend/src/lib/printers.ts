@@ -55,6 +55,8 @@ const cols = (left: string, right: string) => {
 export function buildKitchenTicketText(t: {
   orderNumber: number;
   station: string;
+  /** 2+ prints a prominent "ROUND n" line; 1 is the first send. */
+  round?: number;
   tableLabel?: string | null;
   channel: string;
   sentAt: Date;
@@ -64,6 +66,7 @@ export function buildKitchenTicketText(t: {
 }): string {
   const out: string[] = [];
   out.push(center(`*** ${t.station} ***`));
+  if ((t.round ?? 1) > 1) out.push(center(`ROUND ${t.round}`));
   out.push(center(`Order #${t.orderNumber}`));
   out.push(cols(t.channel.replace("_", "-"), t.tableLabel ? `Table ${t.tableLabel}` : ""));
   out.push(cols("Sent", formatTime(t.sentAt, t.timeZone)));

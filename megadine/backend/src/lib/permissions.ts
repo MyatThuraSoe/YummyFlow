@@ -10,6 +10,7 @@ export type Capability =
   | "order.discount.large" // > threshold, requires manager approval
   | "order.void"
   | "order.refund"
+  | "approve.override" // approve a discount/void/refund beyond the actor's limit
   | "table.manage"
   | "kds.view"
   | "kds.update"
@@ -30,7 +31,7 @@ export type Capability =
 
 const ALL: Capability[] = [
   "pos.use", "order.discount.small", "order.discount.large", "order.void", "order.refund",
-  "table.manage", "kds.view", "kds.update", "shift.open", "shift.close", "shift.manage",
+  "approve.override", "table.manage", "kds.view", "kds.update", "shift.open", "shift.close", "shift.manage",
   "report.view", "report.z", "menu.manage", "inventory.view", "inventory.manage",
   "expense.manage", "staff.manage", "settings.manage", "audit.view", "backup.manage",
   "hardware.manage",
@@ -58,7 +59,9 @@ export function can(role: Role, capability: Capability): boolean {
 
 /** Roles allowed to open the Admin workspace. */
 export const ADMIN_ROLES: Role[] = ["OWNER", "ADMIN"];
-/** Roles allowed to approve overrides (voids/refunds/large discounts). */
-export const MANAGER_ROLES: Role[] = ["OWNER", "ADMIN"];
+/** Roles that may approve overrides (derived from the capability, never a name list). */
+export const MANAGER_ROLES: Role[] = (Object.keys(ROLE_CAPABILITIES) as Role[]).filter((r) =>
+  ROLE_CAPABILITIES[r].includes("approve.override"),
+);
 
 export const DISCOUNT_THRESHOLD = 0.1; // cashier may apply up to 10% alone

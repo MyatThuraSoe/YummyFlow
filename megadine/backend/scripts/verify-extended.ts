@@ -82,6 +82,18 @@ async function main() {
   const cashier = await login(PIN_CASHIER);
   const admin = await login(PIN_ADMIN);
 
+    // ── F-19: public staff tiles; PIN is checked against one user ──────────
+    const tiles = await api<{ staff: { id: string; name: string; role: string; locked: boolean }[] }>("/auth/staff");
+    assert.equal(tiles.status, 200, JSON.stringify(tiles.data));
+    const cashierTile = tiles.data.staff.find((s) => s.role === "CASHIER");
+    assert.ok(cashierTile, "staff tiles must list the cashier");
+    assert.ok(!("pinHash" in (cashierTile as object)), "tiles must never expose the PIN hash");
+    const tileLogin = await api<{ token: string }>("/auth/login", { method: "POST", body: { userId: cashierTile.id, pin: PIN_CASHIER } });
+    assert.equal(tileLogin.status, 200, JSON.stringify(tileLogin.data));
+    const tileBad = await api("/auth/login", { method: "POST", body: { userId: cashierTile.id, pin: "999999" } });
+    assert.equal(tileBad.status, 401, "a wrong PIN for the chosen user must fail");
+    ok("staff tiles list users and PIN login is scoped to the chosen user");
+
     // ── License + plan limits ────────────────────────────
     const lic = await api<{
       limits: { edition: string; maxTerminals: number; maxTables: number; maxMenuItems: number };
@@ -285,6 +297,9 @@ async function main() {
       body: { channel: "TAKEAWAY", items: [{ menuItemId: coke.id, quantity: 1 }] },
     });
     const r2Total = Number(r2.data.order.total);
+    const r2send1 = await api<{ round: number }>(`/orders/${r2.data.order.id}/send-to-kitchen`, { method: "POST", token: cashier.token });
+    assert.equal(r2send1.status, 200, JSON.stringify(r2send1.data));
+    assert.equal(r2send1.data.round, 1);
     const r2add = await api<{ order: { total: string } }>(`/orders/${r2.data.order.id}/items`, {
       method: "POST",
       token: cashier.token,
@@ -299,7 +314,10 @@ async function main() {
         "added line must keep its modifiers",
       );
     }
-    await api(`/orders/${r2.data.order.id}/cancel`, { method: "POST", token: cashier.token, body: { reason: "verify cleanup" } });
+    const r2send2 = await api<{ round: number }>(`/orders/${r2.data.order.id}/send-to-kitchen`, { method: "POST", token: cashier.token });
+    assert.equal(r2send2.status, 200, JSON.stringify(r2send2.data));
+    assert.equal(r2send2.data.round, 2, "items added after the first send must form round 2");
+    await api(`/orders/${r2.data.order.id}/cancel`, { method: "POST", token: cashier.token, body: { reason: "verify cleanup", managerPin: PIN_OWNER } });
     ok("round-2 items append to an existing order with modifiers and recalculated total");
 
     const tblList = await api<{ tables: { id: string; status: string }[] }>("/tables", { token: cashier.token });
@@ -319,6 +337,8 @@ async function main() {
       assert.equal(d2.status, 409, `expected 409 on occupied table, got ${d2.status}`);
       const blockedClear = await api(`/tables/${freeTable.id}/clear`, { method: "POST", token: admin.token });
       assert.equal(blockedClear.status, 409, `expected 409 clearing a table with an open order, got ${blockedClear.status}`);
+      const blockedStatus = await api(`/tables/${freeTable.id}/status`, { method: "POST", token: admin.token, body: { status: "AVAILABLE" } });
+      assert.equal(blockedStatus.status, 409, "the free-form status endpoint must not free a table with an open order");
       await api(`/orders/${d1.data.order.id}/cancel`, { method: "POST", token: cashier.token, body: { reason: "verify cleanup" } });
       const okClear = await api(`/tables/${freeTable.id}/clear`, { method: "POST", token: admin.token });
       assert.equal(okClear.status, 200);
@@ -356,11 +376,13 @@ async function main() {
     assert.equal(part2.data.order.paymentStatus, "SUCCEEDED");
     ok("partial payment stays PENDING, replays are idempotent, balance settles the order");
 
-    // Close the shift, reconciling exactly.
+    // Close the shift, reconciling exactly. The partial-payment order now also
+    // lands in this drawer (F-17 resolves the cashier's open shift).
+    const expectedCashCents = openingFloatCents + Math.round(total * 100) + Math.round(ppTotal * 100);
     const closed = await api<{ variance: string }>(`/shifts/${shiftId}/close`, {
       method: "POST",
       token: cashier.token,
-      body: { actualCash: (openingFloatCents + Math.round(total * 100)) / 100, notes: "verify extended" },
+      body: { actualCash: expectedCashCents / 100, notes: "verify extended" },
     });
     assert.equal(closed.status, 200, JSON.stringify(closed.data));
     assert.equal(Number(closed.data.variance), 0);
@@ -454,6 +476,15 @@ async function main() {
     const temp = created.data.data.user;
     assert.ok(temp.capabilities.includes("pos.use"));
     ok("staff user created (envelope + capability matrix)");
+
+    const dupPin = await api<{ error: { code: string } }>("/users", {
+      method: "POST",
+      token: ownerToken,
+      body: { username: `verify_pin_${stamp}`, email: `verify_pin_${stamp}@example.com`, password: tempPassword, firstName: "Pin", lastName: "Dup", role: "WAITER", pin: "918273" },
+    });
+    assert.equal(dupPin.status, 409, JSON.stringify(dupPin.data));
+    assert.equal(dupPin.data.error.code, "validation.duplicate.pin");
+    ok("staff PINs are unique per restaurant");
 
     const dupU = await api<{ error: { code: string } }>("/users", {
       method: "POST",
@@ -715,6 +746,16 @@ async function main() {
     assert.equal(close3.status, 200, JSON.stringify(close3.data));
     assert.equal(close3.data.varianceExceedsTolerance, false);
 
+    // F-17: cash now needs an open drawer owned by the person taking it. Keep
+    // one open for the rest of the flow and close it before cleanup.
+    const flowShift = await api<{ shift: { id: string } }>("/shifts/open", {
+      method: "POST",
+      token: cashier.token,
+      body: { openingFloat: 0 },
+    });
+    assert.equal(flowShift.status, 201, JSON.stringify(flowShift.data));
+    const flowShiftId = flowShift.data.shift.id;
+
     // ── Receipt customization (spec: receipt config, preview, per-order) ──
     // Reset the fields this block mutates so the script is repeatable.
     await api("/receipts/config", { method: "PUT", token: admin.token, body: { showTax: true, paperWidth: 80, fontSize: "medium" } });
@@ -965,7 +1006,7 @@ async function main() {
         token: cashier.token,
         body: {
           orderId: servedId,
-          shiftId: null,
+          shiftId: flowShiftId,
           idempotencyKey: `served-flow-${servedId}`,
           payments: [{ method: "CASH", amount: Number(servedOrder.data.order.total) }],
         },
@@ -1416,6 +1457,21 @@ async function main() {
     assert.equal(dash.status, 200, JSON.stringify(dash.data));
     assert.equal(typeof dash.data.activeTables, "number");
     ok("dashboard: alerts flag low stock, 7-day trend buckets orders, floor timeline lists sessions");
+
+    // Close the flow drawer opened for the F-17 cash rule before removing the
+    // orders it paid for.
+    const flowCur = await api<{ shift: { id: string } | null; summary?: { expectedCash: number } }>(
+      "/shifts/current",
+      { token: cashier.token },
+    );
+    if (flowCur.data.shift?.id === flowShiftId) {
+      const flowClose = await api(`/shifts/${flowShiftId}/close`, {
+        method: "POST",
+        token: cashier.token,
+        body: { actualCash: (flowCur.data.summary?.expectedCash ?? 0) / 100, notes: "verify flow cleanup" },
+      });
+      assert.equal(flowClose.status, 200, JSON.stringify(flowClose.data));
+    }
 
     // Clean up every Phase 3 artifact (orders, ingredient, recipe).
     const phase3OrderIds = [splitOrderId, refundOrderId, invOrderId];

@@ -7,9 +7,10 @@ import { audit } from "../lib/audit.js";
 import { verifyManagerPin } from "../lib/approval.js";
 import { EVENTS, emitToWorkspace, emitToRole } from "../lib/socket.js";
 import { sendToPrinter, buildKitchenTicketText } from "../lib/printers.js";
+import { can, DISCOUNT_THRESHOLD } from "../lib/permissions.js";
 import { env } from "../lib/env.js";
 import { consumeForOrder } from "./inventory.service.js";
-import type { OrderChannel, OrderPriority, Prisma, Station } from "@prisma/client";
+import type { OrderChannel, OrderPriority, Prisma, Role, Station } from "@prisma/client";
 
 export interface NewLineInput {
   menuItemId: string;
@@ -313,9 +314,10 @@ export async function voidOrderLine(
   if (line.isVoided) throw ApiError.conflict("Line already voided");
 
   let approvedBy: string | null = null;
-  // A line already sent to the kitchen is a sensitive void → manager must approve.
+  // A line already sent to the kitchen is a sensitive void → approver required
+  // unless the actor's role carries `approve.override`.
   const sent = await prisma.kitchenTicketLine.findFirst({ where: { orderLineId: lineId } });
-  if (sent && actorRole !== "OWNER" && actorRole !== "ADMIN") {
+  if (sent && !can(actorRole as Role, "approve.override")) {
     const manager = await verifyManagerPin(line.order.restaurantId, managerPin ?? "", actorId);
     approvedBy = manager.id;
   }
@@ -362,8 +364,8 @@ export async function applyDiscount(
   const pct = subtotal > 0 ? amount / subtotal : 0;
 
   let approvedBy: string | null = null;
-  const isManager = actorRole === "OWNER" || actorRole === "ADMIN";
-  if (!isManager && pct > 0.1) {
+  const isApprover = can(actorRole as Role, "approve.override");
+  if (!isApprover && pct > DISCOUNT_THRESHOLD) {
     const manager = await verifyManagerPin(order.restaurantId, input.managerPin ?? "", actorId);
     approvedBy = manager.id;
   }
@@ -413,14 +415,18 @@ export async function sendToKitchen(orderId: string, actorId: string, actorRole:
       throw ApiError.conflict("Order is already closed");
     }
 
-    const existingTickets = await tx.kitchenTicket.findMany({
+    const existingTickets = await tx.kitchenTicket.aggregate({
       where: { orderId },
-      select: { lines: { select: { orderLineId: true } } },
+      _max: { round: true },
     });
-    const sentIds = new Set(existingTickets.flatMap((t) => t.lines.map((l) => l.orderLineId)));
-    const pending = order.lines.filter((l) => !l.isVoided && !sentIds.has(l.id));
+    const round = (existingTickets._max.round ?? 0) + 1;
+    // `round = 0` marks a line as not yet sent. It is set inside this same
+    // transaction, so a second send cannot pick up the same lines again.
+    const pending = order.lines.filter((l) => !l.isVoided && l.round === 0);
     type TicketWithLines = Prisma.KitchenTicketGetPayload<{ include: { lines: true } }>;
-    if (!pending.length) return { order, tickets: [] as { station: Station; ticket: TicketWithLines }[] };
+    if (!pending.length) {
+      return { order, tickets: [] as { station: Station; ticket: TicketWithLines }[], round: null as number | null };
+    }
 
     const byStation = new Map<Station, typeof pending>();
     for (const line of pending) {
@@ -436,6 +442,7 @@ export async function sendToKitchen(orderId: string, actorId: string, actorRole:
           orderId,
           station,
           status: "QUEUED",
+          round,
           lines: {
             createMany: {
               data: lines.map((l) => ({
@@ -454,15 +461,20 @@ export async function sendToKitchen(orderId: string, actorId: string, actorRole:
       tickets.push({ station, ticket });
     }
 
+    await tx.orderLine.updateMany({
+      where: { id: { in: pending.map((l) => l.id) } },
+      data: { round },
+    });
+
     await tx.order.update({
       where: { id: orderId },
       data: { status: order.status === "DRAFT" ? "SENT_TO_KITCHEN" : order.status },
     });
 
-    return { order, tickets };
+    return { order, tickets, round: round as number | null };
   });
 
-  if (!result.tickets.length) return { tickets: 0, printed: [] as string[] };
+  if (!result.tickets.length) return { tickets: 0, printed: [] as string[], round: null };
 
   const printed: string[] = [];
   const printErrors: string[] = [];
@@ -470,6 +482,7 @@ export async function sendToKitchen(orderId: string, actorId: string, actorRole:
     const text = buildKitchenTicketText({
       orderNumber: result.order.orderNumber,
       station,
+      round: ticket.round,
       tableLabel: result.order.tableSession?.table?.name ?? (result.order.tableSession?.table?.number?.toString() ?? null),
       channel: result.order.channel,
       sentAt: ticket.sentAt,
@@ -499,11 +512,11 @@ export async function sendToKitchen(orderId: string, actorId: string, actorRole:
     action: "ORDER_SENT_TO_KITCHEN",
     entityType: "Order",
     entityId: orderId,
-    after: { stations: result.tickets.map((t) => t.station), printErrors },
+    after: { stations: result.tickets.map((t) => t.station), round: result.round, printErrors },
     approvedBy: actorRole === "KITCHEN" ? actorId : null,
   });
 
-  return { tickets: result.tickets.length, printed, printErrors };
+  return { tickets: result.tickets.length, printed, printErrors, round: result.round };
 }
 
 /** Waiter confirms the food actually reached the table (READY -> SERVED). */
@@ -654,8 +667,8 @@ export async function setOrderPriority(
   if (order.priority === priority) return order;
 
   let approvedBy: string | null = null;
-  const isManager = actorRole === "OWNER" || actorRole === "ADMIN";
-  if (!isManager && priority !== "NORMAL") {
+  const isApprover = can(actorRole as Role, "approve.override");
+  if (!isApprover && priority !== "NORMAL") {
     const manager = await verifyManagerPin(order.restaurantId, managerPin ?? "", actorId);
     approvedBy = manager.id;
   }
@@ -691,7 +704,7 @@ export async function cancelOrder(
 
   let approvedBy: string | null = null;
   const sent = await prisma.kitchenTicket.count({ where: { orderId } });
-  if ((sent > 0 || order.payments.length > 0) && actorRole !== "OWNER" && actorRole !== "ADMIN") {
+  if ((sent > 0 || order.payments.length > 0) && !can(actorRole as Role, "approve.override")) {
     const manager = await verifyManagerPin(order.restaurantId, managerPin ?? "", actorId);
     approvedBy = manager.id;
   }

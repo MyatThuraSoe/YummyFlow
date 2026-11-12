@@ -7,6 +7,7 @@ import { requirePermission } from "../middleware/requirePermission.js";
 import { validate } from "../middleware/validate.js";
 import { audit, clientIp } from "../lib/audit.js";
 import { hashPassword, hashPin } from "../lib/auth.js";
+import { pinForStorage } from "../lib/pin.js";
 import { ok } from "../lib/respond.js";
 import { toUserResponse } from "../lib/userResponse.js";
 import { ADMIN_GUARD_ROLES, assertNotLastAdmin, assertNotSelfDeactivate, releaseUnique } from "../lib/userGuards.js";
@@ -120,6 +121,7 @@ usersRouter.post(
     const email = b.email.toLowerCase();
     await assertUsernameFree(b.username);
     await assertEmailFree(email);
+    const pinLookupValue = b.pin ? await pinForStorage(req.auth!.restaurantId, b.pin) : null;
 
     const user = await prisma.user.create({
       data: {
@@ -135,6 +137,7 @@ usersRouter.post(
         passwordHash: await hashPassword(b.password),
         passwordChangedAt: new Date(),
         pinHash: b.pin ? await hashPin(b.pin) : null,
+        pinLookup: pinLookupValue,
       },
       select: USER_SELECT,
     });
@@ -192,6 +195,15 @@ usersRouter.put(
       await assertEmailFree(email, id);
     }
 
+    // A new PIN must validate and be unique in the cafe; clearing it must also
+    // free the lookup value or a future person could never use that PIN.
+    const pinChange =
+      b.pin === undefined
+        ? {}
+        : b.pin
+          ? { pinHash: await hashPin(b.pin), pinLookup: await pinForStorage(req.auth!.restaurantId, b.pin, id) }
+          : { pinHash: null, pinLookup: null };
+
     const firstName = b.firstName ?? target.firstName ?? target.name.split(" ")[0] ?? "";
     const lastName = b.lastName ?? target.lastName ?? target.name.split(" ").slice(1).join(" ");
 
@@ -204,7 +216,7 @@ usersRouter.put(
         ...(b.role !== undefined ? { role: b.role } : {}),
         ...(b.isActive !== undefined ? { isActive: b.isActive } : {}),
         ...(b.password ? { passwordHash: await hashPassword(b.password), passwordChangedAt: new Date() } : {}),
-        ...(b.pin !== undefined ? { pinHash: b.pin ? await hashPin(b.pin) : null } : {}),
+        ...pinChange,
       },
       select: USER_SELECT,
     });
@@ -244,6 +256,7 @@ usersRouter.delete(
           // Free the unique handles so a future account can reuse them.
           username: releaseUnique(target.username, target.id),
           email: releaseUnique(target.email, target.id),
+          pinLookup: null,
           deletedAt: new Date(),
           isActive: false,
         },

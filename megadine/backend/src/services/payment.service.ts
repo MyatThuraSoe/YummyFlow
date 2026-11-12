@@ -26,116 +26,221 @@ export interface PayOrderInput {
   splitId?: string | null;
 }
 
+/** True when Prisma reports a unique-constraint violation (P2002). */
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code?: string }).code === "P2002"
+  );
+}
+
+const orderWithPayments = { lines: { include: { modifiers: true } }, payments: true } as const;
+
+type LockedOrder = Prisma.OrderGetPayload<{ include: typeof orderWithPayments }>;
+
+/**
+ * Resolve the drawer that must receive this cash tender. Cash always needs an
+ * open shift owned by the person taking it; a closed or someone else's shift is
+ * never accepted (F-17).
+ */
+async function resolveCashShift(
+  tx: Prisma.TransactionClient,
+  input: { shiftId?: string | null; orderShiftId?: string | null; restaurantId: string; actorId: string },
+): Promise<string> {
+  const validate = async (id: string) => {
+    const shift = await tx.cashShift.findUnique({ where: { id } });
+    if (!shift || shift.restaurantId !== input.restaurantId) throw ApiError.badRequest("Shift not found");
+    if (shift.status !== "OPEN") throw ApiError.conflict("Cash shift is not open");
+    if (shift.cashierId !== input.actorId) throw ApiError.forbidden("Cash must be taken on your own shift");
+    return shift.id;
+  };
+
+  if (input.shiftId) return validate(input.shiftId);
+
+  const own = await tx.cashShift.findFirst({
+    where: { restaurantId: input.restaurantId, cashierId: input.actorId, status: "OPEN" },
+    orderBy: { openedAt: "desc" },
+    select: { id: true },
+  });
+  if (own) return validate(own.id);
+
+  if (input.orderShiftId) {
+    const orderShift = await tx.cashShift.findUnique({ where: { id: input.orderShiftId } });
+    if (orderShift?.status === "OPEN" && orderShift.cashierId === input.actorId) return validate(orderShift.id);
+  }
+
+  throw ApiError.badRequest("Open a cash shift before taking cash");
+}
+
 export async function payOrder(input: PayOrderInput) {
   if (input.idempotencyKey) {
     const existing = await prisma.payment.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
     if (existing) {
-      return prisma.order.findUnique({ where: { id: existing.orderId }, include: { payments: true, lines: true } });
+      return prisma.order.findUnique({ where: { id: existing.orderId }, include: orderWithPayments });
     }
   }
 
-  const order = await prisma.order.findUnique({
-    where: { id: input.orderId },
-    include: { payments: true, lines: { include: { modifiers: true } }, tableSession: true },
-  });
-  if (!order) throw ApiError.notFound("Order not found");
-  if (order.status === "CANCELLED") throw ApiError.conflict("Order is cancelled");
-  if (order.paymentStatus === "SUCCEEDED") throw ApiError.conflict("Order already paid");
+  const initial = await prisma.order.findUnique({ where: { id: input.orderId }, select: { restaurantId: true } });
+  if (!initial) throw ApiError.notFound("Order not found");
 
-  const split = input.splitId
-    ? await prisma.orderSplit.findUnique({ where: { id: input.splitId } })
-    : null;
-  if (input.splitId && (!split || split.orderId !== order.id)) throw ApiError.notFound("Split not found");
-  if (split?.paid) throw ApiError.conflict("This person's bill is already paid");
+  let outcome: { order: LockedOrder; replayed: boolean; completes: boolean; tableId: string | null };
+  try {
+    outcome = await prisma.$transaction(async (tx) => {
+      // One writer at a time per order: a second terminal waits here and then
+      // re-reads the balance instead of paying the same bill twice (F-11).
+      const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "Order" WHERE id = ${input.orderId} FOR UPDATE`;
+      if (!locked.length) throw ApiError.notFound("Order not found");
 
-  const total = toCents(order.total);
-  const alreadyPaid = order.payments
-    .filter((p) => p.status === "SUCCEEDED")
-    .reduce((s, p) => s + toCents(p.amount), 0);
-  const due = total - alreadyPaid;
+      // A retry can arrive after the first request committed but before its
+      // response reached the client: replay the original instead of "already paid".
+      if (input.idempotencyKey) {
+        const existing = await tx.payment.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
+        if (existing) {
+          const replay = await tx.order.findUnique({ where: { id: existing.orderId }, include: orderWithPayments });
+          if (replay) return { order: replay, replayed: true, completes: false, tableId: replay.tableId };
+        }
+      }
 
-  const tendered = input.payments.reduce((s, p) => s + toCents(p.amount), 0);
-  if (tendered <= 0) throw ApiError.badRequest("Payment amount must be positive");
-
-  let changeCents = 0;
-  for (const p of input.payments) {
-    if (p.method === "CASH") {
-      const recv = toCents(p.cashReceived ?? p.amount);
-      const amt = toCents(p.amount);
-      if (recv < amt) throw ApiError.badRequest("Cash received is less than the amount tendered");
-      changeCents += recv - amt;
-    }
-  }
-
-  const newPaid = alreadyPaid + tendered;
-  const completes = newPaid >= due + alreadyPaid || newPaid >= total;
-
-  let splitMarkedPaid = false;
-  const result = await prisma.$transaction(async (tx) => {
-    let firstPaymentId: string | null = null;
-    for (const p of input.payments) {
-      const createdPayment = await tx.payment.create({
-        data: {
-          orderId: order.id,
-          method: p.method,
-          amount: fromCents(toCents(p.amount)),
-          status: "SUCCEEDED",
-          reference: p.reference ?? null,
-          cashierId: input.actorId,
-          shiftId: input.shiftId ?? order.shiftId ?? null,
-          cashReceived: p.method === "CASH" ? fromCents(toCents(p.cashReceived ?? p.amount)) : null,
-          changeGiven: p.method === "CASH" ? fromCents(toCents(p.cashReceived ?? p.amount) - toCents(p.amount)) : null,
-          idempotencyKey: input.payments.length === 1 ? input.idempotencyKey ?? null : null,
-        },
+      const order = await tx.order.findUnique({
+        where: { id: input.orderId },
+        include: { ...orderWithPayments, tableSession: true },
       });
-      firstPaymentId ??= createdPayment.id;
-      if (p.method === "CASH" && (input.shiftId ?? order.shiftId)) {
-        await tx.cashMovement.create({
-          data: {
-            shiftId: (input.shiftId ?? order.shiftId)!,
-            type: "CASH_SALE",
-            amount: fromCents(toCents(p.amount)),
-            direction: "IN",
-            reference: order.id,
+      if (!order) throw ApiError.notFound("Order not found");
+      if (order.status === "CANCELLED") throw ApiError.conflict("Order is cancelled");
+      if (order.paymentStatus === "SUCCEEDED") throw ApiError.conflict("Order already paid");
+
+      const split = input.splitId ? await tx.orderSplit.findUnique({ where: { id: input.splitId } }) : null;
+      if (input.splitId && (!split || split.orderId !== order.id)) throw ApiError.notFound("Split not found");
+      if (split?.paid) throw ApiError.conflict("This person's bill is already paid");
+
+      const total = toCents(order.total);
+      const alreadyPaid = order.payments
+        .filter((p) => p.status === "SUCCEEDED")
+        .reduce((s, p) => s + toCents(p.amount), 0);
+      const due = total - alreadyPaid;
+      if (due <= 0) throw ApiError.conflict("Order already paid");
+
+      const hasCash = input.payments.some((p) => p.method === "CASH");
+      const cashShiftId = hasCash
+        ? await resolveCashShift(tx, {
+            shiftId: input.shiftId,
+            orderShiftId: order.shiftId,
+            restaurantId: order.restaurantId,
             actorId: input.actorId,
+          })
+        : input.shiftId ?? order.shiftId ?? null;
+
+      // Non-cash tenders may never exceed the balance; cash may, and the excess
+      // becomes change. This also stops a typo such as paying 1,000,000.
+      const nonCashTotal = input.payments
+        .filter((p) => p.method !== "CASH")
+        .reduce((s, p) => s + toCents(p.amount), 0);
+      if (nonCashTotal > due) throw ApiError.badRequest("Payment exceeds the amount due");
+
+      let remaining = due - nonCashTotal;
+      let changeCents = 0;
+      const rows: { tender: TenderInput; amountCents: number; receivedCents: number | null; changeCents: number }[] = [];
+      for (const p of input.payments) {
+        const amountCents = toCents(p.amount);
+        if (amountCents <= 0) throw ApiError.badRequest("Payment amount must be positive");
+        if (p.method !== "CASH") {
+          rows.push({ tender: p, amountCents, receivedCents: null, changeCents: 0 });
+          continue;
+        }
+        const applied = Math.min(amountCents, remaining);
+        const received = toCents(p.cashReceived ?? p.amount);
+        if (received < applied) throw ApiError.badRequest("Cash received is less than the amount due");
+        const change = received - applied;
+        changeCents += change;
+        remaining -= applied;
+        rows.push({ tender: p, amountCents: applied, receivedCents: received, changeCents: change });
+      }
+
+      const appliedTotal = rows.reduce((s, r) => s + r.amountCents, 0);
+      if (appliedTotal <= 0) throw ApiError.badRequest("Payment amount must be positive");
+      const newPaid = alreadyPaid + appliedTotal;
+      const completes = newPaid >= total;
+
+      let firstPaymentId: string | null = null;
+      for (const row of rows) {
+        const createdPayment = await tx.payment.create({
+          data: {
+            orderId: order.id,
+            method: row.tender.method,
+            amount: fromCents(row.amountCents),
+            status: "SUCCEEDED",
+            reference: row.tender.reference ?? null,
+            cashierId: input.actorId,
+            shiftId: cashShiftId,
+            cashReceived: row.tender.method === "CASH" ? fromCents(row.receivedCents ?? row.amountCents) : null,
+            changeGiven: row.tender.method === "CASH" ? fromCents(row.changeCents) : null,
+            idempotencyKey: input.payments.length === 1 ? input.idempotencyKey ?? null : null,
           },
         });
+        firstPaymentId ??= createdPayment.id;
+        if (row.tender.method === "CASH" && cashShiftId && row.amountCents > 0) {
+          await tx.cashMovement.create({
+            data: {
+              shiftId: cashShiftId,
+              type: "CASH_SALE",
+              amount: fromCents(row.amountCents),
+              direction: "IN",
+              reference: order.id,
+              actorId: input.actorId,
+            },
+          });
+        }
       }
-    }
 
-    const updated = await tx.order.update({
-      where: { id: order.id },
-      data: {
-        amountPaid: fromCents(newPaid),
-        changeGiven: fromCents(changeCents),
-        paymentStatus: completes ? "SUCCEEDED" : "PENDING",
-        ...(completes ? { status: "COMPLETED", completedAt: new Date() } : {}),
-      },
-    });
-
-    if (split && tendered >= toCents(split.total)) {
-      await tx.orderSplit.update({
-        where: { id: split.id },
-        data: { paid: true, paidAt: new Date(), paymentId: firstPaymentId },
+      const updated = await tx.order.update({
+        where: { id: order.id },
+        data: {
+          amountPaid: fromCents(newPaid),
+          changeGiven: fromCents(changeCents),
+          paymentStatus: completes ? "SUCCEEDED" : "PENDING",
+          ...(hasCash && !order.shiftId && cashShiftId ? { shiftId: cashShiftId } : {}),
+          ...(completes ? { status: "COMPLETED", completedAt: new Date() } : {}),
+        },
+        include: orderWithPayments,
       });
-      splitMarkedPaid = true;
-    }
 
-    if (completes) {
-      await consumeForOrder(tx, order.id);
-      if (order.tableId) {
-        await tx.tableSession.updateMany({
-          where: { tableId: order.tableId, status: "OPEN" },
-          data: { status: "CLOSED", closedAt: new Date() },
-        });
-        await tx.restaurantTable.update({
-          where: { id: order.tableId },
-          data: { status: "NEEDS_CLEANING", version: { increment: 1 } },
+      if (split && appliedTotal >= toCents(split.total)) {
+        await tx.orderSplit.update({
+          where: { id: split.id },
+          data: { paid: true, paidAt: new Date(), paymentId: firstPaymentId },
         });
       }
+
+      if (completes) {
+        await consumeForOrder(tx, order.id);
+        if (order.tableId) {
+          await tx.tableSession.updateMany({
+            where: { tableId: order.tableId, status: "OPEN" },
+            data: { status: "CLOSED", closedAt: new Date() },
+          });
+          await tx.restaurantTable.update({
+            where: { id: order.tableId },
+            data: { status: "NEEDS_CLEANING", version: { increment: 1 } },
+          });
+        }
+      }
+      return { order: updated, replayed: false, completes, tableId: order.tableId };
+    });
+  } catch (err) {
+    if (input.idempotencyKey && isUniqueViolation(err)) {
+      const existing = await prisma.payment.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
+      if (existing) {
+        const replay = await prisma.order.findUnique({ where: { id: existing.orderId }, include: orderWithPayments });
+        if (replay) return replay;
+      }
     }
-    return updated;
-  });
+    throw err;
+  }
+
+  const order = outcome.order;
+  if (outcome.replayed) return order;
 
   // Receipt: rendered with the configurable template for the POS response;
   // printing happens fire-and-forget so a printer failure never delays the
@@ -146,22 +251,21 @@ export async function payOrder(input: PayOrderInput) {
   } catch (err) {
     console.error("[payment] receipt render failed", err);
   }
-  if (completes) autoPrintReceipt(order.id, { restaurantId: order.restaurantId, actorId: input.actorId });
+  if (outcome.completes) autoPrintReceipt(order.id, { restaurantId: order.restaurantId, actorId: input.actorId });
 
   await audit({
     restaurantId: order.restaurantId,
     userId: input.actorId,
     orderId: order.id,
-    action: completes ? "ORDER_PAID" : "ORDER_PARTIAL_PAYMENT",
+    action: outcome.completes ? "ORDER_PAID" : "ORDER_PARTIAL_PAYMENT",
     entityType: "Order",
     entityId: order.id,
-    after: { amountPaid: result.amountPaid.toString(), completes },
+    after: { amountPaid: order.amountPaid.toString(), completes: outcome.completes },
   });
-  emitToWorkspace(EVENTS.ORDER_COMPLETED, { id: order.id, orderNumber: order.orderNumber, completes });
-  if (order.tableId) emitToWorkspace(EVENTS.TABLE_UPDATED, { tableId: order.tableId, status: "NEEDS_CLEANING" });
-  if (splitMarkedPaid) emitToWorkspace(EVENTS.ORDER_UPDATED, { id: order.id, splitPaid: split!.id });
+  emitToWorkspace(EVENTS.ORDER_COMPLETED, { id: order.id, orderNumber: order.orderNumber, completes: outcome.completes });
+  if (outcome.tableId) emitToWorkspace(EVENTS.TABLE_UPDATED, { tableId: outcome.tableId, status: "NEEDS_CLEANING" });
 
-  return { ...result, receiptPreview };
+  return { ...order, receiptPreview };
 }
 
 export interface RefundInput {

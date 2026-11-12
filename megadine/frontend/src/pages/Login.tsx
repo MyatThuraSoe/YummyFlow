@@ -1,8 +1,23 @@
 import { useEffect, useState } from "react";
 import { useNavigate, Link as RouterLink } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Alert, Box, Button, CircularProgress, Link, Paper, Stack, Tab, Tabs, TextField, Typography } from "@mui/material";
+import {
+  Alert,
+  Avatar,
+  Box,
+  Button,
+  ButtonBase,
+  CircularProgress,
+  Link,
+  Paper,
+  Stack,
+  Tab,
+  Tabs,
+  TextField,
+  Typography,
+} from "@mui/material";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { apiGet } from "../lib/api";
 import { errorMessage } from "../lib/errors";
 import { useAuth } from "../store/auth";
@@ -15,13 +30,47 @@ interface Envelope<T> {
   data: T;
 }
 
+interface StaffTile {
+  id: string;
+  name: string;
+  firstName: string | null;
+  lastName: string | null;
+  role: string;
+  locked: boolean;
+}
+
+const ROLE_COLORS: Record<string, string> = {
+  OWNER: "#6f4e37",
+  ADMIN: "#7b4b94",
+  MANAGER: "#1f6f8b",
+  CASHIER: "#2e7d32",
+  WAITER: "#c77700",
+  KITCHEN: "#546e7a",
+};
+
+function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]?.toUpperCase() ?? "")
+    .join("");
+}
+
+function roleLabel(t: TFunction, role: string): string {
+  const key = `admin:role_${role.toLowerCase()}`;
+  const translated = t(key);
+  return translated === key ? role : translated;
+}
+
 export default function Login() {
   const { loginPin, loginCredentials } = useAuth();
   const nav = useNavigate();
-  const { t } = useTranslation(["auth", "common", "errors"]);
+  const { t } = useTranslation(["auth", "common", "errors", "admin"]);
   const [tab, setTab] = useState<"password" | "pin">("password");
   const [handle, setHandle] = useState("");
   const [password, setPassword] = useState("");
+  const [selectedStaffId, setSelectedStaffId] = useState<string | null>(null);
   const [pin, setPin] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -37,6 +86,16 @@ export default function Login() {
     staleTime: 30_000,
     retry: 0,
   });
+
+  const { data: staffData } = useQuery({
+    queryKey: ["auth-staff"],
+    queryFn: () => apiGet<Envelope<{ staff: StaffTile[] }>>("/auth/staff"),
+    staleTime: 30_000,
+    retry: 0,
+  });
+
+  const staff = staffData?.data.staff ?? [];
+  const selected = staff.find((s) => s.id === selectedStaffId) ?? null;
 
   useEffect(() => {
     if (setup?.data.needsSetup) nav("/setup", { replace: true });
@@ -61,7 +120,7 @@ export default function Login() {
     setBusy(true);
     setError("");
     try {
-      const user = await loginPin(pin);
+      const user = await loginPin(pin, selected?.id);
       nav(homeForRole(user.role), { replace: true });
     } catch (err) {
       setError(errorMessage(err, t));
@@ -69,6 +128,37 @@ export default function Login() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function chooseStaff(id: string) {
+    setSelectedStaffId(id);
+    setPin("");
+    setError("");
+  }
+
+  function clearStaff() {
+    setSelectedStaffId(null);
+    setPin("");
+    setError("");
+  }
+
+  function pinField(autoFocus: boolean) {
+    return (
+      <TextField
+        type="password"
+        value={pin}
+        onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
+        autoFocus={autoFocus}
+        fullWidth
+        placeholder="••••"
+        slotProps={{
+          htmlInput: {
+            inputMode: "numeric",
+            style: { textAlign: "center", fontSize: 26, letterSpacing: 10 },
+          },
+        }}
+      />
+    );
   }
 
   return (
@@ -149,18 +239,80 @@ export default function Login() {
                 </Button>
               </Stack>
             </Box>
+          ) : staff.length > 0 ? (
+            selected ? (
+              <Box component="form" onSubmit={submitPin}>
+                <Stack spacing={2}>
+                  <Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
+                    <Avatar sx={{ bgcolor: ROLE_COLORS[selected.role] ?? "primary.main", width: 44, height: 44 }}>
+                      {initials(selected.name)}
+                    </Avatar>
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 600 }} noWrap>
+                        {selected.name}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        {roleLabel(t, selected.role)}
+                      </Typography>
+                    </Box>
+                  </Stack>
+                  {pinField(true)}
+                  <Button type="submit" variant="contained" size="large" disabled={busy || pin.length < 4}>
+                    {busy ? <CircularProgress size={22} color="inherit" /> : t("auth:sign_in")}
+                  </Button>
+                  <Button variant="text" onClick={clearStaff} disabled={busy}>
+                    {t("auth:switch_user")}
+                  </Button>
+                </Stack>
+              </Box>
+            ) : (
+              <Stack spacing={1.5}>
+                <Typography variant="body2" color="text.secondary">
+                  {t("auth:select_staff")}
+                </Typography>
+                <Box
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(110px, 1fr))",
+                    gap: 1.5,
+                  }}
+                >
+                  {staff.map((s) => (
+                    <ButtonBase
+                      key={s.id}
+                      onClick={() => chooseStaff(s.id)}
+                      sx={{
+                        borderRadius: 2,
+                        border: 1,
+                        borderColor: "divider",
+                        p: 1.5,
+                        flexDirection: "column",
+                        gap: 0.75,
+                        opacity: s.locked ? 0.55 : 1,
+                        "&:hover": { borderColor: "primary.main", bgcolor: "action.hover" },
+                      }}
+                    >
+                      <Avatar sx={{ bgcolor: ROLE_COLORS[s.role] ?? "primary.main", width: 44, height: 44 }}>
+                        {initials(s.name)}
+                      </Avatar>
+                      <Typography variant="body2" sx={{ fontWeight: 600, textAlign: "center", lineHeight: 1.2 }} noWrap>
+                        {s.firstName ?? s.name}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {s.locked ? t("auth:locked") : roleLabel(t, s.role)}
+                      </Typography>
+                    </ButtonBase>
+                  ))}
+                </Box>
+                <Button variant="text" onClick={() => setTab("password")}>
+                  {t("auth:use_password")}
+                </Button>
+              </Stack>
+            )
           ) : (
             <Box component="form" onSubmit={submitPin}>
               <Stack spacing={2}>
-                <TextField
-                  type="password"
-                  value={pin}
-                  onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                  autoFocus
-                  fullWidth
-                  placeholder="••••"
-                  slotProps={{ htmlInput: { inputMode: "numeric", style: { textAlign: "center", fontSize: 26, letterSpacing: 10 } } }}
-                />
+                {pinField(true)}
                 <Button type="submit" variant="contained" size="large" disabled={busy || pin.length < 4}>
                   {busy ? <CircularProgress size={22} color="inherit" /> : t("auth:sign_in")}
                 </Button>
