@@ -114,6 +114,7 @@ model Restaurant {
   currency          String   @default("USD")
   timezone          String   @default("Asia/Yangon")
   businessDayCutoff String   @default("04:00") // 4 AM = new business day
+  ticketLanguage    String   @default("en")
   taxRate           Decimal  @db.Decimal(5, 4) @default(0.085)
   taxInclusive      Boolean  @default(false)
   serviceChargePct  Decimal  @db.Decimal(5, 4) @default(0)

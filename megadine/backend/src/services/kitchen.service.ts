@@ -26,7 +26,7 @@ export async function listTickets(restaurantId: string, opts: { station?: Statio
     },
     include: {
       lines: true,
-      order: { select: { orderNumber: true, channel: true, tableId: true, notes: true, priority: true, table: { select: { number: true, name: true } } } },
+      order: { select: { orderNumber: true, channel: true, tableId: true, notes: true, priority: true } },
     },
     orderBy: { sentAt: "asc" },
   });

@@ -9,6 +9,7 @@ interface Restaurant {
   name: string;
   currency: string;
   businessDayCutoff: string;
+  ticketLanguage: string;
   taxRate: string;
   taxInclusive: boolean;
   serviceChargePct: string;
@@ -16,6 +17,13 @@ interface Restaurant {
 }
 
 const CURRENCIES = ["USD", "MMK", "THB", "JPY", "EUR", "GBP", "SGD", "MYR"];
+const TICKET_LANGS = [
+  { code: "en", label: "English" },
+  { code: "my", label: "မြန်မာ" },
+  { code: "ja", label: "日本語" },
+  { code: "th", label: "ไทย" },
+  { code: "fr", label: "Français" },
+];
 
 export default function SystemSettingsAdmin() {
   const qc = useQueryClient();
@@ -28,6 +36,7 @@ export default function SystemSettingsAdmin() {
     name: "",
     currency: "USD",
     businessDayCutoff: "04:00",
+    ticketLanguage: "en",
     taxPct: "8.5",
     taxInclusive: false,
     servicePct: "0",
@@ -44,6 +53,7 @@ export default function SystemSettingsAdmin() {
         name: r.name,
         currency: r.currency,
         businessDayCutoff: r.businessDayCutoff,
+        ticketLanguage: r.ticketLanguage ?? "en",
         taxPct: String((Number(r.taxRate) * 100).toFixed(2)),
         taxInclusive: r.taxInclusive,
         servicePct: String((Number(r.serviceChargePct) * 100).toFixed(2)),
@@ -59,6 +69,7 @@ export default function SystemSettingsAdmin() {
         name: form.name,
         currency: form.currency,
         businessDayCutoff: form.businessDayCutoff,
+        ticketLanguage: form.ticketLanguage,
         taxRate: Number(form.taxPct) / 100,
         taxInclusive: form.taxInclusive,
         serviceChargePct: Number(form.servicePct) / 100,
@@ -107,6 +118,20 @@ export default function SystemSettingsAdmin() {
               fullWidth
             />
           </Stack>
+          <TextField
+            select
+            label={t("settings:ticket_language", { defaultValue: "Kitchen ticket language" })}
+            value={form.ticketLanguage}
+            onChange={(e) => set("ticketLanguage")(e.target.value)}
+            helperText={t("settings:ticket_language_hint", { defaultValue: "Labels on printed kitchen tickets. Item names stay as entered." })}
+            sx={{ maxWidth: 320 }}
+          >
+            {TICKET_LANGS.map((l) => (
+              <MenuItem key={l.code} value={l.code}>
+                {l.label}
+              </MenuItem>
+            ))}
+          </TextField>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
             <TextField label={t("settings:tax_rate")} type="number" value={form.taxPct} onChange={(e) => set("taxPct")(e.target.value)} fullWidth />
             <TextField label={t("settings:service_charge")} type="number" value={form.servicePct} onChange={(e) => set("servicePct")(e.target.value)} fullWidth />

@@ -487,6 +487,7 @@ export async function sendToKitchen(orderId: string, actorId: string, actorRole:
       channel: result.order.channel,
       sentAt: ticket.sentAt,
       timeZone: result.order.restaurant.timezone,
+      language: result.order.restaurant.ticketLanguage,
       lines: ticket.lines.map((tl) => ({
         qty: tl.quantity,
         name: tl.itemName,

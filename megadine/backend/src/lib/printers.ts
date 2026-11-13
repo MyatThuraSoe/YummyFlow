@@ -38,6 +38,14 @@ const center = (s = "") => {
   const pad = Math.max(0, Math.floor((WIDTH - t.length) / 2));
   return " ".repeat(pad) + t;
 };
+
+const TICKET_LABELS: Record<string, { round: string; order: string; table: string; sent: string }> = {
+  en: { round: "ROUND", order: "Order", table: "Table", sent: "Sent" },
+  my: { round: "အလှည့်", order: "အော်ဒါ", table: "စားပွဲ", sent: "ပို့ပြီး" },
+  ja: { round: "ラウンド", order: "注文", table: "テーブル", sent: "送信" },
+  th: { round: "รอบ", order: "ออเดอร์", table: "โต๊ะ", sent: "ส่ง" },
+  fr: { round: "Tour", order: "Commande", table: "Table", sent: "Envoyé" },
+};
 /** Wall-clock time in the restaurant's zone (falls back to server zone). */
 function formatTime(d: Date, timeZone?: string | null): string {
   try {
@@ -62,14 +70,17 @@ export function buildKitchenTicketText(t: {
   sentAt: Date;
   /** Restaurant zone; without it the server's own zone leaks onto the ticket. */
   timeZone?: string | null;
+  /** Ticket language configured for the restaurant; labels only, item names stay as entered. */
+  language?: string | null;
   lines: { qty: number; name: string; modifiers?: string[]; notes?: string | null }[];
 }): string {
+  const labels = TICKET_LABELS[t.language ?? "en"] ?? TICKET_LABELS.en!;
   const out: string[] = [];
   out.push(center(`*** ${t.station} ***`));
-  if ((t.round ?? 1) > 1) out.push(center(`ROUND ${t.round}`));
-  out.push(center(`Order #${t.orderNumber}`));
-  out.push(cols(t.channel.replace("_", "-"), t.tableLabel ? `Table ${t.tableLabel}` : ""));
-  out.push(cols("Sent", formatTime(t.sentAt, t.timeZone)));
+  if ((t.round ?? 1) > 1) out.push(center(`${labels.round} ${t.round}`));
+  out.push(center(`${labels.order} #${t.orderNumber}`));
+  out.push(cols(t.channel.replace("_", "-"), t.tableLabel ? `${labels.table} ${t.tableLabel}` : ""));
+  out.push(cols(labels.sent, formatTime(t.sentAt, t.timeZone)));
   out.push(line());
   for (const l of t.lines) {
     out.push(`${l.qty}x  ${l.name}`.slice(0, WIDTH));
