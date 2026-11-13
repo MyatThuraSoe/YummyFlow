@@ -12,7 +12,7 @@ import { audit } from "../lib/audit.js";
 import { env } from "../lib/env.js";
 import { sendToPrinter } from "../lib/printers.js";
 import { RECEIPT_DEFAULTS, logoValidationError } from "../lib/receiptDefaults.js";
-import { renderReceiptHtml, renderReceiptText } from "../lib/receiptRenderer.js";
+import { renderReceiptEscPos, renderReceiptHtml } from "../lib/receiptRenderer.js";
 import {
   auditSafeConfig,
   buildSampleReceiptData,
@@ -145,7 +145,7 @@ receiptsRouter.post(
     const current = configShapeFromRow(await ensureReceiptConfig(req.auth!.restaurantId));
     const restaurant = await restaurantForReceipt(req.auth!.restaurantId);
     const data = await buildSampleReceiptData(current, restaurant);
-    const result = await sendToPrinter(env.RECEIPT_PRINTER_IP || null, renderReceiptText(data));
+    const result = await sendToPrinter(env.RECEIPT_PRINTER_IP || null, renderReceiptEscPos(data));
     await audit({
       restaurantId: req.auth!.restaurantId,
       userId: req.auth!.userId,

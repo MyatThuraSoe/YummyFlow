@@ -6,6 +6,8 @@
  * output sent to the thermal printer.
  */
 import { fromCents } from "./money.js";
+import { EscPosBuilder } from "./escpos.js";
+import { decodePngDataUrl, pngToRaster } from "./bitmap.js";
 import type { ReceiptConfigShape } from "./receiptDefaults.js";
 
 /** Local wall-clock date/time in the restaurant zone (server zone fallback). */
@@ -201,4 +203,56 @@ export function renderReceiptText(data: ReceiptData): string {
   out.push("");
   out.push("");
   return out.join("\n");
+}
+
+/**
+ * ESC/POS bytes for the receipt (F-26). Text blocks are aligned by printer
+ * command instead of leading spaces, and PNG logos/QR codes are sent as a
+ * raster image so they survive on printers without logo memory.
+ */
+export function renderReceiptEscPos(data: ReceiptData): Buffer {
+  const width = lineWidth(data.config);
+  const b = new EscPosBuilder().init();
+  if (data.config.fontSize === "large") b.size(1, 2);
+  const pad = (s: string, align: "left" | "center" | "right") => {
+    const t = s.slice(0, width);
+    if (align === "center") return " ".repeat(Math.max(0, Math.floor((width - t.length) / 2))) + t;
+    if (align === "right") return " ".repeat(Math.max(0, width - t.length)) + t;
+    return t;
+  };
+  const row = (left: string, right: string) => {
+    const r = right.slice(0, width);
+    const l = left.slice(0, Math.max(0, width - r.length - 1));
+    return l + " ".repeat(Math.max(1, width - l.length - r.length)) + r;
+  };
+
+  for (const block of buildBlocks(data)) {
+    if (block.kind === "image" || block.kind === "qr") {
+      const png = decodePngDataUrl(block.kind === "image" ? block.src : block.src ?? "");
+      if (png) {
+        b.align("center").raster(pngToRaster(png));
+        continue;
+      }
+      if (block.kind === "qr") b.align("center").text("[QR]").newline();
+      continue;
+    }
+    if (block.kind === "divider") {
+      b.align("left").text("-".repeat(width)).newline();
+      continue;
+    }
+    if (block.kind === "row") {
+      b.align("left");
+      if (block.bold) b.bold(true);
+      b.text(row(block.left, block.right)).newline();
+      if (block.bold) b.bold(false);
+      continue;
+    }
+    b.align(block.align);
+    if (block.bold) b.bold(true);
+    b.text(block.text.startsWith("  ") ? block.text.slice(0, width) : pad(block.text, block.align)).newline();
+    if (block.bold) b.bold(false);
+  }
+
+  b.feed(3).cut();
+  return b.build();
 }

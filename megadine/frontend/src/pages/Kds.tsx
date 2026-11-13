@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { apiGet, apiPatch, apiPost } from "../lib/api";
 import { Badge, Field, Modal, useToast } from "../components/ui";
+import { needsBitmap, ticketToPng } from "../lib/ticketImage";
 
 interface TicketLine { id: string; itemName: string; quantity: number; modifiers: { name: string }[] | null; notes: string | null; status: string }
 interface Ticket {
@@ -74,7 +75,11 @@ export default function Kds() {
   });
 
   const printMut = useMutation({
-    mutationFn: (id: string) => apiPost(`/kitchen/tickets/${id}/print`),
+    mutationFn: (ticket: Ticket) => {
+      // Burmese/Thai item names cannot go through a single-byte code page.
+      const image = needsBitmap(ticket) ? ticketToPng(ticket) : null;
+      return apiPost(`/kitchen/tickets/${ticket.id}/print`, image ? { image } : {});
+    },
     onSuccess: () => push(t("ops:kds_reprinted", { defaultValue: "Ticket sent to the printer" }), "ok"),
     onError: (e) => push(e instanceof Error ? e.message : t("ops:failed"), "error"),
   });
@@ -195,7 +200,7 @@ export default function Kds() {
                         <button className="btn ghost small" onClick={() => setPriorityTarget(first)}>
                           {t("ops:kds_priority_btn")}
                         </button>
-                        <button className="btn ghost small" disabled={printMut.isPending} onClick={() => printMut.mutate(first.id)}>
+                        <button className="btn ghost small" disabled={printMut.isPending} onClick={() => printMut.mutate(first)}>
                           {t("ops:kds_reprint", { defaultValue: "Reprint" })}
                         </button>
                         <button className="btn ghost small" onClick={() => setCancelTarget(first)}>
@@ -250,7 +255,7 @@ export default function Kds() {
                               {t("ops:kds_recall", { defaultValue: "Recall" })}
                             </button>
                           )}
-                          <button className="btn ghost small" disabled={printMut.isPending} onClick={() => printMut.mutate(tk.id)}>
+                          <button className="btn ghost small" disabled={printMut.isPending} onClick={() => printMut.mutate(tk)}>
                             {t("ops:kds_reprint", { defaultValue: "Reprint" })}
                           </button>
                           <button className="btn ghost small" onClick={() => setCancelTarget(tk)}>

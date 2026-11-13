@@ -21,7 +21,7 @@
     "verify:fresh": "tsx scripts/verify-fresh-install.ts",
     "make-license": "tsx scripts/make-license.ts",
     "rotate-pins": "tsx scripts/rotate-pins.ts",
-    "test": "node --import tsx --test test/unit.test.ts test/receipt.test.ts"
+    "test": "node --import tsx --test test/unit.test.ts test/receipt.test.ts test/escpos.test.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.0",
@@ -33,6 +33,7 @@
     "express": "^5.2.1",
     "helmet": "^8.1.0",
     "morgan": "^1.10.1",
+    "pngjs": "^7.0.0",
     "qrcode": "^1.5.4",
     "socket.io": "^4.8.3",
     "zod": "^4.4.3"
@@ -45,6 +46,7 @@
     "@types/express": "^5.0.6",
     "@types/morgan": "^1.9.10",
     "@types/node": "^25.6.0",
+    "@types/pngjs": "^6.0.5",
     "eslint": "^9.39.5",
     "globals": "^15.15.0",
     "prettier": "^3.9.10",

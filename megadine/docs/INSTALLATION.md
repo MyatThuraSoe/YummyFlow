@@ -54,8 +54,12 @@ The login screen only shows the demo-PIN hint when built with `VITE_SHOW_DEMO_PI
 
 - `DATABASE_URL` — Postgres connection (compose overrides this internally)
 - `ALLOWED_ORIGINS` — set to the URL staff open, e.g. `http://192.168.1.10:5173`
-- `PRINTER_MODE` — `simulate` (default) or `tcp` for real thermal printers
-- `RECEIPT_PRINTER_IP` / `KITCHEN_PRINTER_IP` — printer IPs when `PRINTER_MODE=tcp`
+- `PRINTER_MODE` - `simulate` (default) or `tcp` for real thermal printers
+- `RECEIPT_PRINTER_IP` / `KITCHEN_PRINTER_IP` - printer IPs when `PRINTER_MODE=tcp`
+- `PRINTER_CODEPAGE` - ESC/POS code page (0 = CP437, 16 = CP1252, 255 = Thai). Leave unset for UTF-8 printers
+- `PRINTER_ENCODING` - `utf8` (default) or `latin1` for single-byte code pages
+- `PRINTER_BEEP` - `true` to beep once at the start of every ticket
+- `PRINTER_RAW_TEXT` - `true` to bypass ESC/POS shaping (old raw UTF-8 behaviour)
 - `BACKUP_DIR` — host path for database dumps (default `./backups`)
 - `USB_EXPORT_DIR` — path of a mounted USB stick for off-site exports (optional)
 - `BACKUP_RETENTION_DAYS` — auto-prune backups older than N days

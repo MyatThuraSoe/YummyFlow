@@ -32,6 +32,14 @@ export const env = {
   PRINTER_MODE: process.env.PRINTER_MODE ?? "simulate",
   RECEIPT_PRINTER_IP: process.env.RECEIPT_PRINTER_IP ?? "",
   KITCHEN_PRINTER_IP: process.env.KITCHEN_PRINTER_IP ?? "",
+  // ESC/POS job shaping (F-26). `PRINTER_RAW_TEXT` keeps the old raw UTF-8
+  // behaviour for printers that already accept Unicode without a code page.
+  PRINTER_RAW_TEXT: bool(process.env.PRINTER_RAW_TEXT, false),
+  PRINTER_CODEPAGE: process.env.PRINTER_CODEPAGE === undefined || process.env.PRINTER_CODEPAGE === ""
+    ? null
+    : num(process.env.PRINTER_CODEPAGE, 0),
+  PRINTER_BEEP: bool(process.env.PRINTER_BEEP, false),
+  PRINTER_ENCODING: (process.env.PRINTER_ENCODING ?? "utf8") as BufferEncoding,
   // Print a receipt automatically when an order is fully paid (spec §6.5).
   AUTO_PRINT_RECEIPT: bool(process.env.AUTO_PRINT_RECEIPT, true),
   LICENSE_KEY: process.env.LICENSE_KEY ?? "",

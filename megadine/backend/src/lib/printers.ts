@@ -1,5 +1,6 @@
 import net from "node:net";
 import { env } from "./env.js";
+import { escPosText } from "./escpos.js";
 
 const WIDTH = 32; // chars for a 58mm thermal printer
 
@@ -11,24 +12,38 @@ export interface PrintResult {
   preview: string;
 }
 
-/** Send raw ESC/POS-ish text to a network printer. Falls back cleanly. */
-export async function sendToPrinter(ip: string | null, text: string, port = 9100): Promise<PrintResult> {
+/** Send raw ESC/POS bytes (or text wrapped in a complete job) to a network printer. */
+export async function sendToPrinter(ip: string | null, payload: string | Buffer, port = 9100): Promise<PrintResult> {
   const mode = env.PRINTER_MODE === "tcp" && ip ? "tcp" : "simulate";
+  const preview = Buffer.isBuffer(payload) ? "<esc/pos job>" : payload;
+  const bytes = toBytes(payload);
   if (mode === "simulate" || !ip) {
-    return { ok: true, mode: "simulate", simulated: true, preview: text };
+    return { ok: true, mode: "simulate", simulated: true, preview };
   }
   return new Promise((resolve) => {
     const socket = new net.Socket();
     const done = (ok: boolean, error?: string) => {
       socket.destroy();
-      resolve({ ok, mode: "tcp", simulated: false, error, preview: text });
+      resolve({ ok, mode: "tcp", simulated: false, error, preview });
     };
     socket.setTimeout(2500);
     socket.once("timeout", () => done(false, "timeout"));
     socket.once("error", (e) => done(false, e.message));
     socket.connect(port, ip, () => {
-      socket.write(text, "utf8", () => done(true));
+      socket.write(bytes, () => done(true));
     });
+  });
+}
+
+/** Text gets init/codepage/feed/cut unless the install opted into raw UTF-8. */
+function toBytes(payload: string | Buffer): Buffer {
+  if (Buffer.isBuffer(payload)) return payload;
+  if (payload.startsWith("RASTER:")) return Buffer.from(payload.slice("RASTER:".length), "base64");
+  if (env.PRINTER_RAW_TEXT) return Buffer.from(payload, "utf8");
+  return escPosText(payload, {
+    codepage: env.PRINTER_CODEPAGE ?? undefined,
+    encoding: env.PRINTER_ENCODING,
+    beep: env.PRINTER_BEEP,
   });
 }
 
