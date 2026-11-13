@@ -6,6 +6,7 @@ import { recalcOrder } from "./order.service.js";
 import { consumeForOrder } from "./inventory.service.js";
 import { buildKitchenTicketText } from "../lib/printers.js";
 import { queuePrint } from "../lib/printQueue.js";
+import { decodePngDataUrl, pngToEscPos } from "../lib/bitmap.js";
 import type { KitchenItemStatus, Station } from "@prisma/client";
 
 const NEXT: Record<KitchenItemStatus, KitchenItemStatus | null> = {
@@ -141,7 +142,12 @@ export async function updateTicketStatus(
  * rebuilt from the stored ticket so a reprint always matches the ticket
  * content, even after a restart or a printer change.
  */
-export async function reprintTicket(ticketId: string, actorId: string, restaurantId: string) {
+export async function reprintTicket(
+  ticketId: string,
+  actorId: string,
+  restaurantId: string,
+  image?: string | null,
+) {
   const ticket = await prisma.kitchenTicket.findFirst({
     where: { id: ticketId, order: { restaurantId } },
     include: {
@@ -173,6 +179,11 @@ export async function reprintTicket(ticketId: string, actorId: string, restauran
     })),
   });
 
+  // Burmese/Thai script cannot be encoded by a single-byte code page; the
+  // client renders the ticket to PNG with the tablet's fonts and we raster it.
+  const png = image ? decodePngDataUrl(image) : null;
+  const raster = png ? pngToEscPos(png) : null;
+
   const print = await queuePrint({
     restaurantId,
     orderId: ticket.orderId,
@@ -180,6 +191,7 @@ export async function reprintTicket(ticketId: string, actorId: string, restauran
     kind: "REPRINT",
     station: ticket.station,
     text,
+    raster,
   });
 
   await audit({

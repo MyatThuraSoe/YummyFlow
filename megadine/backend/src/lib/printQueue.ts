@@ -13,6 +13,8 @@ interface JobInput {
   kind: "KITCHEN" | "REPRINT" | "RECEIPT";
   station?: Station | null;
   text: string;
+  /** Pre-built ESC/POS bytes; stored as a `RASTER:` payload on the job. */
+  raster?: Buffer | null;
 }
 
 /**
@@ -67,7 +69,7 @@ export async function queuePrint(input: JobInput) {
       station: input.station ?? null,
       printerIp: printer.ip,
       port: printer.port,
-      payload: input.text,
+      payload: input.raster ? `RASTER:${input.raster.toString("base64")}` : input.text,
     },
   });
   const result = await attempt(job.id);

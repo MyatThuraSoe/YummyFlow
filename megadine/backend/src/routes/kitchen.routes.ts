@@ -44,8 +44,15 @@ kitchenRouter.post(
   "/tickets/:id/print",
   requirePermission("kds.update"),
   asyncHandler(async (req, res) => {
-    const print = await reprintTicket(String(req.params.id), req.auth!.userId, req.auth!.restaurantId);
-    res.json({ job: print.job, simulated: print.result.simulated, ok: print.result.ok, error: print.result.error ?? null });
+    const image = (req.body as { image?: string } | undefined)?.image;
+    const print = await reprintTicket(String(req.params.id), req.auth!.userId, req.auth!.restaurantId, image);
+    res.json({
+      job: print.job,
+      simulated: print.result.simulated,
+      ok: print.result.ok,
+      error: print.result.error ?? null,
+      bitmap: print.job.payload.startsWith("RASTER:"),
+    });
   }),
 );
 
