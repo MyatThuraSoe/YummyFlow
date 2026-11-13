@@ -1542,8 +1542,7 @@ function PaymentModal({
             <div className="row">
               <select className="input" value={tender.method} onChange={(e) => update(i, { method: e.target.value })}>
                 <option value="CASH">{t("ops:cash")}</option>
-                <option value="CARD">{t("ops:card")}</option>
-                <option value="MOBILE">{t("ops:mobile")}</option>
+                <option value="MOBILE">{t("ops:other_transfer", { defaultValue: "Other (transfer)" })}</option>
               </select>
               <input className="input" type="number" value={tender.amount} onChange={(e) => update(i, { amount: e.target.value })} placeholder={t("ops:pay_amount_placeholder")} />
             </div>
@@ -1577,7 +1576,7 @@ function PaymentModal({
         ))}
       </div>
       <div className="row">
-        <button className="btn" onClick={() => setTenders((ts) => [...ts, { method: "CARD", amount: fromCents(Math.max(0, remaining)), cash: "0", reference: "" }])} disabled={remaining <= 0}>
+        <button className="btn" onClick={() => setTenders((ts) => [...ts, { method: "CASH", amount: fromCents(Math.max(0, remaining)), cash: fromCents(Math.max(0, remaining)), reference: "" }])} disabled={remaining <= 0}>
           {t("ops:pay_split")}
         </button>
         <div className="spacer" />

@@ -252,5 +252,18 @@
   "orders_outbox": "Failed sends",
   "outbox_empty": "Nothing failed to send",
   "outbox_retry": "Retry",
-  "outbox_dismiss": "Dismiss"
+  "outbox_dismiss": "Dismiss",
+  "status_online": "Online",
+  "status_offline": "Offline — working from cache",
+  "status_printer": "Printer",
+  "status_printer_unknown": "Printer status unknown",
+  "status_printer_simulated": "Printer: simulated",
+  "status_queued": "{{count}} queued",
+  "status_failed": "{{count}} failed to send",
+  "status_backup_age": "Backup {{age}} ago",
+  "status_no_backup": "No backup yet",
+  "status_offline_hint": "Orders will queue and send automatically",
+  "pos_removed_line": "Removed",
+  "pos_undo": "Undo",
+  "other_transfer": "Other (transfer)"
 }

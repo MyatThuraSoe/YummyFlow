@@ -6,8 +6,12 @@ import { ThemeProvider, CircularProgress, Box } from "@mui/material";
 import { registerSW } from "virtual:pwa-register";
 import App from "./App";
 import theme from "./lib/theme";
+import { applyTokens } from "./lib/tokens";
 import "./lib/i18n";
 import "./index.css";
+
+// Publish the shared design tokens before the first render.
+applyTokens();
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false, staleTime: 10_000 } },

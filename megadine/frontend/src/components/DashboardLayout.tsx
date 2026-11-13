@@ -65,6 +65,7 @@ import { connectSocket, EVENTS } from "../lib/socket";
 import { failedCount, flushOutbox, pendingCount } from "../lib/outbox";
 import LanguageSwitcher from "./LanguageSwitcher";
 import LockOverlay from "./LockOverlay";
+import StatusStrip from "./StatusStrip";
 import { useToast } from "./ui";
 import { useAuth } from "../store/auth";
 import { useTranslation } from "react-i18next";
@@ -186,6 +187,7 @@ export default function DashboardLayout() {
   const { user, can, logout, loginPin } = useAuth();
   const nav = useNavigate();
   const loc = useLocation();
+  const showStatusStrip = ["/pos", "/floor", "/kds"].some((p) => loc.pathname === p || loc.pathname.startsWith(`${p}/`));
   const qc = useQueryClient();
   const { push } = useToast();
   const isMobile = useMediaQuery((th) => th.breakpoints.down("sm"));
@@ -635,6 +637,7 @@ export default function DashboardLayout() {
         </AppBar>
 
         <Box component="main" sx={{ flex: 1, p: { xs: 2, md: 3 }, minWidth: 0 }}>
+          {showStatusStrip && <StatusStrip />}
           {showBasicBanner && (
             <Alert
               severity="info"

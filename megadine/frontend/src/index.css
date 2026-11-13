@@ -1,47 +1,7 @@
-:root {
-  /* Brand colors (improvement-1 §3.5) */
-  --primary: #6f4e37;
-  --primary-light: #9c7b5c;
-  --primary-2: #4a3228;
-  --brand: #10b981;
-  --brand-2: #047857;
-
-  /* Status colors */
-  --ok: #10b981;
-  --warn: #f59e0b;
-  --danger: #ef4444;
-  --info: #3b82f6;
-  --success-light: #d1fae5;
-  --warning-light: #fef3c7;
-  --error-light: #fee2e2;
-  --info-light: #dbeafe;
-
-  /* Neutrals */
-  --bg: #fafaf5;
-  --panel: #ffffff;
-  --panel-2: #f5f1ea;
-  --line: #e8e8e3;
-  --text: #272725;
-  --muted: #737370;
-  --disabled: #a3a39e;
-
-  /* Table status */
-  --table-available: #10b981;
-  --table-occupied: #f59e0b;
-  --table-needs-bill: #ef4444;
-  --table-needs-cleaning: #8b5cf6;
-  --table-reserved: #3b82f6;
-  --table-out-of-service: #6b7280;
-
-  /* Kitchen urgency */
-  --kds-fast: #10b981;
-  --kds-normal: #f59e0b;
-  --kds-slow: #f97316;
-  --kds-overdue: #ef4444;
-
-  --radius: 12px;
-  --shadow: 0 1px 2px rgba(39, 39, 37, 0.06), 0 1px 3px rgba(39, 39, 37, 0.04);
-}
+/* Design tokens live in src/lib/tokens.ts and are applied to :root at boot.
+   Keep this file free of hard-coded colour values so the POS, floor, KDS and
+   the MUI back office cannot drift apart. */
+:root { color-scheme: light; }
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
@@ -57,7 +17,27 @@ button { font-family: inherit; cursor: pointer; }
 input, select, textarea { font-family: inherit; }
 
 .app { display: flex; min-height: 100vh; }
-.spacer { flex: 1; }
+
+/* Status strip: persistent health line above POS / floor / KDS */
+.status-strip {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  padding: 6px 10px; margin-bottom: 12px;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow);
+  font-size: 13px;
+}
+.status-strip-offline { border-color: var(--warn); }
+.status-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 999px;
+  background: var(--panel-2); color: var(--muted); font-weight: 600;
+}
+.status-pill.ok { background: var(--success-light); color: var(--brand-2); }
+.status-pill.warn { background: var(--warning-light); color: #92400e; }
+.status-pill.danger { background: var(--error-light); color: #991b1b; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.status-pill.danger .status-dot { animation: status-pulse 1.2s ease-in-out infinite; }
+@keyframes status-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }.spacer { flex: 1; }
 .content { padding: 20px; flex: 1; overflow: auto; }
 
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow); }
