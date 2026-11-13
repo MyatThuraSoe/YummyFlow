@@ -6,9 +6,9 @@ import { businessDateFor } from "../lib/businessDay.js";
 import { audit } from "../lib/audit.js";
 import { verifyManagerPin } from "../lib/approval.js";
 import { EVENTS, emitToWorkspace, emitToRole } from "../lib/socket.js";
-import { sendToPrinter, buildKitchenTicketText } from "../lib/printers.js";
+import { buildKitchenTicketText } from "../lib/printers.js";
+import { queuePrint } from "../lib/printQueue.js";
 import { can, DISCOUNT_THRESHOLD } from "../lib/permissions.js";
-import { env } from "../lib/env.js";
 import { consumeForOrder } from "./inventory.service.js";
 import type { OrderChannel, OrderPriority, Prisma, Role, Station } from "@prisma/client";
 
@@ -495,9 +495,16 @@ export async function sendToKitchen(orderId: string, actorId: string, actorRole:
         notes: tl.notes,
       })),
     });
-    const print = await sendToPrinter(env.KITCHEN_PRINTER_IP || null, text);
-    printed.push(print.preview);
-    if (!print.ok) printErrors.push(`${station}: ${print.error ?? "print failed"}`);
+    const print = await queuePrint({
+      restaurantId: result.order.restaurantId,
+      orderId: result.order.id,
+      ticketId: ticket.id,
+      kind: "KITCHEN",
+      station,
+      text,
+    });
+    printed.push(print.result.preview);
+    if (!print.result.ok) printErrors.push(`${station}: ${print.result.error ?? "print failed"}`);
 
     emitToRole("KITCHEN", EVENTS.KITCHEN_NEW, {
       ticketId: ticket.id,

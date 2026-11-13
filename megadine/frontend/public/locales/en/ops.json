@@ -243,6 +243,8 @@
   "kds_merge_badge": "{{count}} stations",
   "kds_round": "Round {{n}}",
   "kds_recall": "Recall",
+  "kds_reprint": "Reprint",
+  "kds_reprinted": "Ticket sent to the printer",
   "floor_timeline_title": "Recent activity",
   "floor_timeline_empty": "No sessions recorded yet",
   "floor_timeline_no_order": "Walk-in session",

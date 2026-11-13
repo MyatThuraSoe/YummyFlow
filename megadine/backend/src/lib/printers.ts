@@ -12,7 +12,7 @@ export interface PrintResult {
 }
 
 /** Send raw ESC/POS-ish text to a network printer. Falls back cleanly. */
-export async function sendToPrinter(ip: string | null, text: string): Promise<PrintResult> {
+export async function sendToPrinter(ip: string | null, text: string, port = 9100): Promise<PrintResult> {
   const mode = env.PRINTER_MODE === "tcp" && ip ? "tcp" : "simulate";
   if (mode === "simulate" || !ip) {
     return { ok: true, mode: "simulate", simulated: true, preview: text };
@@ -26,7 +26,7 @@ export async function sendToPrinter(ip: string | null, text: string): Promise<Pr
     socket.setTimeout(2500);
     socket.once("timeout", () => done(false, "timeout"));
     socket.once("error", (e) => done(false, e.message));
-    socket.connect(9100, ip, () => {
+    socket.connect(port, ip, () => {
       socket.write(text, "utf8", () => done(true));
     });
   });

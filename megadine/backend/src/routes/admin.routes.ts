@@ -1,13 +1,15 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { asyncHandler } from "../lib/errors.js";
+import { ApiError, asyncHandler } from "../lib/errors.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/requirePermission.js";
 import { validate } from "../middleware/validate.js";
 import { audit } from "../lib/audit.js";
 import { backupStatus, exportToUsb, listBackupFiles, listBackups, restoreFromSql, runBackup } from "../lib/backup.js";
 import { sendToPrinter } from "../lib/printers.js";
+import { printerFor, reprintJob } from "../lib/printQueue.js";
+import type { Station } from "@prisma/client";
 import { env } from "../lib/env.js";
 import { toCents } from "../lib/money.js";
 import { assertWithinLimit, limitUsage } from "../lib/license.js";
@@ -140,13 +142,142 @@ adminRouter.post(
 
 adminRouter.get(
   "/hardware/status",
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
+    const [printers, pending, failed] = await Promise.all([
+      prisma.stationPrinter.findMany({
+        where: { restaurantId: req.auth!.restaurantId },
+        select: { station: true, ip: true, port: true, isActive: true },
+      }),
+      prisma.printJob.count({ where: { restaurantId: req.auth!.restaurantId, status: "PENDING" } }),
+      prisma.printJob.count({ where: { restaurantId: req.auth!.restaurantId, status: "FAILED" } }),
+    ]);
     res.json({
       printerMode: env.PRINTER_MODE,
       receiptPrinter: env.RECEIPT_PRINTER_IP || "(simulated)",
       kitchenPrinter: env.KITCHEN_PRINTER_IP || "(simulated)",
       simulateMode: env.PRINTER_MODE !== "tcp",
+      stationPrinters: printers,
+      printQueue: { pending, failed },
     });
+  }),
+);
+
+const stationPrinterSchema = z.object({
+  station: z.enum(["GRILL", "FRYER", "SALAD", "BAR", "DESSERT", "KITCHEN"]),
+  name: z.string().min(1).max(60),
+  ip: z.string().min(1).max(60),
+  port: z.number().int().min(1).max(65535).optional(),
+  isActive: z.boolean().optional(),
+});
+
+adminRouter.get(
+  "/printers",
+  requirePermission("hardware.manage"),
+  asyncHandler(async (req, res) => {
+    const printers = await prisma.stationPrinter.findMany({
+      where: { restaurantId: req.auth!.restaurantId },
+      orderBy: { station: "asc" },
+    });
+    res.json({ printers });
+  }),
+);
+
+adminRouter.post(
+  "/printers",
+  requirePermission("hardware.manage"),
+  validate({ body: stationPrinterSchema }),
+  asyncHandler(async (req, res) => {
+    const b = req.body as z.infer<typeof stationPrinterSchema>;
+    const printer = await prisma.stationPrinter.upsert({
+      where: { restaurantId_station: { restaurantId: req.auth!.restaurantId, station: b.station } },
+      create: {
+        restaurantId: req.auth!.restaurantId,
+        station: b.station,
+        name: b.name,
+        ip: b.ip,
+        port: b.port ?? 9100,
+        isActive: b.isActive ?? true,
+      },
+      update: { name: b.name, ip: b.ip, port: b.port ?? 9100, isActive: b.isActive ?? true },
+    });
+    await audit({
+      restaurantId: req.auth!.restaurantId,
+      userId: req.auth!.userId,
+      action: "STATION_PRINTER_SAVED",
+      entityType: "StationPrinter",
+      entityId: printer.id,
+      after: { station: printer.station, ip: printer.ip, port: printer.port, isActive: printer.isActive },
+    });
+    res.status(201).json({ printer });
+  }),
+);
+
+const stationPrinterPatch = stationPrinterSchema.partial();
+
+adminRouter.patch(
+  "/printers/:id",
+  requirePermission("hardware.manage"),
+  validate({ body: stationPrinterPatch }),
+  asyncHandler(async (req, res) => {
+    const b = req.body as z.infer<typeof stationPrinterPatch>;
+    const existing = await prisma.stationPrinter.findFirst({
+      where: { id: String(req.params.id), restaurantId: req.auth!.restaurantId },
+    });
+    if (!existing) throw ApiError.notFound("Printer not found");
+    const printer = await prisma.stationPrinter.update({
+      where: { id: existing.id },
+      data: {
+        ...(b.station !== undefined ? { station: b.station } : {}),
+        ...(b.name !== undefined ? { name: b.name } : {}),
+        ...(b.ip !== undefined ? { ip: b.ip } : {}),
+        ...(b.port !== undefined ? { port: b.port } : {}),
+        ...(b.isActive !== undefined ? { isActive: b.isActive } : {}),
+      },
+    });
+    res.json({ printer });
+  }),
+);
+
+adminRouter.delete(
+  "/printers/:id",
+  requirePermission("hardware.manage"),
+  asyncHandler(async (req, res) => {
+    const existing = await prisma.stationPrinter.findFirst({
+      where: { id: String(req.params.id), restaurantId: req.auth!.restaurantId },
+    });
+    if (!existing) throw ApiError.notFound("Printer not found");
+    await prisma.stationPrinter.delete({ where: { id: existing.id } });
+    res.json({ ok: true });
+  }),
+);
+
+adminRouter.get(
+  "/print-jobs",
+  requirePermission("hardware.manage"),
+  asyncHandler(async (req, res) => {
+    const status = (req.query.status as string | undefined) ?? undefined;
+    const jobs = await prisma.printJob.findMany({
+      where: {
+        restaurantId: req.auth!.restaurantId,
+        ...(status ? { status } : {}),
+      },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      select: {
+        id: true,
+        kind: true,
+        station: true,
+        status: true,
+        attempts: true,
+        lastError: true,
+        printerIp: true,
+        createdAt: true,
+        sentAt: true,
+        ticketId: true,
+        orderId: true,
+      },
+    });
+    res.json({ jobs });
   }),
 );
 
@@ -162,9 +293,26 @@ adminRouter.post(
   requirePermission("hardware.manage"),
   asyncHandler(async (req, res) => {
     const target = (req.query.target as string) ?? "receipt";
-    const ip = target === "kitchen" ? env.KITCHEN_PRINTER_IP : env.RECEIPT_PRINTER_IP;
-    const result = await sendToPrinter(ip || null, `\nMegaDine test print (${target})\n${new Date().toLocaleString()}\n\n\n`);
+    const station = req.query.station as string | undefined;
+    const printer = station
+      ? await printerFor(req.auth!.restaurantId, station as Station)
+      : { ip: target === "kitchen" ? env.KITCHEN_PRINTER_IP : env.RECEIPT_PRINTER_IP, port: 9100 };
+    const result = await sendToPrinter(
+      printer.ip || null,
+      `\nMegaDine test print (${station ?? target})\n${new Date().toLocaleString()}\n\n\n`,
+      printer.port ?? 9100,
+    );
     res.json(result);
+  }),
+);
+
+adminRouter.post(
+  "/print-jobs/:id/reprint",
+  requirePermission("hardware.manage"),
+  asyncHandler(async (req, res) => {
+    const print = await reprintJob(String(req.params.id), req.auth!.restaurantId);
+    if (!print) throw ApiError.notFound("Print job not found");
+    res.json({ job: print.job, ok: print.result.ok, simulated: print.result.simulated, error: print.result.error ?? null });
   }),
 );
 

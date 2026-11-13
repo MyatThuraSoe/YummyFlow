@@ -751,6 +751,43 @@ model BackupRun {
   @@index([restaurantId, createdAt])
 }
 
+// Per-station thermal printers. Missing rows fall back to the env defaults.
+model StationPrinter {
+  id           String   @id @default(uuid())
+  restaurantId String
+  station      Station
+  name         String
+  ip           String
+  port         Int      @default(9100)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([restaurantId, station])
+}
+
+// Every kitchen ticket print is recorded so failures can be retried and a
+// ticket can be reprinted later without rebuilding it from memory.
+model PrintJob {
+  id           String    @id @default(uuid())
+  restaurantId String
+  orderId      String?
+  ticketId     String?
+  kind         String // KITCHEN | REPRINT | RECEIPT
+  station      Station?
+  printerIp    String?
+  port         Int?
+  payload      String    @db.Text
+  status       String    @default("PENDING") // PENDING | SENT | FAILED
+  attempts     Int       @default(0)
+  lastError    String?
+  nextAttemptAt DateTime @default(now())
+  createdAt    DateTime  @default(now())
+  sentAt       DateTime?
+
+  @@index([restaurantId, status, nextAttemptAt])
+}
+
 // A Z-report / end-of-business-day close snapshot.
 model BusinessDayClose {
   id           String   @id @default(uuid())

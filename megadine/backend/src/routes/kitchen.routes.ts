@@ -4,7 +4,7 @@ import { asyncHandler } from "../lib/errors.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/requirePermission.js";
 import { validate } from "../middleware/validate.js";
-import { listTickets, toggleItemAvailability, updateTicketStatus } from "../services/kitchen.service.js";
+import { listTickets, reprintTicket, toggleItemAvailability, updateTicketStatus } from "../services/kitchen.service.js";
 
 export const kitchenRouter = Router();
 kitchenRouter.use(requireAuth);
@@ -39,6 +39,15 @@ kitchenRouter.post(
 );
 
 const toggleSchema = z.object({ isAvailable: z.boolean(), reason: z.string().optional() });
+
+kitchenRouter.post(
+  "/tickets/:id/print",
+  requirePermission("kds.update"),
+  asyncHandler(async (req, res) => {
+    const print = await reprintTicket(String(req.params.id), req.auth!.userId, req.auth!.restaurantId);
+    res.json({ job: print.job, simulated: print.result.simulated, ok: print.result.ok, error: print.result.error ?? null });
+  }),
+);
 
 kitchenRouter.post(
   "/items/:id/availability",

@@ -73,6 +73,12 @@ export default function Kds() {
     onError: (e) => push(e instanceof Error ? e.message : t("ops:failed"), "error"),
   });
 
+  const printMut = useMutation({
+    mutationFn: (id: string) => apiPost(`/kitchen/tickets/${id}/print`),
+    onSuccess: () => push(t("ops:kds_reprinted", { defaultValue: "Ticket sent to the printer" }), "ok"),
+    onError: (e) => push(e instanceof Error ? e.message : t("ops:failed"), "error"),
+  });
+
   const tickets = data?.tickets ?? [];
   const seenIds = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -189,6 +195,9 @@ export default function Kds() {
                         <button className="btn ghost small" onClick={() => setPriorityTarget(first)}>
                           {t("ops:kds_priority_btn")}
                         </button>
+                        <button className="btn ghost small" disabled={printMut.isPending} onClick={() => printMut.mutate(first.id)}>
+                          {t("ops:kds_reprint", { defaultValue: "Reprint" })}
+                        </button>
                         <button className="btn ghost small" onClick={() => setCancelTarget(first)}>
                           {t("ops:kds_cancel")}
                         </button>
@@ -241,6 +250,9 @@ export default function Kds() {
                               {t("ops:kds_recall", { defaultValue: "Recall" })}
                             </button>
                           )}
+                          <button className="btn ghost small" disabled={printMut.isPending} onClick={() => printMut.mutate(tk.id)}>
+                            {t("ops:kds_reprint", { defaultValue: "Reprint" })}
+                          </button>
                           <button className="btn ghost small" onClick={() => setCancelTarget(tk)}>
                             {t("ops:kds_cancel")}
                           </button>

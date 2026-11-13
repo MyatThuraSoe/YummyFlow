@@ -4,6 +4,7 @@ import { env } from "./lib/env.js";
 import { initSocket } from "./lib/socket.js";
 import { startScheduler } from "./jobs/scheduler.js";
 import { startNotificationSchedulers } from "./services/notifications.service.js";
+import { startPrintWorker } from "./lib/printQueue.js";
 import { prisma } from "./lib/prisma.js";
 import { setRuntimeLicenseKey } from "./lib/license.js";
 import { setBusinessTimezone } from "./lib/businessDay.js";
@@ -78,6 +79,7 @@ async function bootstrap() {
   if (env.NODE_ENV !== "test") {
     startScheduler();
     startNotificationSchedulers();
+    startPrintWorker();
   }
 
   server.listen(env.PORT, () => {

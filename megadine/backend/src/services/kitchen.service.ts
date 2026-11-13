@@ -4,6 +4,8 @@ import { audit } from "../lib/audit.js";
 import { EVENTS, emitToRole, emitToWorkspace } from "../lib/socket.js";
 import { recalcOrder } from "./order.service.js";
 import { consumeForOrder } from "./inventory.service.js";
+import { buildKitchenTicketText } from "../lib/printers.js";
+import { queuePrint } from "../lib/printQueue.js";
 import type { KitchenItemStatus, Station } from "@prisma/client";
 
 const NEXT: Record<KitchenItemStatus, KitchenItemStatus | null> = {
@@ -132,6 +134,64 @@ export async function updateTicketStatus(
   emitToRole("KITCHEN", EVENTS.KITCHEN_UPDATED, { ticketId, status });
   emitToWorkspace(EVENTS.KITCHEN_UPDATED, { ticketId, status, orderNumber: ticket.order.orderNumber });
   return updated;
+}
+
+/**
+ * Reprint a kitchen ticket on its station printer (F-14). The payload is
+ * rebuilt from the stored ticket so a reprint always matches the ticket
+ * content, even after a restart or a printer change.
+ */
+export async function reprintTicket(ticketId: string, actorId: string, restaurantId: string) {
+  const ticket = await prisma.kitchenTicket.findFirst({
+    where: { id: ticketId, order: { restaurantId } },
+    include: {
+      lines: true,
+      order: {
+        include: {
+          restaurant: { select: { timezone: true, ticketLanguage: true } },
+          tableSession: { include: { table: { select: { number: true, name: true } } } },
+        },
+      },
+    },
+  });
+  if (!ticket) throw ApiError.notFound("Ticket not found");
+
+  const text = buildKitchenTicketText({
+    orderNumber: ticket.order.orderNumber,
+    station: ticket.station,
+    round: ticket.round,
+    tableLabel: ticket.order.tableSession?.table?.name ?? ticket.order.tableSession?.table?.number?.toString() ?? null,
+    channel: ticket.order.channel,
+    sentAt: ticket.sentAt,
+    timeZone: ticket.order.restaurant.timezone,
+    language: ticket.order.restaurant.ticketLanguage,
+    lines: ticket.lines.map((tl) => ({
+      qty: tl.quantity,
+      name: tl.itemName,
+      modifiers: (tl.modifiers as { name: string }[] | null)?.map((m) => m.name) ?? [],
+      notes: tl.notes,
+    })),
+  });
+
+  const print = await queuePrint({
+    restaurantId,
+    orderId: ticket.orderId,
+    ticketId: ticket.id,
+    kind: "REPRINT",
+    station: ticket.station,
+    text,
+  });
+
+  await audit({
+    restaurantId,
+    userId: actorId,
+    orderId: ticket.orderId,
+    action: "KITCHEN_TICKET_REPRINTED",
+    entityType: "KitchenTicket",
+    entityId: ticket.id,
+  });
+
+  return { job: print.job, result: print.result };
 }
 
 export async function toggleItemAvailability(

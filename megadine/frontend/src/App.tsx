@@ -28,6 +28,7 @@ const ReceiptCustomization = lazy(() => import("./pages/admin/ReceiptCustomizati
 const ReceiptOrderAdmin = lazy(() => import("./pages/admin/ReceiptOrderAdmin"));
 const LanguageSettings = lazy(() => import("./pages/admin/LanguageSettings"));
 const ShopInfoAdmin = lazy(() => import("./pages/admin/ShopInfoAdmin"));
+const PrintersAdmin = lazy(() => import("./pages/admin/PrintersAdmin"));
 const Activate = lazy(() => import("./pages/admin/Activate"));
 const About = lazy(() => import("./pages/admin/About"));
 
@@ -113,6 +114,7 @@ export default function App() {
             <Route path="receipt-customization" element={<AdminGuard capability="settings.manage"><Lazy page={<ReceiptCustomization />} /></AdminGuard>} />
             <Route path="receipt/:orderId" element={<AdminGuard capability="report.view"><Lazy page={<ReceiptOrderAdmin />} /></AdminGuard>} />
             <Route path="shop-info" element={<AdminGuard capability="settings.manage"><Lazy page={<ShopInfoAdmin />} /></AdminGuard>} />
+            <Route path="settings/printers" element={<AdminGuard capability="hardware.manage"><Lazy page={<PrintersAdmin />} /></AdminGuard>} />
             <Route path="license" element={<AdminGuard capability="settings.manage"><Lazy page={<Activate />} /></AdminGuard>} />
             <Route path="about" element={<Lazy page={<About />} />} />
             <Route path="*" element={<Navigate to="/admin" replace />} />
