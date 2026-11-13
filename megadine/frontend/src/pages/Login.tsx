@@ -97,12 +97,12 @@ export default function Login() {
 
   const { data: staffData } = useQuery({
     queryKey: ["auth-staff"],
-    queryFn: () => apiGet<Envelope<{ staff: StaffTile[] }>>("/auth/staff"),
+    queryFn: () => apiGet<{ staff: StaffTile[] }>("/auth/staff"),
     staleTime: 30_000,
     retry: 0,
   });
 
-  const staff = staffData?.data.staff ?? [];
+  const staff = staffData?.staff ?? [];
   const selected = staff.find((s) => s.id === selectedStaffId) ?? null;
 
   useEffect(() => {
@@ -288,6 +288,7 @@ export default function Login() {
                   {staff.map((s) => (
                     <ButtonBase
                       key={s.id}
+                      data-testid="staff-tile"
                       onClick={() => chooseStaff(s.id)}
                       sx={{
                         borderRadius: 2,

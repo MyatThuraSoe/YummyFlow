@@ -19,6 +19,9 @@ test("PIN tab reveals the numeric input", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("tab", { name: "PIN" }).click();
   const pin = page.locator('input[inputmode="numeric"]');
+  const tile = page.getByTestId("staff-tile").first();
+  await expect(tile.or(pin)).toBeVisible();
+  if (await tile.isVisible()) await tile.click();
   await expect(pin).toBeVisible();
   await expect(page.getByRole("button", { name: /^Sign in$/ })).toBeDisabled();
   await pin.fill("1234");
