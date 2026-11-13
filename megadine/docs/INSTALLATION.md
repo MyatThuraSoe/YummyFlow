@@ -224,13 +224,72 @@ frontend typecheck → lint → build → Playwright smoke tests.
 
 ---
 
-## 8. Troubleshooting
+## 8. Site runbook (UPS, network, restore drill)
+
+### 8.1 Power and network
+
+- Put the server, router/switch and every POS tablet on a **UPS**. Size the UPS
+  for at least 15 minutes of runtime so an order can be finished and the shift
+  closed cleanly. Connect the server to the UPS data port and configure a
+  graceful shutdown if the OS supports it.
+- Give the server a **static IP** (or a DHCP reservation) and write it on a
+  label on the router. Point all tablets at that address; do not rely on
+  mDNS/hostnames that change after a reboot.
+- Keep the server and tablets on the **same VLAN/switch**. Guest Wi-Fi must not
+  reach the POS API; only the reverse proxy ports (80/443) should be exposed.
+- Set the tablet to **kiosk/guided access** and pin the POS URL. Use the PWA
+  install prompt for a standalone window; the manifest intentionally uses
+  `display: standalone` so the system back button stays available.
+
+### 8.2 Start-of-day checks (2 minutes)
+
+1. Open **Admin → Dashboard** and clear any alerts (low stock, overdue tickets,
+   reservations).
+2. Open **POS** and confirm the status strip is green: **Online**, printer IP (or
+   *simulated*), no failed sends.
+3. Confirm **Backup NNh ago** is less than 24 hours (visible to backup managers
+   on the POS status strip).
+4. Open **Kitchen** and check the station tabs; press the test sound once.
+5. Open a shift with the drawer count before the first sale.
+
+### 8.3 Restore drill (do this once a quarter)
+
+A backup you have never restored is only a hope. Run the drill on a **copy** of
+the database, never on the live one:
+
+1. Take a fresh manual backup and note its filename.
+2. Create a scratch database: `createdb megadine_restore_drill`.
+3. Restore into it with
+   `psql -d megadine_restore_drill -f backend/backups/<file>.sql` (or
+   `docker compose exec -T db psql -U "$DB_USER" -d megadine_restore_drill -f /backups/<file>.sql`).
+4. Compare row counts for `Order`, `Payment`, `CashShift` and `User` with the
+   live database. They must match the moment the dump was taken.
+5. Start a second backend with `DATABASE_URL` pointing at the scratch database
+   and log in with a known PIN; ring one test order, then delete the scratch DB.
+6. Record the date, dump filename and result in the shop log.
+
+### 8.4 First-run checklist
+
+A new install shows a checklist at the top of **Admin → Dashboard** until the
+basics exist:
+
+- [ ] Restaurant name, currency, timezone and business-day cutoff
+- [ ] Menu categories and items (with prices and stations)
+- [ ] Tables and floor layout
+- [ ] Staff accounts and PINs (one per person, no shared PINs)
+- [ ] Printers reachable (`PRINTER_MODE=tcp`, receipt and kitchen IPs)
+- [ ] Backup directory writable, first backup created and copied to USB
+- [ ] License activated
+
+---
+
+## 9. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | `npipe ... cannot find the file` | Start Docker Desktop / daemon |
 | Backend loops "can't reach database" | `docker compose ps`; wait for Postgres healthcheck |
 | Terminals show **Offline** but LAN is up | Check `ALLOWED_ORIGINS` matches the URL staff use |
-| Socket badge stuck on **Reconnecting** | Confirm `REDIS_URL` (if set) points to a running Redis, or unset it |
+| Socket badge stuck on **Reconnecting** | Confirm cookies are allowed for the POS origin; `ALLOWED_ORIGINS` must match the URL staff use. Redis is no longer required |
 | Receipts print in the console | `PRINTER_MODE=simulate`; set `tcp` + printer IPs |
 | Queued orders never sync | Terminal has no route to the server; check Wi-Fi/VLAN |

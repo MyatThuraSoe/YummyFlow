@@ -1462,6 +1462,48 @@ async function main() {
     assert.equal(typeof dash.data.activeTables, "number");
     ok("dashboard: alerts flag low stock, 7-day trend buckets orders, floor timeline lists sessions");
 
+    // ── F-35: concurrency and time-zone guards ────────────────────────────
+    const concurrentBase = { channel: "TAKEAWAY", items: [{ menuItemId: anyItemId, quantity: 1 }] };
+    const sameKey = `verify-same-${Date.now()}`;
+    const [dupA, dupB] = await Promise.all([
+      api<{ order: { id: string; orderNumber: number } }>("/orders", {
+        method: "POST", token: cashier.token, body: { ...concurrentBase, idempotencyKey: sameKey },
+      }),
+      api<{ order: { id: string; orderNumber: number } }>("/orders", {
+        method: "POST", token: cashier.token, body: { ...concurrentBase, idempotencyKey: sameKey },
+      }),
+    ]);
+    assert.ok([200, 201].includes(dupA.status) && [200, 201].includes(dupB.status), `same-key creates failed: ${dupA.status}/${dupB.status}`);
+    assert.equal(dupA.data.order.id, dupB.data.order.id, "one idempotency key must create exactly one order");
+
+    const [numA, numB] = await Promise.all([
+      api<{ order: { id: string; orderNumber: number } }>("/orders", {
+        method: "POST", token: cashier.token, body: { ...concurrentBase, idempotencyKey: `verify-a-${Date.now()}` },
+      }),
+      api<{ order: { id: string; orderNumber: number } }>("/orders", {
+        method: "POST", token: cashier.token, body: { ...concurrentBase, idempotencyKey: `verify-b-${Date.now()}` },
+      }),
+    ]);
+    assert.equal(numA.status, 201, JSON.stringify(numA.data));
+    assert.equal(numB.status, 201, JSON.stringify(numB.data));
+    assert.notEqual(numA.data.order.id, numB.data.order.id);
+    assert.notEqual(numA.data.order.orderNumber, numB.data.order.orderNumber, "simultaneous orders must get distinct numbers");
+    for (const id of [dupA.data.order.id, numA.data.order.id, numB.data.order.id]) {
+      await api(`/orders/${id}/cancel`, { method: "POST", token: admin.token, body: { reason: "verify concurrency cleanup" } });
+    }
+
+    // Yangon is UTC+06:30: 02:30 local is still the previous business day
+    // (before the 04:00 cutoff), while 05:00 local belongs to the new one.
+    assert.equal(
+      businessDateFor(new Date("2026-01-15T20:00:00Z"), "04:00", "Asia/Yangon").toISOString(),
+      "2026-01-15T00:00:00.000Z",
+    );
+    assert.equal(
+      businessDateFor(new Date("2026-01-15T22:30:00Z"), "04:00", "Asia/Yangon").toISOString(),
+      "2026-01-16T00:00:00.000Z",
+    );
+    ok("concurrency: idempotent creates collapse, parallel orders get distinct numbers, Yangon cutoff lands on the right day");
+
     // Close the flow drawer opened for the F-17 cash rule before removing the
     // orders it paid for.
     const flowCur = await api<{ shift: { id: string } | null; summary?: { expectedCash: number } }>(
