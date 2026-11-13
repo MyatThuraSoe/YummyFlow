@@ -214,7 +214,6 @@ authRouter.post(
       httpOnly: true,
       sameSite: "lax",
       secure: env.COOKIE_SECURE,
-      maxAge: env.SESSION_TTL_HOURS * 3600_000,
       path: "/",
     });
 

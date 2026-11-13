@@ -1,12 +1,12 @@
 const BASE = (import.meta.env.VITE_API_URL ?? "") + "/api/v1";
-export const TOKEN_KEY = "md_token";
 
-export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
-}
-export function setToken(token: string | null) {
-  if (token) localStorage.setItem(TOKEN_KEY, token);
-  else localStorage.removeItem(TOKEN_KEY);
+/** Session tokens live in the httpOnly `md_session` cookie; JavaScript never sees them. */
+export function clearLegacyToken() {
+  try {
+    localStorage.removeItem("md_token");
+  } catch {
+    /* ignore */
+  }
 }
 
 export class ApiError extends Error {
@@ -34,12 +34,11 @@ export async function api<T = unknown>(path: string, opts: ApiOptions = {}): Pro
       if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
     }
   }
-  const token = getToken();
   const res = await fetch(url.toString().replace(window.location.origin, ""), {
     method: opts.method ?? "GET",
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
-      ...(token ? { "x-session-token": token } : {}),
     },
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   });
@@ -47,7 +46,6 @@ export async function api<T = unknown>(path: string, opts: ApiOptions = {}): Pro
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
     if (res.status === 401 && !path.startsWith("/auth/")) {
-      setToken(null);
       window.dispatchEvent(new Event("md:unauthorized"));
     }
     const err = data?.error ?? {};

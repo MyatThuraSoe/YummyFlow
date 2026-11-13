@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, apiGet, setToken } from "../lib/api";
+import { api, apiGet } from "../lib/api";
 import { connectSocket, disconnectSocket } from "../lib/socket";
 import i18n, { SUPPORTED_LANGS } from "../lib/i18n";
 
@@ -42,7 +42,6 @@ export const useAuth = create<AuthState>((set, get) => ({
       method: "POST",
       body: userId ? { pin, userId } : { pin },
     });
-    setToken(data.token);
     connectSocket();
     applyUserLanguage(data.user);
     set({ user: data.user, ready: true });
@@ -51,7 +50,6 @@ export const useAuth = create<AuthState>((set, get) => ({
   async loginCredentials(handle, password) {
     const body = handle.includes("@") ? { email: handle, password } : { username: handle, password };
     const data = await api<{ user: AuthUser; token: string }>("/auth/login", { method: "POST", body });
-    setToken(data.token);
     connectSocket();
     applyUserLanguage(data.user);
     set({ user: data.user, ready: true });
@@ -59,7 +57,6 @@ export const useAuth = create<AuthState>((set, get) => ({
   },
   async logout() {
     await api("/auth/logout", { method: "POST" }).catch(() => {});
-    setToken(null);
     disconnectSocket();
     set({ user: null });
   },
@@ -70,7 +67,6 @@ export const useAuth = create<AuthState>((set, get) => ({
       applyUserLanguage(data.user);
       set({ user: data.user, ready: true });
     } catch {
-      setToken(null);
       set({ user: null, ready: true });
     }
   },

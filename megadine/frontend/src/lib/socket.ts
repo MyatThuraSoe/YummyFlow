@@ -1,5 +1,4 @@
 import { io, type Socket } from "socket.io-client";
-import { getToken } from "./api";
 
 let socket: Socket | null = null;
 
@@ -7,7 +6,7 @@ export function connectSocket(): Socket {
   if (socket && socket.connected) return socket;
   const url = import.meta.env.VITE_SOCKET_URL || window.location.origin;
   socket = io(url, {
-    auth: { token: getToken() },
+    withCredentials: true,
     transports: ["websocket", "polling"],
   });
   return socket;

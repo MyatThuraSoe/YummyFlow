@@ -6,10 +6,13 @@ import { ThemeProvider, CircularProgress, Box } from "@mui/material";
 import { registerSW } from "virtual:pwa-register";
 import App from "./App";
 import theme from "./lib/theme";
+import { clearLegacyToken } from "./lib/api";
 import { applyTokens } from "./lib/tokens";
 import "./lib/i18n";
 import "./index.css";
 
+// Tokens now live in an httpOnly cookie; drop any token left by older builds.
+clearLegacyToken();
 // Publish the shared design tokens before the first render.
 applyTokens();
 

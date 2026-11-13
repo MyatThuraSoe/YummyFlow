@@ -3,9 +3,19 @@ import { Server as IOServer, type Socket } from "socket.io";
 import { hashToken } from "./auth.js";
 import { prisma } from "./prisma.js";
 import { env } from "./env.js";
+import { SESSION_COOKIE } from "../middleware/auth.js";
 import type { Role } from "@prisma/client";
 
 let io: IOServer | null = null;
+
+function cookieValue(header: string | undefined, name: string): string | undefined {
+  if (!header) return undefined;
+  for (const part of header.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) return decodeURIComponent(rest.join("="));
+  }
+  return undefined;
+}
 
 export const EVENTS = {
   ORDER_CREATED: "order:created",
@@ -36,7 +46,8 @@ export function initSocket(httpServer: HttpServer): IOServer {
     try {
       const token =
         (socket.handshake.auth?.token as string | undefined) ||
-        (socket.handshake.headers["x-session-token"] as string | undefined);
+        (socket.handshake.headers["x-session-token"] as string | undefined) ||
+        cookieValue(socket.handshake.headers.cookie, SESSION_COOKIE);
       if (!token) return next(new Error("unauthorized"));
       const session = await prisma.session.findUnique({
         where: { tokenHash: hashToken(token) },

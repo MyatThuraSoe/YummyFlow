@@ -205,6 +205,8 @@ export default function DashboardLayout() {
   const [locked, setLocked] = useState(false);
   useEffect(() => { applyTextSize(textSize); localStorage.setItem("md_text_size", textSize); }, [textSize]);
   const idleRef = useRef<number | null>(null);
+  const lastActivityRef = useRef(Date.now());
+  const logoutInFlightRef = useRef(false);
 
   const { data: settings } = useQuery({
     queryKey: ["settings", "summary"],
@@ -337,6 +339,7 @@ export default function DashboardLayout() {
 
   useEffect(() => {
     const reset = () => {
+      lastActivityRef.current = Date.now();
       if (idleRef.current) window.clearTimeout(idleRef.current);
       const ms = idleMsFor(user?.role);
       if (ms > 0) idleRef.current = window.setTimeout(() => setLocked(true), ms);
@@ -351,6 +354,17 @@ export default function DashboardLayout() {
       if (idleRef.current) window.clearTimeout(idleRef.current);
     };
   }, [locked, user?.role]);
+
+  // Hard sign-out after a long idle period, even if the lock screen is still up.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (logoutInFlightRef.current) return;
+      if (Date.now() - lastActivityRef.current < 30 * 60 * 1000) return;
+      logoutInFlightRef.current = true;
+      void logout().finally(() => nav("/login"));
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [logout, nav]);
 
   function toggleCollapsed() {
     setCollapsed((c) => {
@@ -661,6 +675,7 @@ export default function DashboardLayout() {
         <LockOverlay
           onUnlock={async (pin) => {
             await loginPin(pin);
+            lastActivityRef.current = Date.now();
             setLocked(false);
           }}
           onSignOut={async () => {
