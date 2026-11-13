@@ -38,7 +38,7 @@ export interface UserResponse {
 }
 
 /** Canonical user payload used by all auth/user endpoints (PRD §4.5). */
-export function toUserResponse(u: UserLike): UserResponse {
+export function toUserResponse(u: UserLike, capabilities?: Capability[]): UserResponse {
   return {
     id: u.id,
     name: u.name,
@@ -54,6 +54,6 @@ export function toUserResponse(u: UserLike): UserResponse {
     lastLoginAt: u.lastLoginAt,
     createdAt: u.createdAt,
     updatedAt: u.updatedAt,
-    capabilities: ROLE_CAPABILITIES[u.role] ?? [],
+    capabilities: capabilities ?? (ROLE_CAPABILITIES[u.role] ?? []),
   };
 }

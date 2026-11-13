@@ -5,11 +5,13 @@ import { env } from "../lib/env.js";
 import { ApiError, asyncHandler } from "../lib/errors.js";
 import { verifyPin, verifyPassword, newSessionToken, hashPin, hashToken, hashPassword, pinLookup } from "../lib/auth.js";
 import { pinForStorage } from "../lib/pin.js";
+import { resolveCapabilities } from "../lib/permissions.js";
 import { SESSION_COOKIE, requireAuth } from "../middleware/auth.js";
 import { rateLimit } from "../middleware/rateLimit.js";
 import { validate } from "../middleware/validate.js";
 import { audit, clientIp } from "../lib/audit.js";
 import { toUserResponse } from "../lib/userResponse.js";
+import type { Role } from "@prisma/client";
 import { ok } from "../lib/respond.js";
 
 export const authRouter = Router();
@@ -227,7 +229,8 @@ authRouter.post(
       ipAddress: clientIp(req),
     });
 
-    res.json({ user: toUserResponse(user), sessionId: session.id, token });
+    const effective = await resolveCapabilities(user.id, user.role as Role);
+    res.json({ user: toUserResponse(user, effective), sessionId: session.id, token });
   }),
 );
 
@@ -252,7 +255,8 @@ authRouter.get(
   asyncHandler(async (req, res) => {
     const user = await prisma.user.findUnique({ where: { id: req.auth!.userId } });
     if (!user || user.deletedAt) throw ApiError.unauthorized();
-    res.json({ user: toUserResponse(user) });
+    const effective = await resolveCapabilities(user.id, user.role as Role);
+    res.json({ user: toUserResponse(user, effective) });
   }),
 );
 

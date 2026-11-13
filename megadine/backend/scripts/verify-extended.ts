@@ -883,7 +883,7 @@ async function main() {
 
     const prRush = await api<{ order: { priority: string } }>(`/orders/${servedId}/priority`, {
       method: "PATCH",
-      token: admin.token,
+      token: ownerToken,
       body: { priority: "RUSH" },
     });
     assert.equal(prRush.status, 200, JSON.stringify(prRush.data));

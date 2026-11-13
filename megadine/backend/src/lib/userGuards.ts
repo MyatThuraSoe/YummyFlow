@@ -2,7 +2,37 @@ import type { Role } from "@prisma/client";
 import { prisma } from "./prisma.js";
 import { ApiError } from "./errors.js";
 
-/** Roles protected by the last-admin guards (PRD platform §5.2). */
+/** Rank of a role: higher means more authority. */
+export function rankOf(role: Role): number {
+  switch (role) {
+    case "OWNER":
+      return 5;
+    case "ADMIN":
+      return 4;
+    case "MANAGER":
+      return 3;
+    case "CASHIER":
+    case "WAITER":
+    case "KITCHEN":
+      return 2;
+    default:
+      return 0;
+  }
+}
+
+/** An actor may manage only users of a strictly lower rank. */
+export function assertCanManage(actorRole: Role, targetRole: Role): void {
+  if (rankOf(actorRole) <= rankOf(targetRole)) {
+    throw new ApiError(403, "auth.rank.insufficient", "You cannot manage a user of equal or higher rank");
+  }
+}
+
+/** Roles an actor is allowed to assign (strictly lower rank). */
+export function assignableRoles(actorRole: Role): Role[] {
+  return (["OWNER", "ADMIN", "MANAGER", "CASHIER", "WAITER", "KITCHEN"] as Role[]).filter(
+    (r) => rankOf(r) < rankOf(actorRole),
+  );
+}
 export const ADMIN_GUARD_ROLES: Role[] = ["OWNER", "ADMIN"];
 
 /**

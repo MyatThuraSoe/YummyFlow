@@ -133,6 +133,7 @@ model Restaurant {
   updatedAt         DateTime @updatedAt
 
   users          User[]
+  employees      Employee[]
   terminals      Terminal[]
   menuCategories MenuCategory[]
   tables         RestaurantTable[]
@@ -224,10 +225,55 @@ model User {
   shifts   CashShift[]
   auditLogs AuditLog[]
   sessions Session[]
+  capabilityOverrides UserCapabilityOverride[]
+  employee Employee?
 
   @@unique([restaurantId, pinLookup])
   @@index([restaurantId, role])
   @@index([isActive, deletedAt])
+}
+
+// Per-user capability overrides: grant or deny a single capability with a reason
+// and an optional end date (roles redesign §"Capabilities to add").
+model UserCapabilityOverride {
+  id           String    @id @default(uuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  capability   String
+  granted      Boolean   @default(true)
+  reason       String?
+  endsAt       DateTime?
+  createdAt    DateTime  @default(now())
+  createdBy    String?
+
+  @@index([userId])
+}
+
+// Staff record, separate from login access. An employee may have no User at all
+// (e.g. a dishwasher) and a former employee keeps a record after deactivation.
+model Employee {
+  id           String    @id @default(uuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  userId       String?   @unique
+  user         User?     @relation(fields: [userId], references: [id])
+  firstName    String
+  lastName     String?
+  phone        String?
+  emergencyContact String?
+  address      String?
+  idNumber     String?
+  position     String?
+  status       String    @default("ACTIVE") // ACTIVE | ON_LEAVE | LEFT
+  startDate    DateTime?
+  endDate      DateTime?
+  payType      String?   // MONTHLY | DAILY | HOURLY
+  payRate      Decimal?  @db.Decimal(12, 2)
+  notes        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @default(now()) @updatedAt
+
+  @@index([restaurantId, status])
 }
 
 model Terminal {

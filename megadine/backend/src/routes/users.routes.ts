@@ -10,7 +10,7 @@ import { hashPassword, hashPin } from "../lib/auth.js";
 import { pinForStorage } from "../lib/pin.js";
 import { ok } from "../lib/respond.js";
 import { toUserResponse } from "../lib/userResponse.js";
-import { ADMIN_GUARD_ROLES, assertNotLastAdmin, assertNotSelfDeactivate, releaseUnique } from "../lib/userGuards.js";
+import { ADMIN_GUARD_ROLES, assertCanManage, assertNotLastAdmin, assertNotSelfDeactivate, releaseUnique } from "../lib/userGuards.js";
 import { SUPPORTED_LANGUAGES } from "../lib/env.js";
 import { startOfDay } from "../lib/businessDay.js";
 import { fromCents, toCents } from "../lib/money.js";
@@ -66,7 +66,11 @@ usersRouter.get(
       select: USER_SELECT,
       orderBy: [{ role: "asc" }, { name: "asc" }],
     });
-    ok(res, { users: users.map(toUserResponse) }, "Users loaded");
+    const { resolveCapabilities } = await import("../lib/permissions.js");
+    const enriched = await Promise.all(
+      users.map(async (u) => toUserResponse(u, await resolveCapabilities(u.id, u.role as Role))),
+    );
+    ok(res, { users: enriched }, "Users loaded");
   }),
 );
 
@@ -80,20 +84,24 @@ usersRouter.get(
       select: USER_SELECT,
     });
     if (!user) throw ApiError.notFound("User not found");
-    ok(res, { user: toUserResponse(user) }, "User loaded");
+    const effective = await (await import("../lib/permissions.js")).resolveCapabilities(user.id, user.role as Role);
+    ok(res, { user: toUserResponse(user, effective) }, "User loaded");
   }),
 );
 
 const createSchema = z.object({
   username: z.string().min(3).max(64).regex(/^[a-zA-Z0-9._-]+$/, "Username may only contain letters, numbers, dot, underscore or dash"),
-  email: z.string().email(),
-  password: z.string().min(8),
+  email: z.string().email().optional().nullable(),
+  password: z.string().min(8).optional(),
   firstName: z.string().min(1),
   lastName: z.string().min(1),
   phone: z.string().max(32).optional().nullable(),
   role: ROLE_ENUM,
   pin: z.string().regex(/^\d{4,6}$/).optional(),
   isActive: z.boolean().optional(),
+  // When true (default) the issued credential is temporary and must be changed
+  // at first sign-in (roles redesign §"Temporary credentials").
+  temporary: z.boolean().optional(),
 });
 
 async function assertUsernameFree(username: string, excludeId?: string) {
@@ -119,15 +127,27 @@ usersRouter.post(
   validate({ body: createSchema }),
   asyncHandler(async (req, res) => {
     const b = req.body as z.infer<typeof createSchema>;
-    const email = b.email.toLowerCase();
+    await assertCanManage(req.auth!.role as Role, b.role as Role);
     await assertUsernameFree(b.username);
-    await assertEmailFree(email);
+    const email = b.email ? b.email.toLowerCase() : null;
+    if (email) await assertEmailFree(email);
+
+    // Passwords are required for back-office roles; floor staff may be PIN-only.
+    const needsPassword = ["OWNER", "ADMIN", "MANAGER"].includes(b.role);
+    if (needsPassword && !b.password) {
+      throw ApiError.badRequest("A password is required for this role");
+    }
+    if (!needsPassword && !b.password && !b.pin) {
+      throw ApiError.badRequest("Provide a password or a PIN for this account");
+    }
+
     const pinLookupValue = b.pin ? await pinForStorage(req.auth!.restaurantId, b.pin) : null;
+    const temporary = b.temporary ?? true;
 
     const user = await prisma.user.create({
       data: {
         restaurantId: req.auth!.restaurantId,
-        name: `${b.firstName} ${b.lastName}`,
+        name: `${b.firstName} ${b.lastName}`.trim(),
         username: b.username,
         firstName: b.firstName,
         lastName: b.lastName,
@@ -135,10 +155,11 @@ usersRouter.post(
         email,
         role: b.role,
         isActive: b.isActive ?? true,
-        passwordHash: await hashPassword(b.password),
-        passwordChangedAt: new Date(),
+        passwordHash: b.password ? await hashPassword(b.password) : null,
+        passwordChangedAt: b.password ? new Date() : null,
         pinHash: b.pin ? await hashPin(b.pin) : null,
         pinLookup: pinLookupValue,
+        mustChangeCredential: temporary,
       },
       select: USER_SELECT,
     });
@@ -148,10 +169,11 @@ usersRouter.post(
       action: "USER_CREATE",
       entityType: "User",
       entityId: user.id,
-      after: { role: user.role, isActive: user.isActive },
+      after: { role: user.role, isActive: user.isActive, temporary },
       ipAddress: clientIp(req),
     });
-    ok(res, { user: toUserResponse(user) }, "User created", 201);
+    const effective = await (await import("../lib/permissions.js")).resolveCapabilities(user.id, user.role as Role);
+    ok(res, { user: toUserResponse(user, effective), temporaryCredential: temporary }, "User created", 201);
   }),
 );
 
@@ -180,6 +202,15 @@ usersRouter.put(
     });
     if (!target) throw ApiError.notFound("User not found");
 
+    // Rank rules: an actor may only touch accounts below them, and may only
+    // grant roles below their own. Self-actions are handled by the last-admin
+    // and self-deactivate guards below.
+    if (req.auth!.userId !== id) {
+      assertCanManage(req.auth!.role as Role, target.role as Role);
+      if (b.role !== undefined && b.role !== target.role) {
+        assertCanManage(req.auth!.role as Role, b.role as Role);
+      }
+    }
     if (b.role !== undefined && b.role !== target.role) {
       if (ADMIN_GUARD_ROLES.includes(target.role as Role) && !ADMIN_GUARD_ROLES.includes(b.role as Role)) {
         await assertNotLastAdmin(req.auth!.restaurantId, id, "demote");
@@ -216,8 +247,9 @@ usersRouter.put(
         ...(b.phone !== undefined ? { phone: b.phone } : {}),
         ...(b.role !== undefined ? { role: b.role } : {}),
         ...(b.isActive !== undefined ? { isActive: b.isActive } : {}),
-        ...(b.password ? { passwordHash: await hashPassword(b.password), passwordChangedAt: new Date() } : {}),
+        ...(b.password ? { passwordHash: await hashPassword(b.password), passwordChangedAt: new Date(), ...(req.auth!.userId !== id ? { mustChangeCredential: true } : {}) } : {}),
         ...pinChange,
+        ...(b.pin !== undefined && req.auth!.userId !== id ? { mustChangeCredential: true } : {}),
       },
       select: USER_SELECT,
     });
@@ -231,8 +263,9 @@ usersRouter.put(
       after: { role: user.role, isActive: user.isActive },
       ipAddress: clientIp(req),
     });
+    const effective = await (await import("../lib/permissions.js")).resolveCapabilities(user.id, user.role as Role);
     if (b.isActive === false) disconnectUser(id);
-    ok(res, { user: toUserResponse(user) }, "User updated");
+    ok(res, { user: toUserResponse(user, effective) }, "User updated");
   }),
 );
 
@@ -312,5 +345,82 @@ usersRouter.get(
       },
       "Stats loaded",
     );
+  }),
+);
+// ── Assignable roles (rank-aware) ────────────────────────────────────────────
+usersRouter.get(
+  "/roles/assignable",
+  requirePermission("user.view"),
+  asyncHandler(async (req, res) => {
+    const { assignableRoles } = await import("../lib/userGuards.js");
+    ok(res, { roles: assignableRoles(req.auth!.role as Role) }, "Assignable roles");
+  }),
+);
+
+// ── Capability overrides ─────────────────────────────────────────────────────
+usersRouter.get(
+  "/:id/capabilities",
+  requirePermission("user.view"),
+  asyncHandler(async (req, res) => {
+    const id = String(req.params.id);
+    const target = await prisma.user.findFirst({
+      where: { id, restaurantId: req.auth!.restaurantId, deletedAt: null },
+      select: { id: true, role: true },
+    });
+    if (!target) throw ApiError.notFound("User not found");
+    assertCanManage(req.auth!.role as Role, target.role as Role);
+    const overrides = await prisma.userCapabilityOverride.findMany({ where: { userId: id } });
+    const { resolveCapabilities } = await import("../lib/permissions.js");
+    const effective = await resolveCapabilities(id, target.role as Role);
+    ok(res, { role: target.role, effective, overrides }, "Capabilities loaded");
+  }),
+);
+
+const overrideSchema = z.object({
+  capability: z.string().min(1),
+  granted: z.boolean(),
+  reason: z.string().max(300).optional().nullable(),
+  endsAt: z.string().datetime().optional().nullable(),
+});
+
+usersRouter.put(
+  "/:id/capabilities",
+  requirePermission("user.edit"),
+  validate({ body: z.object({ overrides: z.array(overrideSchema) }) }),
+  asyncHandler(async (req, res) => {
+    const id = String(req.params.id);
+    const target = await prisma.user.findFirst({
+      where: { id, restaurantId: req.auth!.restaurantId, deletedAt: null },
+      select: { id: true, role: true },
+    });
+    if (!target) throw ApiError.notFound("User not found");
+    assertCanManage(req.auth!.role as Role, target.role as Role);
+
+    const { overrides } = req.body as { overrides: z.infer<typeof overrideSchema>[] };
+    await prisma.userCapabilityOverride.deleteMany({ where: { userId: id } });
+    if (overrides.length) {
+      await prisma.userCapabilityOverride.createMany({
+        data: overrides.map((o) => ({
+          userId: id,
+          capability: o.capability,
+          granted: o.granted,
+          reason: o.reason ?? null,
+          endsAt: o.endsAt ? new Date(o.endsAt) : null,
+          createdBy: req.auth!.userId,
+        })),
+      });
+    }
+    const { resolveCapabilities } = await import("../lib/permissions.js");
+    const effective = await resolveCapabilities(id, target.role as Role);
+    await audit({
+      restaurantId: req.auth!.restaurantId,
+      userId: req.auth!.userId,
+      action: "USER_CAPABILITIES_UPDATED",
+      entityType: "User",
+      entityId: id,
+      after: { count: overrides.length },
+      ipAddress: clientIp(req),
+    });
+    ok(res, { effective }, "Capabilities updated");
   }),
 );
