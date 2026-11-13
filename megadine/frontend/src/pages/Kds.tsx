@@ -10,8 +10,9 @@ interface Ticket {
   orderId: string;
   station: string;
   status: string;
+  round: number;
   sentAt: string;
-  order: { orderNumber: number; channel: string; tableId: string | null; notes: string | null; priority: string; table?: { number: number; name: string | null } | null };
+  order: { orderNumber: number; channel: string; tableId: string | null; notes: string | null; priority: string; cashier?: { name: string } | null; table?: { number: number; name: string | null } | null };
   lines: TicketLine[];
 }
 
@@ -154,9 +155,8 @@ export default function Kds() {
                         {first.order.tableId && tableMap.get(first.order.tableId) && (
                           <Badge kind="info">{t("ops:kds_table", { defaultValue: "Table" })} {tableMap.get(first.order.tableId)!.name ?? tableMap.get(first.order.tableId)!.number}</Badge>
                         )}
-                        {first.order.tableId && tableMap.get(first.order.tableId) && (
-                          <Badge kind="info">{t("ops:kds_table", { defaultValue: "Table" })} {tableMap.get(first.order.tableId)!.name ?? tableMap.get(first.order.tableId)!.number}</Badge>
-                        )}
+                        {first.round > 1 && <Badge kind="warn">{t("ops:kds_round", { n: first.round, defaultValue: "Round {{n}}" })}</Badge>}
+                        {first.order.cashier?.name && <Badge kind="muted">{first.order.cashier.name}</Badge>}
                         {priority !== "NORMAL" && (
                           <Badge kind={priorityKind(priority)}>{t(`ops:priority_${priority.toLowerCase()}`)}</Badge>
                         )}
@@ -181,6 +181,11 @@ export default function Kds() {
                       {first.order.notes && <div className="small muted" style={{ marginTop: 6 }}>{t("ops:kds_order_note", { note: first.order.notes })}</div>}
                       <div className="row" style={{ marginTop: 10 }}>
                         {nextBtn(first)}
+                        {col.key === "READY" && (
+                          <button className="btn ghost small" onClick={() => statusMut.mutate({ id: first.id, status: "PREPARING" })}>
+                            {t("ops:kds_recall", { defaultValue: "Recall" })}
+                          </button>
+                        )}
                         <button className="btn ghost small" onClick={() => setPriorityTarget(first)}>
                           {t("ops:kds_priority_btn")}
                         </button>
@@ -200,6 +205,7 @@ export default function Kds() {
                       <span className="tnum">#{first.order.orderNumber}</span>
                       <Badge kind="muted">{channelLabel(first.order.channel)}</Badge>
                       <Badge kind="info">{t("ops:kds_merge_badge", { count: group.length })}</Badge>
+                      {first.order.cashier?.name && <Badge kind="muted">{first.order.cashier.name}</Badge>}
                       {priority !== "NORMAL" && (
                         <Badge kind={priorityKind(priority)}>{t(`ops:priority_${priority.toLowerCase()}`)}</Badge>
                       )}
@@ -230,6 +236,11 @@ export default function Kds() {
                         ))}
                         <div className="row" style={{ marginTop: 8 }}>
                           {nextBtn(tk)}
+                          {col.key === "READY" && (
+                            <button className="btn ghost small" onClick={() => statusMut.mutate({ id: tk.id, status: "PREPARING" })}>
+                              {t("ops:kds_recall", { defaultValue: "Recall" })}
+                            </button>
+                          )}
                           <button className="btn ghost small" onClick={() => setCancelTarget(tk)}>
                             {t("ops:kds_cancel")}
                           </button>
