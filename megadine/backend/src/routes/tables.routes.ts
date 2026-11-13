@@ -8,6 +8,7 @@ import { validate } from "../middleware/validate.js";
 import { audit } from "../lib/audit.js";
 import { assertWithinLimit } from "../lib/license.js";
 import { EVENTS, emitToWorkspace } from "../lib/socket.js";
+import { recalcOrder } from "../services/order.service.js";
 import type { Prisma } from "@prisma/client";
 
 export const tablesRouter = Router();
@@ -70,6 +71,7 @@ tablesRouter.get(
               total: order?.total ?? "0",
               itemCount,
               servedCount,
+              guestCount: session.guestCount ?? null,
               status: order?.status ?? null,
             }
           : null,
@@ -257,5 +259,196 @@ tablesRouter.post(
     await audit({ restaurantId: req.auth!.restaurantId, userId: req.auth!.userId, action: "TABLE_CLEARED", entityType: "RestaurantTable", entityId: table.id });
     emitToWorkspace(EVENTS.TABLE_UPDATED, { tableId: table.id, status: "AVAILABLE" });
     res.json({ ok: true });
+  }),
+);
+
+/**
+ * Lock both table rows in a deterministic order so two simultaneous transfers
+ * can never deadlock each other.
+ */
+async function lockTablePair(tx: Prisma.TransactionClient, restaurantId: string, a: string, b: string) {
+  for (const id of [a, b].sort()) {
+    const rows = await tx.$queryRaw<{ id: string }[]>`
+      SELECT id FROM "RestaurantTable"
+      WHERE id = ${id} AND "restaurantId" = ${restaurantId}
+      FOR UPDATE
+    `;
+    if (!rows.length) throw ApiError.notFound("Table not found");
+  }
+}
+
+const moveSchema = z.object({ targetTableId: z.string().uuid() });
+
+/** Move the open session (and its order) to another free table. */
+tablesRouter.post(
+  "/:id/transfer",
+  requirePermission("table.manage"),
+  validate({ body: moveSchema }),
+  asyncHandler(async (req, res) => {
+    const sourceId = String(req.params.id);
+    const { targetTableId } = req.body as z.infer<typeof moveSchema>;
+    if (sourceId === targetTableId) throw ApiError.badRequest("Pick a different table");
+
+    await prisma.$transaction(async (tx) => {
+      await lockTablePair(tx, req.auth!.restaurantId, sourceId, targetTableId);
+      const source = await tx.restaurantTable.findFirst({ where: { id: sourceId, restaurantId: req.auth!.restaurantId } });
+      const target = await tx.restaurantTable.findFirst({ where: { id: targetTableId, restaurantId: req.auth!.restaurantId } });
+      if (!source || !target) throw ApiError.notFound("Table not found");
+      const session = await tx.tableSession.findFirst({ where: { tableId: sourceId, status: "OPEN" } });
+      if (!session) throw ApiError.conflict("Table has no open session to transfer");
+      const blocking = await tx.tableSession.findFirst({ where: { tableId: targetTableId, status: "OPEN" } });
+      if (blocking) throw ApiError.conflict("Target table already has an open session. Use merge instead.");
+
+      await tx.tableSession.update({ where: { id: session.id }, data: { tableId: targetTableId } });
+      if (session.orderId) {
+        await tx.order.update({ where: { id: session.orderId }, data: { tableId: targetTableId } });
+      }
+      await tx.restaurantTable.update({
+        where: { id: sourceId },
+        data: { status: session.orderId ? "NEEDS_CLEANING" : "AVAILABLE", version: { increment: 1 } },
+      });
+      await tx.restaurantTable.update({
+        where: { id: targetTableId },
+        data: { status: source.status === "NEEDS_BILL" ? "NEEDS_BILL" : "OCCUPIED", version: { increment: 1 } },
+      });
+    });
+
+    await audit({
+      restaurantId: req.auth!.restaurantId,
+      userId: req.auth!.userId,
+      action: "TABLE_TRANSFERRED",
+      entityType: "RestaurantTable",
+      entityId: sourceId,
+      after: { targetTableId },
+    });
+    emitToWorkspace(EVENTS.TABLE_UPDATED, { tableId: sourceId });
+    emitToWorkspace(EVENTS.TABLE_UPDATED, { tableId: targetTableId });
+    res.json({ ok: true });
+  }),
+);
+
+/**
+ * Merge the source table into the target. When both tables have orders the
+ * unpaid lines and kitchen tickets move to the target order, and the source
+ * order is cancelled with a pointer to the surviving bill.
+ */
+tablesRouter.post(
+  "/:id/merge",
+  requirePermission("table.manage"),
+  validate({ body: moveSchema }),
+  asyncHandler(async (req, res) => {
+    const sourceId = String(req.params.id);
+    const { targetTableId } = req.body as z.infer<typeof moveSchema>;
+    if (sourceId === targetTableId) throw ApiError.badRequest("Pick a different table");
+
+    let recalcTargetId: string | null = null;
+    await prisma.$transaction(async (tx) => {
+      await lockTablePair(tx, req.auth!.restaurantId, sourceId, targetTableId);
+      const source = await tx.restaurantTable.findFirst({ where: { id: sourceId, restaurantId: req.auth!.restaurantId } });
+      const target = await tx.restaurantTable.findFirst({ where: { id: targetTableId, restaurantId: req.auth!.restaurantId } });
+      if (!source || !target) throw ApiError.notFound("Table not found");
+      const sourceSession = await tx.tableSession.findFirst({
+        where: { tableId: sourceId, status: "OPEN" },
+        include: { order: { select: { id: true, orderNumber: true, status: true, amountPaid: true, total: true } } },
+      });
+      if (!sourceSession) throw ApiError.conflict("Table has no open session to merge");
+      const targetSession = await tx.tableSession.findFirst({
+        where: { tableId: targetTableId, status: "OPEN" },
+        include: { order: { select: { id: true, orderNumber: true, status: true, amountPaid: true } } },
+      });
+
+      const sourceOrder = sourceSession.order;
+      const targetOrder = targetSession?.order ?? null;
+      const live = (s: string) => s !== "COMPLETED" && s !== "CANCELLED";
+
+      // Empty target: this is a plain move, not an order merge.
+      if (!targetOrder) {
+        if (!targetSession) {
+          if (sourceOrder) {
+            await tx.tableSession.update({ where: { id: sourceSession.id }, data: { status: "CLOSED", closedAt: new Date(), clearedAt: new Date(), orderId: null } });
+            await tx.tableSession.create({ data: { tableId: targetTableId, orderId: sourceOrder.id, guestCount: sourceSession.guestCount } });
+            await tx.order.update({ where: { id: sourceOrder.id }, data: { tableId: targetTableId } });
+          } else {
+            await tx.tableSession.update({ where: { id: sourceSession.id }, data: { tableId: targetTableId } });
+          }
+        } else if (sourceOrder) {
+          await tx.tableSession.update({ where: { id: sourceSession.id }, data: { status: "CLOSED", closedAt: new Date(), clearedAt: new Date(), orderId: null } });
+          await tx.tableSession.update({ where: { id: targetSession.id }, data: { orderId: sourceOrder.id } });
+          await tx.order.update({ where: { id: sourceOrder.id }, data: { tableId: targetTableId } });
+        } else {
+          await tx.tableSession.update({ where: { id: sourceSession.id }, data: { status: "CLOSED", closedAt: new Date(), clearedAt: new Date() } });
+        }
+        await tx.restaurantTable.update({ where: { id: sourceId }, data: { status: "NEEDS_CLEANING", version: { increment: 1 } } });
+        await tx.restaurantTable.update({ where: { id: targetTableId }, data: { status: "OCCUPIED", version: { increment: 1 } } });
+        return;
+      }
+
+      if (!sourceOrder) throw ApiError.conflict("Nothing to merge into the target bill");
+      if (!live(sourceOrder.status) || !live(targetOrder.status)) {
+        throw ApiError.conflict("Both bills must still be open to merge");
+      }
+      if (Number(sourceOrder.amountPaid) > 0 || Number(targetOrder.amountPaid) > 0) {
+        throw ApiError.conflict("Payments exist on one of the bills. Refund or move the payment first.");
+      }
+
+      await tx.orderLine.updateMany({ where: { orderId: sourceOrder.id }, data: { orderId: targetOrder.id } });
+      await tx.kitchenTicket.updateMany({ where: { orderId: sourceOrder.id }, data: { orderId: targetOrder.id } });
+      await tx.order.update({
+        where: { id: sourceOrder.id },
+        data: {
+          status: "CANCELLED",
+          cancelledAt: new Date(),
+          cancelReason: `Merged into order #${targetOrder.orderNumber}`,
+        },
+      });
+      await tx.tableSession.update({ where: { id: sourceSession.id }, data: { status: "CLOSED", closedAt: new Date(), clearedAt: new Date() } });
+      await tx.restaurantTable.update({ where: { id: sourceId }, data: { status: "NEEDS_CLEANING", version: { increment: 1 } } });
+      await tx.restaurantTable.update({ where: { id: targetTableId }, data: { status: "OCCUPIED", version: { increment: 1 } } });
+      recalcTargetId = targetOrder.id;
+    });
+
+    if (recalcTargetId) await recalcOrder(recalcTargetId);
+    await audit({
+      restaurantId: req.auth!.restaurantId,
+      userId: req.auth!.userId,
+      action: "TABLE_MERGED",
+      entityType: "RestaurantTable",
+      entityId: sourceId,
+      after: { targetTableId },
+    });
+    emitToWorkspace(EVENTS.TABLE_UPDATED, { tableId: sourceId });
+    emitToWorkspace(EVENTS.TABLE_UPDATED, { tableId: targetTableId });
+    if (recalcTargetId) emitToWorkspace(EVENTS.ORDER_UPDATED, { id: recalcTargetId });
+    res.json({ ok: true });
+  }),
+);
+
+const guestsSchema = z.object({ count: z.number().int().min(1).max(50) });
+
+/** Record the number of guests seated at a table (creates a session if needed). */
+tablesRouter.post(
+  "/:id/guests",
+  requirePermission("table.manage"),
+  validate({ body: guestsSchema }),
+  asyncHandler(async (req, res) => {
+    const id = String(req.params.id);
+    const { count } = req.body as z.infer<typeof guestsSchema>;
+    const table = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "RestaurantTable" WHERE id = ${id} AND "restaurantId" = ${req.auth!.restaurantId} FOR UPDATE`;
+      const existing = await tx.restaurantTable.findFirst({ where: { id, restaurantId: req.auth!.restaurantId } });
+      if (!existing) throw ApiError.notFound("Table not found");
+      const session = await tx.tableSession.findFirst({ where: { tableId: id, status: "OPEN" } });
+      if (session) {
+        await tx.tableSession.update({ where: { id: session.id }, data: { guestCount: count } });
+      } else {
+        await tx.tableSession.create({ data: { tableId: id, guestCount: count, seatedAt: new Date() } });
+      }
+      return tx.restaurantTable.update({
+        where: { id },
+        data: { status: existing.status === "AVAILABLE" || existing.status === "NEEDS_CLEANING" ? "OCCUPIED" : existing.status, version: { increment: 1 } },
+      });
+    });
+    emitToWorkspace(EVENTS.TABLE_UPDATED, { tableId: table.id, status: table.status });
+    res.json({ table });
   }),
 );

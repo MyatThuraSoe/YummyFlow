@@ -8,7 +8,7 @@ import { Badge, Field, Modal, useToast } from "../components/ui";
 import { useCart } from "../store/cart";
 import { useNavigate } from "react-router-dom";
 
-interface TableCurrent { sessionId: string; orderId: string | null; orderNumber: number | null; total: string; itemCount: number; servedCount?: number; status: string | null }
+interface TableCurrent { sessionId: string; orderId: string | null; orderNumber: number | null; total: string; itemCount: number; servedCount?: number; guestCount?: number | null; status: string | null }
 interface TableRow { id: string; number: number; name: string | null; capacity: number; zone: string; status: string; version: number; current: TableCurrent | null }
 interface OrderLine { id: string; itemNameSnapshot: string; quantity: number; lineTotal: string; isVoided: boolean }
 interface OrderShape { id: string; orderNumber: number; status: string; total: string; lines: OrderLine[]; tableSession?: { table: { number: number } } | null }
@@ -65,6 +65,8 @@ export default function Floor() {
   const [selected, setSelected] = useState<TableRow | null>(null);
   const [bill, setBill] = useState<string | null>(null);
   const [resTarget, setResTarget] = useState<TableRow | null>(null);
+  const [moveTarget, setMoveTarget] = useState("");
+  const [guests, setGuests] = useState("");
   const { data: sessionData } = useQuery({
     queryKey: ["table-sessions", selected?.id],
     queryFn: () => apiGet<{ sessions: SessionRow[] }>(`/tables/${selected!.id}/sessions`),
@@ -118,6 +120,28 @@ const statusLabel = (s: string) => (STATUS_KEYS[s] ? t(`ops:${STATUS_KEYS[s]}`) 
     onError: (e) => push(e instanceof Error ? e.message : t("ops:failed"), "error"),
   });
 
+  const moveMut = useMutation({
+    mutationFn: ({ id, targetTableId, merge }: { id: string; targetTableId: string; merge: boolean }) =>
+      apiPost(`/tables/${id}/${merge ? "merge" : "transfer"}`, { targetTableId }),
+    onSuccess: (_res, vars) => {
+      push(t(vars.merge ? "ops:floor_merged" : "ops:floor_transferred"), "ok");
+      setMoveTarget("");
+      setSelected(null);
+      qc.invalidateQueries({ queryKey: ["tables"] });
+      qc.invalidateQueries({ queryKey: ["orders"] });
+    },
+    onError: (e) => push(e instanceof Error ? e.message : t("ops:failed"), "error"),
+  });
+
+  const guestsMut = useMutation({
+    mutationFn: ({ id, count }: { id: string; count: number }) => apiPost(`/tables/${id}/guests`, { count }),
+    onSuccess: () => {
+      push(t("ops:floor_guests_saved"), "ok");
+      qc.invalidateQueries({ queryKey: ["tables"] });
+    },
+    onError: (e) => push(e instanceof Error ? e.message : t("ops:failed"), "error"),
+  });
+
   function startOrder(tbl: TableRow) {
     cart.reset();
     cart.setChannel("DINE_IN");
@@ -142,7 +166,7 @@ const statusLabel = (s: string) => (STATUS_KEYS[s] ? t(`ops:${STATUS_KEYS[s]}`) 
       </div>
       <div className="table-grid">
         {tables.map((tbl) => (
-          <button key={tbl.id} className={`table-card ${tbl.status}`} onClick={() => setSelected(tbl)}>
+          <button key={tbl.id} className={`table-card ${tbl.status}`} onClick={() => { setSelected(tbl); setGuests(tbl.current?.guestCount ? String(tbl.current.guestCount) : ""); setMoveTarget(""); }}>
             <div className="row">
               <span style={{ fontSize: 22, fontWeight: 800 }}>#{tbl.number}</span>
               <div className="spacer" />
@@ -233,6 +257,65 @@ const statusLabel = (s: string) => (STATUS_KEYS[s] ? t(`ops:${STATUS_KEYS[s]}`) 
                   })}
                 </div>
               )}
+              {selected.current.guestCount ? (
+                <div className="small muted" style={{ marginTop: 4 }}>
+                  {t("ops:floor_guests_count", { count: selected.current.guestCount })}
+                </div>
+              ) : null}
+            </div>
+          )}
+          <div className="card" style={{ marginBottom: 12 }}>
+            <div className="small muted" style={{ marginBottom: 6 }}>{t("ops:floor_guests_title", { defaultValue: "Guests seated" })}</div>
+            <div className="row wrap">
+              <input
+                className="input"
+                type="number"
+                min={1}
+                max={50}
+                value={guests}
+                onChange={(e) => setGuests(e.target.value)}
+                style={{ maxWidth: 120 }}
+                placeholder={t("ops:floor_guests_placeholder", { defaultValue: "Count" })}
+              />
+              <button
+                className="btn"
+                disabled={!guests || guestsMut.isPending}
+                onClick={() => guestsMut.mutate({ id: selected.id, count: Number(guests) })}
+              >
+                {t("ops:floor_save", { defaultValue: "Save" })}
+              </button>
+              {selected.current?.guestCount ? (
+                <span className="badge info">{t("ops:floor_guests_count", { count: selected.current.guestCount })}</span>
+              ) : null}
+            </div>
+          </div>
+          {selected.current && (
+            <div className="card" style={{ marginBottom: 12 }}>
+              <div className="small muted" style={{ marginBottom: 6 }}>{t("ops:floor_move_title", { defaultValue: "Move this table" })}</div>
+              <select className="input" value={moveTarget} onChange={(e) => setMoveTarget(e.target.value)}>
+                <option value="">{t("ops:floor_move_pick", { defaultValue: "Choose a table…" })}</option>
+                {tables.filter((tbl) => tbl.id !== selected.id).map((tbl) => (
+                  <option key={tbl.id} value={tbl.id}>
+                    #{tbl.number} — {statusLabel(tbl.status)}{tbl.current ? ` (${t("ops:floor_move_occupied", { defaultValue: "occupied" })})` : ""}
+                  </option>
+                ))}
+              </select>
+              <div className="row wrap" style={{ marginTop: 8 }}>
+                <button
+                  className="btn"
+                  disabled={!moveTarget || moveMut.isPending}
+                  onClick={() => moveMut.mutate({ id: selected.id, targetTableId: moveTarget, merge: false })}
+                >
+                  {t("ops:floor_transfer", { defaultValue: "Transfer to free table" })}
+                </button>
+                <button
+                  className="btn"
+                  disabled={!moveTarget || moveMut.isPending}
+                  onClick={() => moveMut.mutate({ id: selected.id, targetTableId: moveTarget, merge: true })}
+                >
+                  {t("ops:floor_merge", { defaultValue: "Merge into table" })}
+                </button>
+              </div>
             </div>
           )}
           {selectedHasOpenOrder && (
