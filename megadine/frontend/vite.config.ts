@@ -21,8 +21,19 @@ export default defineConfig({
         ],
       },
       workbox: {
-        globPatterns: ["**/*.{js,css,html,svg,png,ico}"],
+        // Control the current tab as soon as the precache is ready, so a
+        // tablet that loses the network on its first visit still loads offline.
+        clientsClaim: true,
+        skipWaiting: true,
+        // Locale JSON is fetched at runtime by i18next; without it in the
+        // precache an offline reload suspends forever on the loading spinner.
+        globPatterns: ["**/*.{js,css,html,svg,png,ico,json,webmanifest}"],
         runtimeCaching: [
+          {
+            urlPattern: ({ url }) => url.pathname.startsWith("/locales/"),
+            handler: "CacheFirst",
+            options: { cacheName: "locales-cache" },
+          },
           {
             urlPattern: ({ url }) => url.pathname.startsWith("/api/v1/menu"),
             handler: "NetworkFirst",

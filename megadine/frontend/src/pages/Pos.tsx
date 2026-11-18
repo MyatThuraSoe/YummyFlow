@@ -273,11 +273,11 @@ export default function Pos() {
     onError: (e) => push(e instanceof Error ? e.message : t("ops:failed"), "error"),
   });
 
-  async function doDiscount(type: "PERCENT" | "ABSOLUTE", value: number, managerPin?: string) {
+  async function doDiscount(type: "PERCENT" | "ABSOLUTE", value: number, managerPin?: string, approvalId?: string | null) {
     setBusy(true);
     try {
       const o = await ensureOrder();
-      await apiPost(`/orders/${o.id}/discount`, { type, value, managerPin });
+      await apiPost(`/orders/${o.id}/discount`, { type, value, managerPin, approvalId });
       const fresh = await apiGet<{ order: OrderShape }>(`/orders/${o.id}`);
       setOrder(fresh.order);
       setShowDiscount(false);
@@ -400,9 +400,9 @@ export default function Pos() {
     setShowServe(false);
   }
 
-  async function voidLine(lineId: string, reason: string, managerPin?: string) {
+  async function voidLine(lineId: string, reason: string, managerPin?: string, approvalId?: string | null) {
     const o = order!;
-    await apiPost(`/orders/${o.id}/void-line`, { lineId, reason, managerPin });
+    await apiPost(`/orders/${o.id}/void-line`, { lineId, reason, managerPin, approvalId });
     const fresh = await apiGet<{ order: OrderShape }>(`/orders/${o.id}`);
     setOrder(fresh.order);
     setVoidTarget(null);

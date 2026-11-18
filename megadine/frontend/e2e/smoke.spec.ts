@@ -32,3 +32,21 @@ test("PWA manifest is linked", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator('link[rel="manifest"]')).toHaveCount(1);
 });
+
+test("app shell still loads while offline", async ({ page, context }) => {
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: /Sign in/i })).toBeVisible();
+
+  // Wait for the precaching service worker to take control before cutting the
+  // network, otherwise the reload would race cache population / claiming.
+  await page.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: 20_000 });
+
+  await context.setOffline(true);
+  try {
+    await page.reload();
+    await expect(page.getByRole("heading", { name: /Sign in/i })).toBeVisible();
+    await expect(page.locator('link[rel="manifest"]')).toHaveCount(1);
+  } finally {
+    await context.setOffline(false);
+  }
+});

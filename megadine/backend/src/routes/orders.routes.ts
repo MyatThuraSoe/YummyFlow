@@ -191,6 +191,7 @@ ordersRouter.post(
 const prioritySchema = z.object({
   priority: z.enum(["NORMAL", "RUSH", "VIP", "CATERING"]),
   managerPin: z.string().regex(/^\d{4,6}$/).optional(),
+  approvalId: z.string().uuid().optional().nullable(),
 });
 
 ordersRouter.patch(
@@ -198,21 +199,26 @@ ordersRouter.patch(
   requirePermission("pos.use"),
   validate({ body: prioritySchema }),
   asyncHandler(async (req, res) => {
-    const { priority, managerPin } = req.body as z.infer<typeof prioritySchema>;
-    const order = await setOrderPriority(String(req.params.id), req.auth!.userId, req.auth!.role, priority, managerPin);
+    const { priority, managerPin, approvalId } = req.body as z.infer<typeof prioritySchema>;
+    const order = await setOrderPriority(String(req.params.id), req.auth!.userId, req.auth!.role, priority, managerPin, approvalId);
     res.json({ order });
   }),
 );
 
-const voidSchema = z.object({ lineId: z.string().uuid(), reason: z.string().min(2), managerPin: z.string().regex(/^\d{4,6}$/).optional() });
+const voidSchema = z.object({
+  lineId: z.string().uuid(),
+  reason: z.string().min(2),
+  managerPin: z.string().regex(/^\d{4,6}$/).optional(),
+  approvalId: z.string().uuid().optional().nullable(),
+});
 
 ordersRouter.post(
   "/:id/void-line",
   requirePermission("pos.use"),
   validate({ body: voidSchema }),
   asyncHandler(async (req, res) => {
-    const { lineId, reason, managerPin } = req.body as z.infer<typeof voidSchema>;
-    const order = await voidOrderLine(String(req.params.id), lineId, req.auth!.userId, req.auth!.role, reason, managerPin);
+    const { lineId, reason, managerPin, approvalId } = req.body as z.infer<typeof voidSchema>;
+    const order = await voidOrderLine(String(req.params.id), lineId, req.auth!.userId, req.auth!.role, reason, managerPin, approvalId);
     res.json({ order });
   }),
 );
@@ -222,6 +228,7 @@ const discountSchema = z.object({
   value: z.number().positive(),
   reason: z.string().optional(),
   managerPin: z.string().regex(/^\d{4,6}$/).optional(),
+  approvalId: z.string().uuid().optional().nullable(),
 });
 
 ordersRouter.post(
@@ -230,20 +237,30 @@ ordersRouter.post(
   validate({ body: discountSchema }),
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof discountSchema>;
-    const order = await applyDiscount(String(req.params.id), req.auth!.userId, req.auth!.role, body);
+    const order = await applyDiscount(String(req.params.id), req.auth!.userId, req.auth!.role, {
+      type: body.type,
+      value: body.value,
+      reason: body.reason,
+      managerPin: body.managerPin,
+      approvalId: body.approvalId,
+    });
     res.json({ order });
   }),
 );
 
-const cancelSchema = z.object({ reason: z.string().min(2), managerPin: z.string().regex(/^\d{4,6}$/).optional() });
+const cancelSchema = z.object({
+  reason: z.string().min(2),
+  managerPin: z.string().regex(/^\d{4,6}$/).optional(),
+  approvalId: z.string().uuid().optional().nullable(),
+});
 
 ordersRouter.post(
   "/:id/cancel",
   requirePermission("pos.use"),
   validate({ body: cancelSchema }),
   asyncHandler(async (req, res) => {
-    const { reason, managerPin } = req.body as z.infer<typeof cancelSchema>;
-    const order = await cancelOrder(String(req.params.id), req.auth!.userId, req.auth!.role, reason, managerPin);
+    const { reason, managerPin, approvalId } = req.body as z.infer<typeof cancelSchema>;
+    const order = await cancelOrder(String(req.params.id), req.auth!.userId, req.auth!.role, reason, managerPin, approvalId);
     res.json({ order });
   }),
 );

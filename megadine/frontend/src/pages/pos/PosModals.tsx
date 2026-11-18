@@ -8,6 +8,7 @@ import { computeTotals, formatMoney, fromCents, toCents } from "../../lib/format
 import { dismissFailure, enqueueOrder, failedCount, failedOrders, pendingCount, retryFailure, shouldQueue } from "../../lib/outbox";
 import { printOrderReceipt } from "../../lib/receipts";
 import { Field, Modal, useToast } from "../../components/ui";
+import { AskManager } from "../../components/AskManager";
 import type { MenuItem, MenuOption, ModifierGroup, OrderShape, ServerLine, Tender } from "./pos.types";
 
 export function OrdersModal({
@@ -113,10 +114,11 @@ export function OrdersModal({
   );
 }
 
-export function VoidModal({ line, onClose, onSubmit }: { line: ServerLine; onClose: () => void; onSubmit: (lineId: string, reason: string, managerPin?: string) => Promise<void> }) {
+export function VoidModal({ line, onClose, onSubmit }: { line: ServerLine; onClose: () => void; onSubmit: (lineId: string, reason: string, managerPin?: string, approvalId?: string | null) => Promise<void> }) {
   const { t } = useTranslation(["ops", "common"]);
   const [reason, setReason] = useState("");
   const [pin, setPin] = useState("");
+  const [approvalId, setApprovalId] = useState<string | null>(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -124,7 +126,7 @@ export function VoidModal({ line, onClose, onSubmit }: { line: ServerLine; onClo
     setBusy(true);
     setErr("");
     try {
-      await onSubmit(line.id, reason, pin || undefined);
+      await onSubmit(line.id, reason, pin || undefined, approvalId);
     } catch (e) {
       setErr(e instanceof Error ? e.message : t("ops:void_failed"));
     } finally {
@@ -139,7 +141,14 @@ export function VoidModal({ line, onClose, onSubmit }: { line: ServerLine; onClo
       footer={<><button className="btn ghost" onClick={onClose}>{t("ops:cancel")}</button><button className="btn danger" disabled={!reason || busy} onClick={submit}>{busy ? "â€¦" : t("ops:void_submit")}</button></>}
     >
       <Field label={t("ops:void_reason")}><input className="input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder={t("ops:void_reason_placeholder")} /></Field>
-      <Field label={t("ops:void_manager_pin")}><input className="input" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="â€¢â€¢â€¢â€¢" /></Field>
+      <Field label={t("ops:void_manager_pin")}><input className="input" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="••••" /></Field>
+      <AskManager
+        action="VOID"
+        amount={Number(line.lineTotal)}
+        reason={reason}
+        payload={{ lineId: line.id }}
+        onApproval={setApprovalId}
+      />
       {err && <p className="badge danger">{err}</p>}
     </Modal>
   );
@@ -157,6 +166,7 @@ export function RefundModal({ order, currency, onClose, onDone }: { order: Order
   const [sel, setSel] = useState<Record<string, number>>({});
   const [reason, setReason] = useState("");
   const [pin, setPin] = useState("");
+  const [approvalId, setApprovalId] = useState<string | null>(null);
   const [restock, setRestock] = useState(true);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -200,7 +210,9 @@ export function RefundModal({ order, currency, onClose, onDone }: { order: Order
     setBusy(true);
     setErr("");
     try {
-      const body: Record<string, unknown> = { orderId: order.id, reason, managerPin: pin, restock };
+      const body: Record<string, unknown> = { orderId: order.id, reason, restock };
+      if (approvalId) body.approvalId = approvalId;
+      else body.managerPin = pin;
       if (selected.length) body.lines = selected.map(([lineId, quantity]) => ({ lineId, quantity }));
       else body.amount = Number(amount);
       await apiPost("/payments/refund", body);
@@ -213,7 +225,7 @@ export function RefundModal({ order, currency, onClose, onDone }: { order: Order
     }
   }
 
-  const valid = reason.trim().length >= 2 && pin.length >= 4 && (selected.length > 0 || Number(amount) > 0);
+  const valid = reason.trim().length >= 2 && (pin.length >= 4 || !!approvalId) && (selected.length > 0 || Number(amount) > 0);
 
   return (
     <Modal
@@ -266,7 +278,14 @@ export function RefundModal({ order, currency, onClose, onDone }: { order: Order
         />
       </Field>
       <Field label={t("ops:refund_reason")}><input className="input" value={reason} onChange={(e) => setReason(e.target.value)} /></Field>
-      <Field label={t("ops:refund_manager_pin")}><input className="input" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="â€¢â€¢â€¢â€¢" /></Field>
+      <Field label={t("ops:refund_manager_pin")}><input className="input" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="••••" /></Field>
+      <AskManager
+        action="REFUND"
+        amount={selected.length > 0 ? autoCents / 100 : Number(amount)}
+        reason={reason}
+        payload={{ orderId: order.id, lines: selected.map(([lineId, quantity]) => ({ lineId, quantity })) }}
+        onApproval={setApprovalId}
+      />
       <label className="row small" style={{ gap: 6 }}>
         <input type="checkbox" checked={restock} onChange={(e) => setRestock(e.target.checked)} /> {t("ops:refund_restock")}
       </label>
@@ -729,12 +748,13 @@ export function DiscountModal({
   subtotal: number;
   currency: string;
   onClose: () => void;
-  onApply: (type: "PERCENT" | "ABSOLUTE", value: number, managerPin?: string) => Promise<void>;
+  onApply: (type: "PERCENT" | "ABSOLUTE", value: number, managerPin?: string, approvalId?: string | null) => Promise<void>;
 }) {
   const { t } = useTranslation(["ops", "common"]);
   const [type, setType] = useState<"PERCENT" | "ABSOLUTE">("PERCENT");
   const [value, setValue] = useState(10);
   const [pin, setPin] = useState("");
+  const [approvalId, setApprovalId] = useState<string | null>(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const amount = type === "PERCENT" ? Math.round(subtotal * (value / 100)) : toCents(value);
@@ -744,7 +764,7 @@ export function DiscountModal({
     setBusy(true);
     setErr("");
     try {
-      await onApply(type, value, pin || undefined);
+      await onApply(type, value, pin || undefined, approvalId);
     } catch (e) {
       setErr(e instanceof Error ? e.message : t("ops:failed"));
     } finally {
@@ -767,9 +787,18 @@ export function DiscountModal({
       </Field>
       <p className="muted small">{t("ops:disc_total", { amount: formatMoney(amount, currency) })}</p>
       {needsManager && (
-        <Field label={t("ops:disc_manager_pin")}>
-          <input className="input" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="â€¢â€¢â€¢â€¢" />
-        </Field>
+        <>
+          <Field label={t("ops:disc_manager_pin")}>
+            <input className="input" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="••••" />
+          </Field>
+          <AskManager
+            action="DISCOUNT"
+            amount={amount / 100}
+            reason={t("ops:disc_approval_reason", { defaultValue: "Discount approval" })}
+            payload={{ type, value }}
+            onApproval={setApprovalId}
+          />
+        </>
       )}
       {err && <p className="badge danger">{err}</p>}
     </Modal>

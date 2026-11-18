@@ -53,12 +53,17 @@ const refundSchema = z
     amount: z.number().positive().optional(),
     lines: z.array(z.object({ lineId: z.string().uuid(), quantity: z.number().int().min(1).max(99) })).min(1).max(100).optional(),
     reason: z.string().min(2),
-    managerPin: z.string().regex(/^\d{4,6}$/),
+    managerPin: z.string().regex(/^\d{4,6}$/).optional(),
+    approvalId: z.string().uuid().optional().nullable(),
     restock: z.boolean().optional(),
   })
   .refine((b) => b.amount !== undefined || (b.lines && b.lines.length > 0), {
     message: "Provide an amount or at least one line to refund",
     path: ["amount"],
+  })
+  .refine((b) => !!b.managerPin || !!b.approvalId, {
+    message: "A manager PIN or an approved request is required",
+    path: ["managerPin"],
   });
 
 paymentsRouter.post(
@@ -74,6 +79,7 @@ paymentsRouter.post(
       lines: body.lines,
       reason: body.reason,
       managerPin: body.managerPin,
+      approvalId: body.approvalId,
       restock: body.restock,
     });
     res.json({ order });

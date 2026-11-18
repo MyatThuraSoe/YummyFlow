@@ -318,6 +318,8 @@ model ApprovalRequest {
   approverId   String?
   approver     User?     @relation("ApprovalApprover", fields: [approverId], references: [id])
   decidedAt    DateTime?
+  /** Set when the granted approval is attached to the action it authorised. */
+  consumedAt   DateTime?
   createdAt    DateTime  @default(now())
   expiresAt    DateTime?
 

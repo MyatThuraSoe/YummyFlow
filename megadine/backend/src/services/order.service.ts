@@ -4,7 +4,7 @@ import { computeOrderTotals, lineTotalCents, toDb } from "../lib/calculations.js
 import { fromCents, toCents } from "../lib/money.js";
 import { businessDateFor } from "../lib/businessDay.js";
 import { audit } from "../lib/audit.js";
-import { assertWithinApprovalLimit, verifyManagerPin } from "../lib/approval.js";
+import { assertWithinApprovalLimit, consumeApproval, verifyManagerPin } from "../lib/approval.js";
 import { EVENTS, emitToWorkspace, emitToRole } from "../lib/socket.js";
 import { buildKitchenTicketText } from "../lib/printers.js";
 import { queuePrint } from "../lib/printQueue.js";
@@ -308,6 +308,7 @@ export async function voidOrderLine(
   actorRole: string,
   reason: string,
   managerPin?: string,
+  approvalId?: string | null,
 ) {
   const line = await prisma.orderLine.findUnique({ where: { id: lineId }, include: { order: true } });
   if (!line || line.orderId !== orderId) throw ApiError.notFound("Order line not found");
@@ -320,7 +321,16 @@ export async function voidOrderLine(
   const sent = await prisma.kitchenTicketLine.findFirst({ where: { orderLineId: lineId } });
   const voidAmount = Number(line.lineTotal);
   if (sent) {
-    if (can(actorRole as Role, "approve.override")) {
+    if (approvalId) {
+      const approval = await consumeApproval({
+        id: approvalId,
+        restaurantId: line.order.restaurantId,
+        requesterId: actorId,
+        action: "VOID",
+        amount: voidAmount,
+      });
+      approvedBy = approval.approverId;
+    } else if (can(actorRole as Role, "approve.override")) {
       await assertWithinApprovalLimit(actorRole as Role, "VOID", voidAmount);
     } else {
       const manager = await verifyManagerPin(line.order.restaurantId, managerPin ?? "", actorId, null, "VOID", voidAmount);
@@ -352,7 +362,7 @@ export async function applyDiscount(
   orderId: string,
   actorId: string,
   actorRole: string,
-  input: { type: "PERCENT" | "ABSOLUTE"; value: number; managerPin?: string; reason?: string },
+  input: { type: "PERCENT" | "ABSOLUTE"; value: number; managerPin?: string; reason?: string; approvalId?: string | null },
 ) {
   const order = await prisma.order.findUnique({
     where: { id: orderId },
@@ -372,7 +382,16 @@ export async function applyDiscount(
   let approvedBy: string | null = null;
   const isApprover = can(actorRole as Role, "approve.override");
   const discountAmount = amount / 100; // approval limits are stored in major units
-  if (!isApprover && pct > DISCOUNT_THRESHOLD) {
+  if (input.approvalId) {
+    const approval = await consumeApproval({
+      id: input.approvalId,
+      restaurantId: order.restaurantId,
+      requesterId: actorId,
+      action: "DISCOUNT",
+      amount: discountAmount,
+    });
+    approvedBy = approval.approverId;
+  } else if (!isApprover && pct > DISCOUNT_THRESHOLD) {
     const manager = await verifyManagerPin(order.restaurantId, input.managerPin ?? "", actorId, null, "DISCOUNT", discountAmount);
     approvedBy = manager.id;
   } else if (isApprover) {
@@ -675,6 +694,7 @@ export async function setOrderPriority(
   actorRole: string,
   priority: OrderPriority,
   managerPin?: string,
+  approvalId?: string | null,
 ) {
   const order = await prisma.order.findUnique({ where: { id: orderId } });
   if (!order) throw ApiError.notFound("Order not found");
@@ -685,7 +705,15 @@ export async function setOrderPriority(
 
   let approvedBy: string | null = null;
   const isApprover = can(actorRole as Role, "approve.override");
-  if (!isApprover && priority !== "NORMAL") {
+  if (approvalId) {
+    const approval = await consumeApproval({
+      id: approvalId,
+      restaurantId: order.restaurantId,
+      requesterId: actorId,
+      action: "PRIORITY",
+    });
+    approvedBy = approval.approverId;
+  } else if (!isApprover && priority !== "NORMAL") {
     const manager = await verifyManagerPin(order.restaurantId, managerPin ?? "", actorId, null, "PRIORITY", null);
     approvedBy = manager.id;
   } else if (isApprover && priority !== "NORMAL") {
@@ -715,6 +743,7 @@ export async function cancelOrder(
   actorRole: string,
   reason: string,
   managerPin?: string,
+  approvalId?: string | null,
 ) {
   const order = await prisma.order.findUnique({ where: { id: orderId }, include: { payments: true } });
   if (!order) throw ApiError.notFound("Order not found");
@@ -726,7 +755,16 @@ export async function cancelOrder(
   const needsApproval = sent > 0 || order.payments.length > 0;
   const voidAmount = Number(order.total);
   if (needsApproval) {
-    if (can(actorRole as Role, "approve.override")) {
+    if (approvalId) {
+      const approval = await consumeApproval({
+        id: approvalId,
+        restaurantId: order.restaurantId,
+        requesterId: actorId,
+        action: "VOID",
+        amount: voidAmount,
+      });
+      approvedBy = approval.approverId;
+    } else if (can(actorRole as Role, "approve.override")) {
       await assertWithinApprovalLimit(actorRole as Role, "VOID", voidAmount);
     } else {
       const manager = await verifyManagerPin(order.restaurantId, managerPin ?? "", actorId, null, "VOID", voidAmount);

@@ -129,6 +129,42 @@ export async function decideApprovalRequest(input: {
   });
 }
 
+/**
+ * Attach a granted queue approval to the action it authorised. The atomic
+ * update makes a request single-use, so a second submit cannot reuse it.
+ */
+export async function consumeApproval(input: {
+  id: string;
+  restaurantId: string;
+  requesterId: string;
+  action: ApprovalAction;
+  amount?: number | null;
+}) {
+  const request = await prisma.approvalRequest.findFirst({
+    where: { id: input.id, restaurantId: input.restaurantId },
+  });
+  if (!request) throw ApiError.notFound("Approval request not found");
+  if (request.requesterId !== input.requesterId) {
+    throw ApiError.forbidden("This approval belongs to a different user");
+  }
+  if (request.action !== input.action) throw ApiError.badRequest("Approval action does not match this action");
+  if (request.status !== "APPROVED") throw ApiError.forbidden("That request has not been approved");
+  if (request.expiresAt && request.expiresAt < new Date()) throw ApiError.conflict("That approval has expired");
+  if (
+    input.amount != null &&
+    request.amount != null &&
+    Math.abs(Number(request.amount) - input.amount) > 0.01
+  ) {
+    throw ApiError.badRequest("Approval amount does not match this action");
+  }
+  const claimed = await prisma.approvalRequest.updateMany({
+    where: { id: request.id, status: "APPROVED", consumedAt: null },
+    data: { consumedAt: new Date() },
+  });
+  if (claimed.count !== 1) throw ApiError.conflict("That approval was already used");
+  return request;
+}
+
 /** Kept so older imports keep compiling; routes should use resolveCapabilities. */
 export function roleCanApprove(role: Role): boolean {
   return can(role, "approve.override" as Capability);

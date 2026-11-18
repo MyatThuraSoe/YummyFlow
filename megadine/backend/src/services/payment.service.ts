@@ -2,7 +2,7 @@ import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
 import { fromCents, toCents } from "../lib/money.js";
 import { audit } from "../lib/audit.js";
-import { verifyManagerPin } from "../lib/approval.js";
+import { consumeApproval, verifyManagerPin } from "../lib/approval.js";
 import { EVENTS, emitToWorkspace } from "../lib/socket.js";
 import { consumeForOrder } from "./inventory.service.js";
 import { autoPrintReceipt, receiptTextForOrder } from "./receipt.service.js";
@@ -275,7 +275,9 @@ export interface RefundInput {
   /** Line-level refund: quantities per order line (amount is derived). */
   lines?: RefundLineSelection[];
   reason: string;
-  managerPin: string;
+  managerPin?: string;
+  /** Id of an approved "Ask manager" request, used instead of a shared PIN. */
+  approvalId?: string | null;
   restock?: boolean;
   idempotencyKey?: string | null;
 }
@@ -311,15 +313,24 @@ export async function refundOrder(input: RefundInput) {
   if (requested <= 0) throw ApiError.badRequest("Refund amount must be positive");
 
   // Approve only after the real amount is known, so the approver's role limit
-  // is checked against what is actually being refunded.
-  const manager = await verifyManagerPin(
-    order.restaurantId,
-    input.managerPin,
-    input.actorId,
-    null,
-    "REFUND",
-    requested / 100,
-  );
+  // is checked against what is actually being refunded. A queue approval names
+  // the approver without carrying their PIN across the floor.
+  const manager = input.approvalId
+    ? await consumeApproval({
+        id: input.approvalId,
+        restaurantId: order.restaurantId,
+        requesterId: input.actorId,
+        action: "REFUND",
+        amount: requested / 100,
+      })
+    : await verifyManagerPin(
+        order.restaurantId,
+        input.managerPin ?? "",
+        input.actorId,
+        null,
+        "REFUND",
+        requested / 100,
+      );
 
   const paid = order.payments.reduce((s, p) => s + toCents(p.amount), 0);
   const refundedSoFar = priorRefunds.reduce((s, r) => s + toCents(r.amount), 0);
