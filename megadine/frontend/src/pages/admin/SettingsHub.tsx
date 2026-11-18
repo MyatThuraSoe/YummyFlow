@@ -1,6 +1,7 @@
 import type { ReactElement } from "react";
 import { Box, Card, CardActionArea, Grid, Stack, Typography } from "@mui/material";
 import {
+  AdminPanelSettings as RolesIcon,
   Backup as BackupIcon,
   Info as InfoIcon,
   Language as LanguageIcon,
@@ -28,6 +29,7 @@ export default function SettingsHub() {
   const cards: HubCard[] = [
     { to: "/admin/shop-info", icon: <StoreIcon color="primary" />, title: t("settings:shop_info"), description: t("admin:hub_shop_desc") },
     { to: "/admin/settings/system", icon: <TuneIcon color="primary" />, title: t("settings:system"), description: t("admin:hub_system_desc") },
+    { to: "/admin/settings/roles", icon: <RolesIcon color="primary" />, title: t("admin:roles_title", { defaultValue: "Roles & approvals" }), description: t("admin:hub_roles_desc", { defaultValue: "Role capabilities and approval limits" }) },
     { to: "/admin/receipt-customization", icon: <ReceiptIcon color="primary" />, title: t("settings:receipt"), description: t("admin:hub_receipt_desc") },
     { to: "/admin/settings/printers", icon: <PrintIcon color="primary" />, title: t("admin:printers_title", { defaultValue: "Kitchen printers" }), description: t("admin:hub_printers_desc", { defaultValue: "One printer per station, plus the retry queue" }) },
     { to: "/admin/backup", icon: <BackupIcon color="primary" />, title: t("settings:backup"), description: t("admin:hub_backup_desc") },

@@ -32,12 +32,15 @@ import {
 } from "@mui/material";
 import {
   AccessTime as AccessTimeIcon,
+  AdminPanelSettings as RolesIcon,
+  Badge as BadgeIcon,
   Backup as BackupIcon,
   BarChart as BarChartIcon,
   ChevronLeft as ChevronLeftIcon,
   ChevronRight as ChevronRightIcon,
   Dashboard as DashboardIcon,
   ExpandMore as ExpandMoreIcon,
+  FactCheck as ApprovalsIcon,
   Fullscreen as FullscreenIcon,
   FullscreenExit as FullscreenExitIcon,
   History as HistoryIcon,
@@ -116,6 +119,7 @@ const GROUPS: NavGroup[] = [
       { to: "/pos", labelKey: "pos", cap: "pos.use", icon: <PointOfSaleIcon />, iconColor: "#16A34A" },
       { to: "/floor", labelKey: "floor", cap: "table.manage", icon: <TableRestaurantIcon />, iconColor: "#0D9488" },
       { to: "/kds", labelKey: "kitchen", cap: "kds.view", icon: <KitchenIcon />, iconColor: "#EA580C" },
+      { to: "/admin/approvals", labelKey: "approvals", cap: "approve.override", icon: <ApprovalsIcon />, iconColor: "#7C3AED" },
     ],
   },
   {
@@ -138,7 +142,9 @@ const GROUPS: NavGroup[] = [
   {
     labelKey: "group_administration",
     items: [
-      { to: "/admin/users", labelKey: "users", cap: "staff.manage", icon: <PeopleIcon />, iconColor: "#DB2777" },
+      { to: "/admin/users", labelKey: "users", cap: "user.view", icon: <PeopleIcon />, iconColor: "#DB2777" },
+      { to: "/admin/employees", labelKey: "employees", cap: "employee.view", icon: <BadgeIcon />, iconColor: "#BE185D" },
+      { to: "/admin/settings/roles", labelKey: "roles", cap: "settings.manage", icon: <RolesIcon />, iconColor: "#4338CA" },
       {
         to: "/admin/receipt-customization",
         labelKey: "receipt",

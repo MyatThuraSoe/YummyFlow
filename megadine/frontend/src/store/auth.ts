@@ -15,6 +15,7 @@ export interface AuthUser {
   restaurantId: string;
   preferredLanguage: string | null;
   capabilities: string[];
+  mustChangeCredential?: boolean;
 }
 
 function applyUserLanguage(user: AuthUser) {

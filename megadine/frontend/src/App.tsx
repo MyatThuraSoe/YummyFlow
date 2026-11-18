@@ -31,6 +31,10 @@ const ShopInfoAdmin = lazy(() => import("./pages/admin/ShopInfoAdmin"));
 const PrintersAdmin = lazy(() => import("./pages/admin/PrintersAdmin"));
 const Activate = lazy(() => import("./pages/admin/Activate"));
 const About = lazy(() => import("./pages/admin/About"));
+const ChangeCredential = lazy(() => import("./pages/ChangeCredential"));
+const EmployeesAdmin = lazy(() => import("./pages/admin/EmployeesAdmin"));
+const RolesAdmin = lazy(() => import("./pages/admin/RolesAdmin"));
+const ApprovalsAdmin = lazy(() => import("./pages/admin/ApprovalsAdmin"));
 
 function HomeRedirect() {
   const { user } = useAuth();
@@ -59,8 +63,21 @@ export default function App() {
   return (
     <ToastProvider>
       <Routes>
-        <Route path="/login" element={user ? <Navigate to={homeForRole(user.role)} replace /> : <Login />} />
+        <Route
+          path="/login"
+          element={user ? <Navigate to={user.mustChangeCredential ? "/change-credential" : homeForRole(user.role)} replace /> : <Login />}
+        />
         <Route path="/setup" element={<SetupFirstAdmin />} />
+        <Route
+          path="/change-credential"
+          element={
+            <ProtectedRoute>
+              <Suspense fallback={<ContentSkeleton />}>
+                <ChangeCredential />
+              </Suspense>
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="/activate"
           element={
@@ -104,10 +121,13 @@ export default function App() {
             <Route path="shifts" element={<AdminGuard capability="report.view"><Lazy page={<ShiftsAdmin />} /></AdminGuard>} />
             <Route path="backup" element={<AdminGuard capability="backup.manage"><Lazy page={<BackupAdmin />} /></AdminGuard>} />
             <Route path="audit" element={<AdminGuard capability="audit.view"><Lazy page={<AuditAdmin />} /></AdminGuard>} />
-            <Route path="users" element={<AdminGuard capability="staff.manage"><Lazy page={<UsersAdmin />} /></AdminGuard>} />
-            <Route path="users/new" element={<AdminGuard capability="staff.manage"><Lazy page={<UserFormAdmin />} /></AdminGuard>} />
-            <Route path="users/:id" element={<AdminGuard capability="staff.manage"><Lazy page={<UserFormAdmin />} /></AdminGuard>} />
+            <Route path="users" element={<AdminGuard capability="user.view"><Lazy page={<UsersAdmin />} /></AdminGuard>} />
+            <Route path="users/new" element={<AdminGuard capability="user.create"><Lazy page={<UserFormAdmin />} /></AdminGuard>} />
+            <Route path="users/:id" element={<AdminGuard capability="user.edit"><Lazy page={<UserFormAdmin />} /></AdminGuard>} />
+            <Route path="employees" element={<AdminGuard capability="employee.view"><Lazy page={<EmployeesAdmin />} /></AdminGuard>} />
+            <Route path="approvals" element={<AdminGuard capability="approve.override"><Lazy page={<ApprovalsAdmin />} /></AdminGuard>} />
             <Route path="settings" element={<AdminGuard capability="settings.manage"><Lazy page={<SettingsHub />} /></AdminGuard>} />
+            <Route path="settings/roles" element={<AdminGuard capability="settings.manage"><Lazy page={<RolesAdmin />} /></AdminGuard>} />
             <Route path="settings/system" element={<AdminGuard capability="settings.manage"><Lazy page={<SystemSettingsAdmin />} /></AdminGuard>} />
             <Route path="settings/receipt" element={<Navigate to="/admin/receipt-customization" replace />} />
             <Route path="settings/language" element={<Lazy page={<LanguageSettings />} />} />

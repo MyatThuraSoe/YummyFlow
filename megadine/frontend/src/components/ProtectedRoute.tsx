@@ -9,6 +9,9 @@ export function ProtectedRoute({ children, capability }: { children: ReactNode; 
   if (!ready) return <div className="content">Loading…</div>;
   if (!user) return <Navigate to="/login" state={{ from: location.pathname }} replace />;
   if (capability && !can(capability)) return <Navigate to="/" replace />;
+  if (user.mustChangeCredential && location.pathname !== "/change-credential") {
+    return <Navigate to="/change-credential" replace />;
+  }
   return <>{children}</>;
 }
 
