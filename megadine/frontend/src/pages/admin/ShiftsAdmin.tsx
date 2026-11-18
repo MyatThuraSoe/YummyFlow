@@ -26,6 +26,14 @@ interface ZReport {
 }
 interface Movement { id: string; type: string; direction: string; amount: string; reason: string | null; createdAt: string }
 interface DayClose { id: string; businessDate: string; closedAt: string; expectedCash: string; actualCash: string; variance: string; notes: string | null }
+interface HandoverNote {
+  id: string; businessDate: string; createdAt: string; shiftId: string | null;
+  ranOut: string | null; broke: string | null; late: string | null; notes: string | null;
+  author: { id: string; name: string };
+}
+interface HandoverDraft { ranOut: string; broke: string; late: string; notes: string }
+const emptyHandover = (): HandoverDraft => ({ ranOut: "", broke: "", late: "", notes: "" });
+const hasHandover = (h: HandoverDraft) => !!(h.ranOut.trim() || h.broke.trim() || h.late.trim() || h.notes.trim());
 
 const today = () => new Date().toISOString().slice(0, 10);
 const signed = (cents: number, currency: string) => `${cents > 0 ? "+" : ""}${formatMoney(cents, currency)}`;
@@ -40,6 +48,7 @@ export default function ShiftsAdmin() {
   const tolCents = settings?.restaurant?.cashVarianceTolerance != null ? toCents(settings.restaurant.cashVarianceTolerance) : null;
   const { data: current } = useQuery({ queryKey: ["shift"], queryFn: () => apiGet<Current>("/shifts/current") });
   const { data: shifts } = useQuery({ queryKey: ["shifts"], queryFn: () => apiGet<{ shifts: (Shift & { cashier: { name: string } })[] }>("/shifts") });
+  const { data: handover } = useQuery({ queryKey: ["handover"], queryFn: () => apiGet<{ notes: HandoverNote[] }>("/shifts/handover") });
   const { data: dayCloses } = useQuery({
     queryKey: ["day-closes"],
     queryFn: () => apiGet<{ closes: DayClose[] }>("/reports/day-closes"),
@@ -49,9 +58,10 @@ export default function ShiftsAdmin() {
   const [date, setDate] = useState(today());
   const [openShiftModal, setOpenShiftModal] = useState<{ openingFloat: string } | null>(null);
   const [movement, setMovement] = useState<{ type: string; amount: string; reason: string } | null>(null);
-  const [close, setClose] = useState<{ actualCash: string; notes: string } | null>(null);
+  const [close, setClose] = useState<{ actualCash: string; notes: string; handover: HandoverDraft } | null>(null);
   const [closeDay, setCloseDay] = useState<{ actualCash: string; notes: string } | null>(null);
   const [viewShift, setViewShift] = useState<Shift | null>(null);
+  const [handoverDraft, setHandoverDraft] = useState<HandoverDraft | null>(null);
 
   const xReport = useQuery({
     queryKey: ["x-report", viewShift?.id],
@@ -68,6 +78,7 @@ export default function ShiftsAdmin() {
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["shift"] });
     qc.invalidateQueries({ queryKey: ["shifts"] });
+    qc.invalidateQueries({ queryKey: ["handover"] });
     qc.invalidateQueries({ queryKey: ["day-closes"] });
     qc.invalidateQueries({ queryKey: ["dashboard"] });
   };
@@ -85,10 +96,17 @@ export default function ShiftsAdmin() {
   });
 
   const doClose = useMutation({
-    mutationFn: () => apiPost<{ variance: string; varianceTolerance: number; varianceExceedsTolerance: boolean }>(
-      `/shifts/${current!.shift!.id}/close`,
-      { actualCash: Number(close!.actualCash), notes: close!.notes || undefined },
-    ),
+    mutationFn: async () => {
+      const shiftId = current!.shift!.id;
+      const result = await apiPost<{ variance: string; varianceTolerance: number; varianceExceedsTolerance: boolean }>(
+        `/shifts/${shiftId}/close`,
+        { actualCash: Number(close!.actualCash), notes: close!.notes || undefined },
+      );
+      if (hasHandover(close!.handover)) {
+        await apiPost("/shifts/handover", { shiftId, ...close!.handover });
+      }
+      return result;
+    },
     onSuccess: (r) => {
       setClose(null);
       invalidate();
@@ -123,6 +141,12 @@ export default function ShiftsAdmin() {
     onError: (e) => push(e instanceof Error ? e.message : t("common:error"), "error"),
   });
 
+  const addHandover = useMutation({
+    mutationFn: () => apiPost("/shifts/handover", handoverDraft!),
+    onSuccess: () => { setHandoverDraft(null); invalidate(); push(t("admin:ho_saved"), "ok"); },
+    onError: (e) => push(e instanceof Error ? e.message : t("common:error"), "error"),
+  });
+
   const s = current?.summary;
   const statusLabel = (status: string) => t(`admin:sh_status_${status.toLowerCase()}`, { defaultValue: status });
 
@@ -131,6 +155,18 @@ export default function ShiftsAdmin() {
     if (cents === 0) return <span className="badge muted">{signed(0, currency)}</span>;
     if (tolCents != null && Math.abs(cents) > tolCents) return <span className="badge danger">{signed(cents, currency)}</span>;
     return <span className="badge warn">{signed(cents, currency)}</span>;
+  }
+
+  function handoverFields(draft: HandoverDraft, onChange: (d: HandoverDraft) => void) {
+    return (
+      <>
+        <h4 style={{ marginBottom: 6, marginTop: 12 }}>{t("admin:ho_title")}</h4>
+        <Field label={t("admin:ho_ran_out")}><textarea className="input" rows={2} value={draft.ranOut} onChange={(e) => onChange({ ...draft, ranOut: e.target.value })} /></Field>
+        <Field label={t("admin:ho_broke")}><textarea className="input" rows={2} value={draft.broke} onChange={(e) => onChange({ ...draft, broke: e.target.value })} /></Field>
+        <Field label={t("admin:ho_late")}><textarea className="input" rows={2} value={draft.late} onChange={(e) => onChange({ ...draft, late: e.target.value })} /></Field>
+        <Field label={t("admin:col_notes")}><textarea className="input" rows={2} value={draft.notes} onChange={(e) => onChange({ ...draft, notes: e.target.value })} /></Field>
+      </>
+    );
   }
 
   return (
@@ -156,7 +192,7 @@ export default function ShiftsAdmin() {
           <div className="row">
             <h3 style={{ margin: 0, flex: 1 }}>{t("admin:sh_current_shift")} · {statusLabel(current.shift.status)}</h3>
             {can("shift.open") && <button className="btn small" onClick={() => setMovement({ type: "PAID_IN", amount: "", reason: "" })}>{t("admin:sh_cash_movement")}</button>}
-            {can("shift.close") && <button className="btn small danger" onClick={() => setClose({ actualCash: (s.expectedCash / 100).toFixed(2), notes: "" })}>{t("cash:close_shift")}</button>}
+            {can("shift.close") && <button className="btn small danger" onClick={() => setClose({ actualCash: (s.expectedCash / 100).toFixed(2), notes: "", handover: emptyHandover() })}>{t("cash:close_shift")}</button>}
           </div>
           <div className="grid cols-3" style={{ marginTop: 12 }}>
             <div className="stat"><div className="v">{formatMoney(s.expectedCash, currency)}</div><div className="l">{t("admin:col_expected")}</div></div>
@@ -206,6 +242,38 @@ export default function ShiftsAdmin() {
           )}
         </div>
       )}
+
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="row">
+          <h3 style={{ margin: 0, flex: 1 }}>{t("admin:ho_title")}</h3>
+          {can("shift.close") && (
+            <button className="btn small" onClick={() => setHandoverDraft(emptyHandover())}>{t("admin:ho_add")}</button>
+          )}
+        </div>
+        <p className="muted small">{t("admin:ho_hint")}</p>
+        {(handover?.notes ?? []).length === 0 ? (
+          <p className="muted small">{t("admin:ho_none")}</p>
+        ) : (
+          <table className="tbl">
+            <thead><tr>
+              <th>{t("admin:ho_day")}</th><th>{t("admin:ho_author")}</th><th>{t("admin:ho_ran_out")}</th>
+              <th>{t("admin:ho_broke")}</th><th>{t("admin:ho_late")}</th><th>{t("admin:col_notes")}</th>
+            </tr></thead>
+            <tbody>
+              {(handover?.notes ?? []).map((n) => (
+                <tr key={n.id}>
+                  <td className="small muted">{new Date(n.businessDate).toLocaleDateString()}</td>
+                  <td>{n.author.name}</td>
+                  <td className="small">{n.ranOut ?? "—"}</td>
+                  <td className="small">{n.broke ?? "—"}</td>
+                  <td className="small">{n.late ?? "—"}</td>
+                  <td className="small muted">{n.notes ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
 
       <div className="card">
         <h3>{t("admin:sh_shift_history")}</h3>
@@ -313,6 +381,20 @@ export default function ShiftsAdmin() {
             );
           })()}
           <Field label={t("admin:sh_notes_optional")}><textarea className="input" rows={2} value={close.notes} onChange={(e) => setClose({ ...close, notes: e.target.value })} placeholder={t("admin:sh_notes_placeholder")} /></Field>
+          {handoverFields(close.handover, (handover) => setClose({ ...close, handover }))}
+        </Modal>
+      )}
+
+      {handoverDraft && (
+        <Modal
+          title={t("admin:ho_add")}
+          onClose={() => setHandoverDraft(null)}
+          footer={<>
+            <button className="btn ghost" onClick={() => setHandoverDraft(null)}>{t("common:cancel")}</button>
+            <button className="btn primary" disabled={!hasHandover(handoverDraft)} onClick={() => addHandover.mutate()}>{t("admin:ho_save")}</button>
+          </>}
+        >
+          {handoverFields(handoverDraft, setHandoverDraft)}
         </Modal>
       )}
 

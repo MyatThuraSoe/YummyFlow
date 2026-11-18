@@ -422,3 +422,206 @@ export async function closeBusinessDay(
   });
   return { close, report, variance };
 }
+
+/* -------------------------------------------------------------------------- */
+/* Exceptions report                                                          */
+/* -------------------------------------------------------------------------- */
+
+export type ExceptionKind =
+  | "VOID"
+  | "DISCOUNT"
+  | "REFUND"
+  | "CANCEL"
+  | "CASH_VARIANCE"
+  | "AFTER_HOURS_SIGNIN";
+
+export interface ExceptionRow {
+  id: string;
+  kind: ExceptionKind;
+  at: string;
+  /** Business day key (YYYY-MM-DD) in the restaurant's own calendar. */
+  day: string;
+  /** Wall-clock hour in the restaurant's time zone, for the hour histogram. */
+  hour: number;
+  personId: string;
+  person: string;
+  terminalId: string | null;
+  /** Major currency units; null for events with no money attached. */
+  amount: number | null;
+  reason: string | null;
+  approver: string | null;
+  detail: string;
+}
+
+const EXCEPTION_KINDS: ExceptionKind[] = [
+  "VOID", "DISCOUNT", "REFUND", "CANCEL", "CASH_VARIANCE", "AFTER_HOURS_SIGNIN",
+];
+
+/** A sign-in before 06:00 or from 22:00 onward is "after hours". */
+const OPENING_HOUR = 6;
+const CLOSING_HOUR = 22;
+
+function jsonNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
+  return null;
+}
+
+function jsonString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+/**
+ * Every sensitive action, drawn from the append-only audit log plus closed
+ * shifts, grouped by person, business day and hour. This is the owner's "are
+ * the numbers honest" sheet; it never includes PINs or raw card data.
+ */
+export async function exceptionsReport(restaurantId: string, from: Date, to: Date): Promise<{
+  range: { from: string; to: string };
+  rows: ExceptionRow[];
+  summary: {
+    total: number;
+    byKind: Record<ExceptionKind, number>;
+    amountByKind: Record<ExceptionKind, number>;
+    byPerson: { personId: string; person: string; count: number; amount: number }[];
+    byHour: { hour: number; count: number }[];
+  };
+}> {
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: restaurantId },
+    select: { timezone: true, businessDayCutoff: true },
+  });
+  const tz = restaurant?.timezone ?? "UTC";
+  const cutoff = restaurant?.businessDayCutoff ?? "04:00";
+
+  const [logs, users, shifts] = await Promise.all([
+    prisma.auditLog.findMany({
+      where: {
+        restaurantId,
+        createdAt: { gte: from, lte: to },
+        action: {
+          in: ["ORDER_LINE_VOIDED", "ORDER_DISCOUNT_APPLIED", "ORDER_REFUNDED", "ORDER_CANCELLED", "AUTH_LOGIN"],
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 2000,
+    }),
+    prisma.user.findMany({ where: { restaurantId }, select: { id: true, name: true } }),
+    prisma.cashShift.findMany({
+      where: { restaurantId, closedAt: { gte: from, lte: to }, variance: { not: null } },
+      include: { cashier: { select: { id: true, name: true } } },
+      orderBy: { closedAt: "desc" },
+    }),
+  ]);
+
+  const names = new Map(users.map((u) => [u.id, u.name]));
+  const orderIds = logs.map((l) => l.orderId).filter((x): x is string => !!x);
+  const orders = orderIds.length
+    ? await prisma.order.findMany({
+        where: { id: { in: orderIds } },
+        select: { id: true, orderNumber: true, total: true },
+      })
+    : [];
+  const orderInfo = new Map(orders.map((o) => [o.id, { ...o, total: Number(o.total) }]));
+
+  const rows: ExceptionRow[] = [];
+
+  for (const log of logs) {
+    const at = log.createdAt;
+    const hour = zonedParts(at, tz).h;
+    // Only flag sign-ins outside the cafe's opening hours.
+    if (log.action === "AUTH_LOGIN" && hour >= OPENING_HOUR && hour < CLOSING_HOUR) continue;
+
+    let kind: ExceptionKind;
+    let amount: number | null = null;
+    let detail = "";
+    switch (log.action) {
+      case "ORDER_LINE_VOIDED":
+        kind = "VOID";
+        amount = (jsonNumber((log.before as unknown as Record<string, unknown> | null)?.lineTotal) ?? 0) / 100;
+        detail = `Voided line ${log.entityId}`;
+        break;
+      case "ORDER_DISCOUNT_APPLIED":
+        kind = "DISCOUNT";
+        amount = jsonNumber((log.after as unknown as Record<string, unknown> | null)?.discount);
+        detail = `Discount on order #${orderInfo.get(log.orderId ?? "")?.orderNumber ?? "?"}`;
+        break;
+      case "ORDER_REFUNDED":
+        kind = "REFUND";
+        amount = jsonNumber((log.after as unknown as Record<string, unknown> | null)?.amount);
+        detail = `Refund on order #${orderInfo.get(log.orderId ?? "")?.orderNumber ?? "?"}`;
+        break;
+      case "ORDER_CANCELLED":
+        kind = "CANCEL";
+        amount = jsonNumber(orderInfo.get(log.orderId ?? "")?.total);
+        detail = `Cancelled order #${orderInfo.get(log.orderId ?? "")?.orderNumber ?? "?"}`;
+        break;
+      default:
+        kind = "AFTER_HOURS_SIGNIN";
+        amount = null;
+        detail = `Sign-in at ${String(hour).padStart(2, "0")}:00${log.terminalId ? ` · terminal ${log.terminalId.slice(0, 8)}` : ""}`;
+    }
+
+    const after = log.after as unknown as Record<string, unknown> | null;
+    rows.push({
+      id: log.id,
+      kind,
+      at: at.toISOString(),
+      day: dateKey(businessDateFor(at, cutoff, tz)),
+      hour,
+      personId: log.userId,
+      person: names.get(log.userId) ?? "Unknown",
+      terminalId: log.terminalId ?? jsonString(after?.terminalId),
+      amount,
+      reason: log.reason,
+      approver: log.approvedBy ? (names.get(log.approvedBy) ?? log.approvedBy) : null,
+      detail,
+    });
+  }
+
+  for (const shift of shifts) {
+    const at = shift.closedAt!;
+    rows.push({
+      id: shift.id,
+      kind: "CASH_VARIANCE",
+      at: at.toISOString(),
+      day: dateKey(businessDateFor(at, cutoff, tz)),
+      hour: zonedParts(at, tz).h,
+      personId: shift.cashierId,
+      person: shift.cashier.name,
+      terminalId: shift.terminalId,
+      amount: Number(shift.variance),
+      reason: shift.closeNotes,
+      approver: shift.approvedBy ? names.get(shift.approvedBy) ?? shift.approvedBy : null,
+      detail: `Drawer variance ${Number(shift.variance) >= 0 ? "+" : ""}${Number(shift.variance)}`,
+    });
+  }
+
+  rows.sort((a, b) => b.at.localeCompare(a.at));
+
+  const byKind = Object.fromEntries(EXCEPTION_KINDS.map((k) => [k, 0])) as Record<ExceptionKind, number>;
+  const amountByKind = Object.fromEntries(EXCEPTION_KINDS.map((k) => [k, 0])) as Record<ExceptionKind, number>;
+  const byPerson = new Map<string, { personId: string; person: string; count: number; amount: number }>();
+  const byHour = new Map<number, number>();
+  for (const row of rows) {
+    byKind[row.kind] += 1;
+    amountByKind[row.kind] += Math.abs(row.amount ?? 0);
+    const p = byPerson.get(row.personId) ?? { personId: row.personId, person: row.person, count: 0, amount: 0 };
+    p.count += 1;
+    p.amount += Math.abs(row.amount ?? 0);
+    byPerson.set(row.personId, p);
+    byHour.set(row.hour, (byHour.get(row.hour) ?? 0) + 1);
+  }
+
+  return {
+    range: { from: from.toISOString(), to: to.toISOString() },
+    rows,
+    summary: {
+      total: rows.length,
+      byKind,
+      amountByKind,
+      byPerson: [...byPerson.values()].sort((a, b) => b.count - a.count),
+      byHour: [...byHour.entries()].map(([hour, count]) => ({ hour, count })).sort((a, b) => a.hour - b.hour),
+    },
+  };
+}

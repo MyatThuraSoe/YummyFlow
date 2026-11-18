@@ -4,7 +4,7 @@ import { asyncHandler } from "../lib/errors.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/requirePermission.js";
 import { validate } from "../middleware/validate.js";
-import { activeAlerts, closeBusinessDay, dailySales, dashboard, hourlyReport, itemsReport, salesTrend, stockMovementReport, wastageReport, zReport } from "../services/report.service.js";
+import { activeAlerts, closeBusinessDay, dailySales, dashboard, exceptionsReport, hourlyReport, itemsReport, salesTrend, stockMovementReport, wastageReport, zReport } from "../services/report.service.js";
 import { foodCostPercent } from "../services/inventory.service.js";
 import { prisma } from "../lib/prisma.js";
 import { fromCents, toCents } from "../lib/money.js";
@@ -32,6 +32,19 @@ reportsRouter.get(
   asyncHandler(async (req, res) => {
     const data = await dashboard(req.auth!.restaurantId);
     res.json(data);
+  }),
+);
+
+/** Owner's honesty sheet: sensitive actions by person, day and hour. */
+reportsRouter.get(
+  "/exceptions",
+  requirePermission("audit.view"),
+  asyncHandler(async (req, res) => {
+    const { from, to } = await rangeFromQuery(
+      req.query as Record<string, string | undefined>,
+      req.auth!.restaurantId,
+    );
+    res.json(await exceptionsReport(req.auth!.restaurantId, from, to));
   }),
 );
 

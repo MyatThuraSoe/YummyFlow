@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { apiGet } from "../../lib/api";
 import { formatMoney } from "../../lib/format";
 import { Field } from "../../components/ui";
+import { useAuth } from "../../store/auth";
 
 interface ItemRow { name: string; category: string; qty: number; revenue: number }
 interface HourRow { hour: number; orders: number; sales: number }
@@ -13,6 +14,24 @@ interface FoodCost { netSales: number; usageCost: number; foodCostPercent: numbe
 interface WastageRow { ingredientName: string; quantity: number; unit: string; cost: number; reason: string | null; at: string }
 interface Wastage { rows: WastageRow[]; totalCost: number }
 interface StockRow { id: string; createdAt: string; type: string; quantity: string; reason: string | null; ingredient: { name: string; stockUnit: string } }
+type ExceptionKind = "VOID" | "DISCOUNT" | "REFUND" | "CANCEL" | "CASH_VARIANCE" | "AFTER_HOURS_SIGNIN";
+interface ExceptionRow {
+  id: string; kind: ExceptionKind; at: string; day: string; hour: number;
+  personId: string; person: string; terminalId: string | null;
+  amount: number | null; reason: string | null; approver: string | null; detail: string;
+}
+interface Exceptions {
+  range: { from: string; to: string };
+  rows: ExceptionRow[];
+  summary: {
+    total: number;
+    byKind: Record<ExceptionKind, number>;
+    amountByKind: Record<ExceptionKind, number>;
+    byPerson: { personId: string; person: string; count: number; amount: number }[];
+    byHour: { hour: number; count: number }[];
+  };
+}
+const EXCEPTION_KINDS: ExceptionKind[] = ["VOID", "DISCOUNT", "REFUND", "CANCEL", "CASH_VARIANCE", "AFTER_HOURS_SIGNIN"];
 
 const MOVEMENT_BADGE: Record<string, string> = {
   PURCHASE_RECEIPT: "ok",
@@ -26,6 +45,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 
 export default function ReportsAdmin() {
   const { t } = useTranslation(["admin", "common"]);
+  const { can } = useAuth();
   const [from, setFrom] = useState(today());
   const [to, setTo] = useState(today());
   const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: () => apiGet<Settings>("/admin/settings") });
@@ -37,6 +57,14 @@ export default function ReportsAdmin() {
   const { data: food } = useQuery({ queryKey: ["rep-food", from, to], queryFn: () => apiGet<FoodCost>("/reports/food-cost", { from, to }) });
   const { data: wastage } = useQuery({ queryKey: ["rep-wastage", from, to], queryFn: () => apiGet<Wastage>("/reports/wastage", { from, to }) });
   const { data: stock } = useQuery({ queryKey: ["rep-stock", from, to], queryFn: () => apiGet<{ rows: StockRow[] }>("/reports/stock", { from, to }) });
+  const { data: exceptions } = useQuery({
+    queryKey: ["rep-exceptions", from, to],
+    queryFn: () => apiGet<Exceptions>("/reports/exceptions", {
+      from: new Date(`${from}T00:00:00.000Z`).toISOString(),
+      to: new Date(`${to}T23:59:59.999Z`).toISOString(),
+    }),
+    enabled: can("audit.view"),
+  });
 
   const maxSales = Math.max(1, ...(hourly?.rows ?? []).map((r) => r.sales));
   const typeLabel = (type: string) => t(`admin:mt_${type.toLowerCase()}`, { defaultValue: type.replace(/_/g, " ") });
@@ -127,6 +155,7 @@ export default function ReportsAdmin() {
 
         <div className="card" style={{ gridColumn: "1 / -1" }}>
           <h3>{t("admin:rep_stock_movements")}</h3>
+
           <table className="tbl">
             <thead>
               <tr><th>{t("admin:col_time")}</th><th>{t("admin:col_ingredient")}</th><th>{t("admin:col_type")}</th><th style={{ textAlign: "right" }}>{t("admin:col_qty")}</th><th>{t("admin:col_reason")}</th></tr>
@@ -148,6 +177,55 @@ export default function ReportsAdmin() {
             </tbody>
           </table>
         </div>
+
+        {can("audit.view") && (
+          <div className="card" style={{ gridColumn: "1 / -1" }}>
+            <h3>{t("admin:exc_title")}</h3>
+            <p className="muted small">{t("admin:exc_hint")}</p>
+            <div className="grid cols-4" style={{ marginBottom: 10 }}>
+              {EXCEPTION_KINDS.map((kind) => (
+                <div className="stat" key={kind}>
+                  <div className="v">{exceptions?.summary.byKind[kind] ?? 0}</div>
+                  <div className="l">
+                    {t(`admin:exc_${kind.toLowerCase()}`, { defaultValue: kind.replace(/_/g, " ") })}
+                    {" · "}
+                    {formatMoney(Math.round((exceptions?.summary.amountByKind[kind] ?? 0) * 100), currency)}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>{t("admin:exc_day_hour")}</th><th>{t("admin:col_type")}</th><th>{t("admin:col_name")}</th>
+                  <th>{t("admin:col_detail")}</th><th style={{ textAlign: "right" }}>{t("admin:col_amount")}</th>
+                  <th>{t("admin:col_reason")}</th><th>{t("admin:exc_approver")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(exceptions?.rows ?? []).slice(0, 200).map((r) => (
+                  <tr key={r.id}>
+                    <td className="small muted">{r.day} {String(r.hour).padStart(2, "0")}:00</td>
+                    <td><span className={`badge ${r.kind === "VOID" || r.kind === "REFUND" || r.kind === "CASH_VARIANCE" ? "danger" : "warn"}`}>
+                      {t(`admin:exc_${r.kind.toLowerCase()}`, { defaultValue: r.kind.replace(/_/g, " ") })}
+                    </span></td>
+                    <td>{r.person}</td>
+                    <td className="small muted">{r.detail}</td>
+                    <td className="mono" style={{ textAlign: "right" }}>{r.amount == null ? "—" : formatMoney(Math.round(r.amount * 100), currency)}</td>
+                    <td className="small muted">{r.reason ?? "—"}</td>
+                    <td className="small">{r.approver ?? "—"}</td>
+                  </tr>
+                ))}
+                {(exceptions?.rows ?? []).length === 0 && <tr><td colSpan={7} className="muted">{t("admin:exc_none")}</td></tr>}
+              </tbody>
+            </table>
+            {(exceptions?.summary.byPerson.length ?? 0) > 0 && (
+              <p className="muted small" style={{ marginTop: 8 }}>
+                {t("admin:exc_by_person")}: {exceptions!.summary.byPerson.map((p) => `${p.person} (${p.count})`).join(" · ")}
+              </p>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1403,11 +1403,16 @@ async function main() {
     assert.equal(overWaste.status, 409, "wastage must not drive stock negative");
     ok("wastage: records reason + note, rejects bad reasons, blocks negative stock");
 
-    const today = localDate(new Date());
+    // The wastage report filters on UTC days while localDate() follows the
+    // machine zone; query a small range around today so a run near midnight
+    // in either zone still sees the movement it just recorded.
+    const dayMs = 86_400_000;
+    const wasteFrom = new Date(Date.now() - 7 * dayMs).toISOString().slice(0, 10);
+    const wasteTo = new Date(Date.now() + dayMs).toISOString().slice(0, 10);
     const wasteReport = await api<{
       rows: { ingredientName: string; reason: string | null; note: string | null }[];
       byReason: { reason: string; quantity: number }[];
-    }>(`/reports/wastage?from=${today}&to=${today}`, { token: admin.token });
+    }>(`/reports/wastage?from=${wasteFrom}&to=${wasteTo}`, { token: admin.token });
     assert.equal(wasteReport.status, 200, JSON.stringify(wasteReport.data));
     assert.ok(
       wasteReport.data.rows.some((r) => r.ingredientName === ingName && r.reason === "burned" && r.note === "verify burn"),
@@ -1418,6 +1423,30 @@ async function main() {
       "wastage report must aggregate by reason",
     );
     ok("reports: wastage report includes the movement and aggregates by reason");
+
+    // ── Shift hand-over + exceptions report ─────────────────────────────────
+    const handoverCreated = await api<{ note: { id: string; ranOut: string } }>("/shifts/handover", {
+      method: "POST",
+      token: admin.token,
+      body: { ranOut: "verify: chicken", broke: "verify: printer", late: "verify: waiter", notes: "verify handover" },
+    });
+    assert.equal(handoverCreated.status, 201, JSON.stringify(handoverCreated.data));
+    const handoverList = await api<{ notes: { id: string; ranOut: string | null }[] }>("/shifts/handover", { token: cashier.token });
+    assert.equal(handoverList.status, 200, JSON.stringify(handoverList.data));
+    assert.ok(
+      handoverList.data.notes.some((n) => n.id === handoverCreated.data.note.id && n.ranOut === "verify: chicken"),
+      "handover note must be visible to the next shift",
+    );
+    ok("handover: notes are written and visible to the next shift");
+
+    const exceptions = await api<{
+      rows: { id: string; kind: string; person: string; day: string; hour: number }[];
+      summary: { total: number; byKind: Record<string, number> };
+    }>(`/reports/exceptions?from=${wasteFrom}&to=${wasteTo}`, { token: admin.token });
+    assert.equal(exceptions.status, 200, JSON.stringify(exceptions.data));
+    assert.ok(exceptions.data.summary.total > 0, "exceptions report must include sensitive actions");
+    assert.ok(exceptions.data.rows.every((r) => r.person && r.day && r.hour >= 0 && r.hour <= 23), "exceptions must be grouped by person, day and hour");
+    ok("reports: exceptions report aggregates sensitive actions by person, day and hour");
 
     // ── Phase 4: dashboard alerts, sales trend, floor timeline ───────────────
     const ingLowName = `Verify Low ${Date.now()}`;

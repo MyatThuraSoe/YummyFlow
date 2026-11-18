@@ -147,6 +147,7 @@ model Restaurant {
   dayCloses      BusinessDayClose[]
   receiptConfig  ReceiptConfig?
   approvalRequests ApprovalRequest[]
+  handoverNotes  HandoverNote[]
 }
 
 model ReceiptConfig {
@@ -230,6 +231,7 @@ model User {
   employee Employee?
   approvalRequestsMade    ApprovalRequest[] @relation("ApprovalRequester")
   approvalRequestsDecided ApprovalRequest[] @relation("ApprovalApprover")
+  handoverNotes  HandoverNote[]
 
   @@unique([restaurantId, pinLookup])
   @@index([restaurantId, role])
@@ -277,6 +279,29 @@ model Employee {
   updatedAt    DateTime  @default(now()) @updatedAt
 
   @@index([restaurantId, status])
+}
+
+// Shift hand-over: what ran out, what broke, who was late. Written at shift
+// close (or any time) and shown to the next shift, so information is not lost
+// between tablets. Free text keeps it usable in one cafe with mixed languages.
+model HandoverNote {
+  id           String     @id @default(uuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  authorId     String
+  author       User       @relation(fields: [authorId], references: [id])
+  /** The shift this note was written for, when written at close. */
+  shiftId      String?
+  /** Restaurant-local calendar date, stored as UTC midnight. */
+  businessDate DateTime
+  ranOut       String?
+  broke        String?
+  late         String?
+  notes        String?
+  createdAt    DateTime   @default(now())
+
+  @@index([restaurantId, businessDate])
+  @@index([shiftId])
 }
 
 // Owner-editable role matrix. When a role has rows here they replace the
