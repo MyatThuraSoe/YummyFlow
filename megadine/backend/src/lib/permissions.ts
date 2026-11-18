@@ -81,14 +81,23 @@ export const ROLE_CAPABILITIES: Record<Role, Capability[]> = {
   WAITER: ["pos.use", "order.discount.small", "table.manage", "kds.view", "report.view", "inventory.view", "order.transfer", "order.reprint"],
   KITCHEN: ["kds.view", "kds.update", "inventory.view"],
 };
-// (capability matrix above is the source of truth)
+// (capability matrix below is the seeded default; the owner may edit it in
+// settings, and per-user overrides are applied on top at resolve time)
+
+/** Every capability the app knows about, for the role-matrix editor. */
+export const ALL_CAPABILITIES: Capability[] = [...ALL];
 
 export function can(role: Role, capability: Capability): boolean {
   return ROLE_CAPABILITIES[role]?.includes(capability) ?? false;
 }
 
 export async function resolveCapabilities(userId: string, role: Role): Promise<Capability[]> {
-  const base = ROLE_CAPABILITIES[role] ?? [];
+  // The owner-editable matrix replaces the defaults for a role once any row
+  // exists. A missing table (fresh install before migrate) falls back safely.
+  const roleRows = await prisma.roleCapability.findMany({ where: { role } }).catch(() => []);
+  const base = roleRows.length
+    ? roleRows.filter((r) => r.granted).map((r) => r.capability as Capability)
+    : (ROLE_CAPABILITIES[role] ?? []);
   const overrides = await prisma.userCapabilityOverride.findMany({
     where: { userId, OR: [{ endsAt: null }, { endsAt: { gt: new Date() } }] },
   }).catch(() => [] as { capability: string; granted: boolean }[]);

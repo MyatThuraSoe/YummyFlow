@@ -21,6 +21,7 @@ import { expensesRouter } from "./routes/expenses.routes.js";
 import { adminRouter } from "./routes/admin.routes.js";
 import { usersRouter } from "./routes/users.routes.js";
 import { employeesRouter } from "./routes/employees.routes.js";
+import { approvalsRouter } from "./routes/approvals.routes.js";
 import { licenseRouter } from "./routes/license.routes.js";
 import { receiptsRouter } from "./routes/receipts.routes.js";
 
@@ -67,6 +68,7 @@ export function createApp() {
   v1.use("/admin", adminRouter);
   v1.use("/users", usersRouter);
   v1.use("/employees", employeesRouter);
+  v1.use("/approvals", approvalsRouter);
   v1.use("/license", licenseRouter);
   v1.use("/receipts", receiptsRouter);
   app.use("/api/v1", v1);

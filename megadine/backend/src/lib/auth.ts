@@ -51,3 +51,21 @@ export function pinValidationError(pin: string): string | null {
   if (pin === "1234" || pin === "0123" || pin === "0000") return "Choose a less obvious PIN";
   return null;
 }
+
+const COMMON_PASSWORDS = new Set([
+  "password", "password1", "password123", "12345678", "123456789", "qwerty123",
+  "letmein1", "welcome1", "admin123", "staff123", "cafe1234", "restaurant",
+]);
+
+/**
+ * Password policy (roles redesign §"Password rules"): minimum eight characters,
+ * not the username or email, not a common password. No forced expiry.
+ */
+export function passwordValidationError(password: string, opts: { username?: string | null; email?: string | null } = {}): string | null {
+  if (password.length < 8) return "Password must be at least 8 characters";
+  const lower = password.toLowerCase();
+  if (opts.username && lower === opts.username.toLowerCase()) return "Password cannot be your username";
+  if (opts.email && lower === opts.email.toLowerCase()) return "Password cannot be your email";
+  if (COMMON_PASSWORDS.has(lower)) return "Choose a less common password";
+  return null;
+}

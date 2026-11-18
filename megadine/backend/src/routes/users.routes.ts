@@ -6,7 +6,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/requirePermission.js";
 import { validate } from "../middleware/validate.js";
 import { audit, clientIp } from "../lib/audit.js";
-import { hashPassword, hashPin } from "../lib/auth.js";
+import { hashPassword, hashPin, passwordValidationError, verifyPassword, verifyPin } from "../lib/auth.js";
 import { pinForStorage } from "../lib/pin.js";
 import { ok } from "../lib/respond.js";
 import { toUserResponse } from "../lib/userResponse.js";
@@ -15,6 +15,7 @@ import { SUPPORTED_LANGUAGES } from "../lib/env.js";
 import { startOfDay } from "../lib/businessDay.js";
 import { fromCents, toCents } from "../lib/money.js";
 import { disconnectUser } from "../lib/socket.js";
+import { randomInt } from "node:crypto";
 import type { Role } from "@prisma/client";
 
 export const usersRouter = Router();
@@ -35,11 +36,38 @@ const USER_SELECT = {
   preferredLanguage: true,
   isActive: true,
   lastLoginAt: true,
+  mustChangeCredential: true,
+  lockoutUntil: true,
+  failedPinAttempts: true,
+  deletedAt: true,
   createdAt: true,
   updatedAt: true,
 } as const;
 
-// ── Own language preference (any authenticated user) ────────────────────────
+/**
+ * A person cannot be deactivated while they still own an open cash shift or
+ * open orders: the shift could never be closed and the history would lose its
+ * owner (roles/access §"Admin: user management").
+ */
+async function assertNoOpenWork(restaurantId: string, userId: string) {
+  const [openShifts, openOrders] = await Promise.all([
+    prisma.cashShift.count({ where: { restaurantId, cashierId: userId, status: { in: ["OPEN", "REOPENED_BY_ADJUSTMENT"] } } }),
+    prisma.order.count({
+      where: {
+        restaurantId,
+        cashierId: userId,
+        status: { in: ["DRAFT", "SENT_TO_KITCHEN", "IN_PROGRESS", "READY", "SERVED"] },
+      },
+    }),
+  ]);
+  if (openShifts > 0 || openOrders > 0) {
+    throw ApiError.conflict(
+      `Cannot deactivate: this person has ${openShifts} open shift(s) and ${openOrders} open order(s). Close them first.`,
+    );
+  }
+}
+
+// -- Own language preference (any authenticated user) ------------------------
 usersRouter.patch(
   "/me/language",
   asyncHandler(async (req, res) => {
@@ -56,28 +84,65 @@ usersRouter.patch(
   }),
 );
 
-// ── List ─────────────────────────────────────────────────────────────────────
+// -- List ---------------------------------------------------------------------
 usersRouter.get(
   "/",
-  requirePermission("staff.manage"),
+  requirePermission("user.view"),
   asyncHandler(async (req, res) => {
+    const q = String(req.query.q ?? "").trim();
+    const role = String(req.query.role ?? "");
+    const status = String(req.query.status ?? "");
+    const locked = String(req.query.locked ?? "") === "true";
+    const mustChange = String(req.query.mustChange ?? "") === "true";
+    const neverSignedIn = String(req.query.neverSignedIn ?? "") === "true";
+
     const users = await prisma.user.findMany({
-      where: { restaurantId: req.auth!.restaurantId, deletedAt: null },
-      select: USER_SELECT,
+      where: {
+        restaurantId: req.auth!.restaurantId,
+        deletedAt: null,
+        ...(role ? { role: role as Role } : {}),
+        ...(status === "active" ? { isActive: true } : {}),
+        ...(status === "inactive" ? { isActive: false } : {}),
+        ...(locked ? { lockoutUntil: { gt: new Date() } } : {}),
+        ...(mustChange ? { mustChangeCredential: true } : {}),
+        ...(neverSignedIn ? { lastLoginAt: null } : {}),
+        ...(q
+          ? {
+              OR: [
+                { name: { contains: q, mode: "insensitive" as const } },
+                { username: { contains: q, mode: "insensitive" as const } },
+                { email: { contains: q, mode: "insensitive" as const } },
+                { phone: { contains: q, mode: "insensitive" as const } },
+              ],
+            }
+          : {}),
+      },
+      select: {
+        ...USER_SELECT,
+        sessions: { orderBy: { lastSeenAt: "desc" }, take: 1, select: { terminalId: true, lastSeenAt: true } },
+      },
       orderBy: [{ role: "asc" }, { name: "asc" }],
     });
     const { resolveCapabilities } = await import("../lib/permissions.js");
     const enriched = await Promise.all(
-      users.map(async (u) => toUserResponse(u, await resolveCapabilities(u.id, u.role as Role))),
+      users.map(async (u) => {
+        const { sessions, ...base } = u as typeof u & { sessions: { terminalId: string | null; lastSeenAt: Date }[] };
+        return {
+          ...toUserResponse(base, await resolveCapabilities(u.id, u.role as Role)),
+          lastTerminal: sessions[0]?.terminalId ?? null,
+          lastSeenAt: sessions[0]?.lastSeenAt ?? null,
+          locked: !!u.lockoutUntil && u.lockoutUntil > new Date(),
+        };
+      }),
     );
     ok(res, { users: enriched }, "Users loaded");
   }),
 );
 
-// ── Get one ──────────────────────────────────────────────────────────────────
+// -- Get one ------------------------------------------------------------------
 usersRouter.get(
   "/:id",
-  requirePermission("staff.manage"),
+  requirePermission("user.view"),
   asyncHandler(async (req, res) => {
     const user = await prisma.user.findFirst({
       where: { id: String(req.params.id), restaurantId: req.auth!.restaurantId, deletedAt: null },
@@ -100,7 +165,7 @@ const createSchema = z.object({
   pin: z.string().regex(/^\d{4,6}$/).optional(),
   isActive: z.boolean().optional(),
   // When true (default) the issued credential is temporary and must be changed
-  // at first sign-in (roles redesign §"Temporary credentials").
+  // at first sign-in (roles redesign Â§"Temporary credentials").
   temporary: z.boolean().optional(),
 });
 
@@ -120,10 +185,10 @@ async function assertEmailFree(email: string, excludeId?: string) {
   if (clash) throw new ApiError(409, "validation.duplicate.email", "That email is already registered");
 }
 
-// ── Create ───────────────────────────────────────────────────────────────────
+// -- Create -------------------------------------------------------------------
 usersRouter.post(
   "/",
-  requirePermission("staff.manage"),
+  requirePermission("user.create"),
   validate({ body: createSchema }),
   asyncHandler(async (req, res) => {
     const b = req.body as z.infer<typeof createSchema>;
@@ -139,6 +204,10 @@ usersRouter.post(
     }
     if (!needsPassword && !b.password && !b.pin) {
       throw ApiError.badRequest("Provide a password or a PIN for this account");
+    }
+    if (b.password) {
+      const pwError = passwordValidationError(b.password, { username: b.username, email });
+      if (pwError) throw ApiError.badRequest(pwError);
     }
 
     const pinLookupValue = b.pin ? await pinForStorage(req.auth!.restaurantId, b.pin) : null;
@@ -188,10 +257,10 @@ const updateSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
-// ── Update ───────────────────────────────────────────────────────────────────
+// -- Update -------------------------------------------------------------------
 usersRouter.put(
   "/:id",
-  requirePermission("staff.manage"),
+  requirePermission("user.edit"),
   validate({ body: updateSchema }),
   asyncHandler(async (req, res) => {
     const b = req.body as z.infer<typeof updateSchema>;
@@ -212,6 +281,11 @@ usersRouter.put(
       }
     }
     if (b.role !== undefined && b.role !== target.role) {
+      const { resolveCapabilities } = await import("../lib/permissions.js");
+      const caps = await resolveCapabilities(req.auth!.userId, req.auth!.role as Role);
+      if (!caps.includes("user.assign_role")) {
+        throw ApiError.forbidden("You cannot change roles");
+      }
       if (ADMIN_GUARD_ROLES.includes(target.role as Role) && !ADMIN_GUARD_ROLES.includes(b.role as Role)) {
         await assertNotLastAdmin(req.auth!.restaurantId, id, "demote");
       }
@@ -219,12 +293,17 @@ usersRouter.put(
     if (b.isActive === false && target.isActive) {
       assertNotSelfDeactivate(req.auth!.userId, id);
       await assertNotLastAdmin(req.auth!.restaurantId, id, "deactivate");
+      await assertNoOpenWork(req.auth!.restaurantId, id);
     }
 
     let email: string | undefined;
     if (b.email !== undefined) {
       email = b.email.toLowerCase();
       await assertEmailFree(email, id);
+    }
+    if (b.password) {
+      const pwError = passwordValidationError(b.password, { username: target.username, email });
+      if (pwError) throw ApiError.badRequest(pwError);
     }
 
     // A new PIN must validate and be unique in the cafe; clearing it must also
@@ -269,14 +348,15 @@ usersRouter.put(
   }),
 );
 
-// ── Soft delete ──────────────────────────────────────────────────────────────
+// -- Soft delete --------------------------------------------------------------
 usersRouter.delete(
   "/:id",
-  requirePermission("staff.manage"),
+  requirePermission("user.deactivate"),
   asyncHandler(async (req, res) => {
     const id = String(req.params.id);
     assertNotSelfDeactivate(req.auth!.userId, id);
     await assertNotLastAdmin(req.auth!.restaurantId, id, "delete");
+    await assertNoOpenWork(req.auth!.restaurantId, id);
 
     const target = await prisma.user.findFirst({
       where: { id, restaurantId: req.auth!.restaurantId, deletedAt: null },
@@ -313,10 +393,211 @@ usersRouter.delete(
   }),
 );
 
-// ── Sales performance stats ──────────────────────────────────────────────────
+// -- Sales performance stats --------------------------------------------------
+// Sessions and device list (roles redesign).
+async function loadManagedUser(req: { auth?: { restaurantId: string; userId: string; role: Role }; params: Record<string, string | undefined> }) {
+  const id = String(req.params.id);
+  const target = await prisma.user.findFirst({
+    where: { id, restaurantId: req.auth!.restaurantId, deletedAt: null },
+    select: { id: true, role: true, username: true, email: true, restaurantId: true },
+  });
+  if (!target) throw ApiError.notFound("User not found");
+  if (req.auth!.userId !== id) assertCanManage(req.auth!.role, target.role as Role);
+  return target;
+}
+
+usersRouter.get(
+  "/:id/sessions",
+  requirePermission("user.view"),
+  asyncHandler(async (req, res) => {
+    const target = await loadManagedUser(req as never);
+    const sessions = await prisma.session.findMany({
+      where: { userId: target.id },
+      orderBy: { lastSeenAt: "desc" },
+      select: { id: true, terminalId: true, lastSeenAt: true, createdAt: true, expiresAt: true },
+    });
+    ok(
+      res,
+      { sessions: sessions.map((s) => ({ ...s, current: s.id === req.auth!.sessionId })) },
+      "Sessions loaded",
+    );
+  }),
+);
+
+usersRouter.delete(
+  "/:id/sessions",
+  requirePermission("user.edit"),
+  asyncHandler(async (req, res) => {
+    const target = await loadManagedUser(req as never);
+    const result = await prisma.session.deleteMany({
+      where: { userId: target.id, ...(req.auth!.userId === target.id ? { id: { not: req.auth!.sessionId } } : {}) },
+    });
+    disconnectUser(target.id);
+    await audit({
+      restaurantId: req.auth!.restaurantId,
+      userId: req.auth!.userId,
+      action: "USER_SESSIONS_REVOKED",
+      entityType: "User",
+      entityId: target.id,
+      after: { count: result.count },
+      ipAddress: clientIp(req),
+    });
+    ok(res, { revoked: result.count }, "Signed out everywhere");
+  }),
+);
+
+usersRouter.delete(
+  "/:id/sessions/:sessionId",
+  requirePermission("user.edit"),
+  asyncHandler(async (req, res) => {
+    const target = await loadManagedUser(req as never);
+    const sessionId = String(req.params.sessionId);
+    await prisma.session.deleteMany({ where: { id: sessionId, userId: target.id } });
+    disconnectUser(target.id);
+    ok(res, { id: sessionId }, "Session revoked");
+  }),
+);
+
+usersRouter.post(
+  "/:id/unlock",
+  requirePermission("user.edit"),
+  asyncHandler(async (req, res) => {
+    const target = await loadManagedUser(req as never);
+    await prisma.user.update({ where: { id: target.id }, data: { failedPinAttempts: 0, lockoutUntil: null } });
+    await audit({
+      restaurantId: req.auth!.restaurantId,
+      userId: req.auth!.userId,
+      action: "USER_UNLOCKED",
+      entityType: "User",
+      entityId: target.id,
+      ipAddress: clientIp(req),
+    });
+    ok(res, { id: target.id }, "User unlocked");
+  }),
+);
+
+usersRouter.post(
+  "/:id/lock",
+  requirePermission("user.edit"),
+  asyncHandler(async (req, res) => {
+    const target = await loadManagedUser(req as never);
+    await prisma.user.update({ where: { id: target.id }, data: { lockoutUntil: new Date(Date.now() + 60 * 60_000) } });
+    disconnectUser(target.id);
+    ok(res, { id: target.id }, "User locked for an hour");
+  }),
+);
+
+// One-time credential reset (roles redesign, "Temporary credentials").
+function generatePassword(): string {
+  const alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let out = "";
+  for (let i = 0; i < 12; i += 1) out += alphabet[randomInt(alphabet.length)];
+  return out;
+}
+
+async function generatePin(restaurantId: string): Promise<string> {
+  for (let i = 0; i < 20; i += 1) {
+    const pin = String(randomInt(1000, 10000));
+    if (/^(\d)\1+$/.test(pin) || ["1234", "0123", "0000"].includes(pin)) continue;
+    try {
+      await pinForStorage(restaurantId, pin);
+      return pin;
+    } catch {
+      /* clash: try again */
+    }
+  }
+  throw ApiError.conflict("Could not allocate a unique PIN");
+}
+
+usersRouter.post(
+  "/:id/reset-credential",
+  requirePermission("user.reset_credential"),
+  validate({ body: z.object({ type: z.enum(["PASSWORD", "PIN"]).optional() }) }),
+  asyncHandler(async (req, res) => {
+    const target = await loadManagedUser(req as never);
+    const type = (req.body as { type?: "PASSWORD" | "PIN" }).type ?? (["OWNER", "ADMIN", "MANAGER"].includes(target.role) ? "PASSWORD" : "PIN");
+    const credential = type === "PIN" ? await generatePin(target.restaurantId) : generatePassword();
+
+    await prisma.user.update({
+      where: { id: target.id },
+      data: {
+        mustChangeCredential: true,
+        failedPinAttempts: 0,
+        lockoutUntil: null,
+        ...(type === "PIN"
+          ? { pinHash: await hashPin(credential), pinLookup: await pinForStorage(target.restaurantId, credential, target.id) }
+          : { passwordHash: await hashPassword(credential), passwordChangedAt: new Date() }),
+      },
+    });
+    await prisma.session.deleteMany({ where: { userId: target.id } });
+    disconnectUser(target.id);
+    await audit({
+      restaurantId: req.auth!.restaurantId,
+      userId: req.auth!.userId,
+      action: "USER_CREDENTIAL_RESET",
+      entityType: "User",
+      entityId: target.id,
+      after: { type },
+      ipAddress: clientIp(req),
+    });
+    // The plaintext is returned exactly once and never stored or logged.
+    ok(res, { credential, type }, "Temporary credential issued");
+  }),
+);
+
+// Change my own credential (also clears mustChangeCredential).
+usersRouter.patch(
+  "/me/credential",
+  validate({
+    body: z.object({
+      currentPassword: z.string().optional(),
+      currentPin: z.string().regex(/^\d{4,6}$/).optional(),
+      newPassword: z.string().min(8).optional(),
+      newPin: z.string().regex(/^\d{4,6}$/).optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const b = req.body as { currentPassword?: string; currentPin?: string; newPassword?: string; newPin?: string };
+    if (!b.newPassword && !b.newPin) throw ApiError.badRequest("Provide a new password or PIN");
+    const me = await prisma.user.findUniqueOrThrow({ where: { id: req.auth!.userId } });
+    if (b.newPassword) {
+      if (!me.passwordHash || !b.currentPassword || !(await verifyPassword(b.currentPassword, me.passwordHash))) {
+        throw ApiError.unauthorized("Current password is incorrect");
+      }
+      const pwError = passwordValidationError(b.newPassword, { username: me.username, email: me.email });
+      if (pwError) throw ApiError.badRequest(pwError);
+    }
+    if (b.newPin) {
+      if (!me.pinHash || !b.currentPin || !(await verifyPin(b.currentPin, me.pinHash))) {
+        throw ApiError.unauthorized("Current PIN is incorrect");
+      }
+    }
+    const updated = await prisma.user.update({
+      where: { id: me.id },
+      data: {
+        ...(b.newPassword ? { passwordHash: await hashPassword(b.newPassword), passwordChangedAt: new Date() } : {}),
+        ...(b.newPin ? { pinHash: await hashPin(b.newPin), pinLookup: await pinForStorage(me.restaurantId, b.newPin, me.id) } : {}),
+        mustChangeCredential: false,
+      },
+      select: USER_SELECT,
+    });
+    await audit({
+      restaurantId: me.restaurantId,
+      userId: me.id,
+      action: "USER_CREDENTIAL_CHANGED",
+      entityType: "User",
+      entityId: me.id,
+      after: { password: !!b.newPassword, pin: !!b.newPin },
+      ipAddress: clientIp(req),
+    });
+    const effective = await (await import("../lib/permissions.js")).resolveCapabilities(me.id, me.role as Role);
+    ok(res, { user: toUserResponse(updated, effective) }, "Credential updated");
+  }),
+);
+
 usersRouter.get(
   "/:id/stats",
-  requirePermission("staff.manage"),
+  requirePermission("user.view"),
   asyncHandler(async (req, res) => {
     const id = String(req.params.id);
     const user = await prisma.user.findFirst({
@@ -347,7 +628,16 @@ usersRouter.get(
     );
   }),
 );
-// ── Assignable roles (rank-aware) ────────────────────────────────────────────
+// -- Assignable roles (rank-aware) --------------------------------------------
+usersRouter.get(
+  "/meta/capabilities",
+  requirePermission("user.view"),
+  asyncHandler(async (_req, res) => {
+    const { ALL_CAPABILITIES, ROLE_CAPABILITIES } = await import("../lib/permissions.js");
+    ok(res, { capabilities: ALL_CAPABILITIES, defaults: ROLE_CAPABILITIES }, "Capabilities loaded");
+  }),
+);
+
 usersRouter.get(
   "/roles/assignable",
   requirePermission("user.view"),
@@ -357,7 +647,7 @@ usersRouter.get(
   }),
 );
 
-// ── Capability overrides ─────────────────────────────────────────────────────
+// -- Capability overrides -----------------------------------------------------
 usersRouter.get(
   "/:id/capabilities",
   requirePermission("user.view"),
@@ -424,3 +714,6 @@ usersRouter.put(
     ok(res, { effective }, "Capabilities updated");
   }),
 );
+
+
+

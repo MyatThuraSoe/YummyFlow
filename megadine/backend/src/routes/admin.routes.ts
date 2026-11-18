@@ -14,6 +14,7 @@ import { env } from "../lib/env.js";
 import { toCents } from "../lib/money.js";
 import { assertWithinLimit, limitUsage } from "../lib/license.js";
 import { isValidTimeZone, setBusinessTimezone } from "../lib/businessDay.js";
+import { ALL_CAPABILITIES, ROLE_CAPABILITIES, type Capability } from "../lib/permissions.js";
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth);
@@ -367,6 +368,105 @@ adminRouter.post(
     const result = await restoreFromSql(file, req.auth!.userId);
     await audit({ restaurantId: req.auth!.restaurantId, userId: req.auth!.userId, action: "BACKUP_RESTORED", entityType: "BackupRun", entityId: file, after: result });
     res.json(result);
+  }),
+);
+
+// Role matrix: the owner can tick and untick capabilities per role. Rows are
+// stored in the database; an empty set restores the shipped defaults.
+adminRouter.get(
+  "/roles",
+  requirePermission("settings.manage"),
+  asyncHandler(async (_req, res) => {
+    const rows = await prisma.roleCapability.findMany();
+    const roles = (["OWNER", "ADMIN", "MANAGER", "CASHIER", "WAITER", "KITCHEN"] as const).map((role) => {
+      const own = rows.filter((r) => r.role === role);
+      return {
+        role,
+        customised: own.length > 0,
+        granted: own.length ? own.filter((r) => r.granted).map((r) => r.capability) : ROLE_CAPABILITIES[role],
+        defaults: ROLE_CAPABILITIES[role],
+      };
+    });
+    res.json({ roles, capabilities: ALL_CAPABILITIES });
+  }),
+);
+
+adminRouter.put(
+  "/roles/:role",
+  requirePermission("settings.manage"),
+  validate({ body: z.object({ capabilities: z.array(z.string()) }) }),
+  asyncHandler(async (req, res) => {
+    const role = String(req.params.role) as keyof typeof ROLE_CAPABILITIES;
+    if (!ROLE_CAPABILITIES[role]) throw ApiError.badRequest("Unknown role");
+    const wanted = (req.body as { capabilities: string[] }).capabilities.filter((c) =>
+      (ALL_CAPABILITIES as string[]).includes(c),
+    );
+    await prisma.$transaction([
+      prisma.roleCapability.deleteMany({ where: { role } }),
+      prisma.roleCapability.createMany({
+        data: ALL_CAPABILITIES.map((capability) => ({
+          role,
+          capability,
+          granted: wanted.includes(capability),
+        })),
+      }),
+    ]);
+    await audit({
+      restaurantId: req.auth!.restaurantId,
+      userId: req.auth!.userId,
+      action: "ROLE_MATRIX_UPDATED",
+      entityType: "RoleCapability",
+      entityId: role,
+      after: { granted: wanted },
+    });
+    res.json({ role, granted: wanted as Capability[] });
+  }),
+);
+
+adminRouter.delete(
+  "/roles/:role",
+  requirePermission("settings.manage"),
+  asyncHandler(async (req, res) => {
+    const role = String(req.params.role) as keyof typeof ROLE_CAPABILITIES;
+    if (!ROLE_CAPABILITIES[role]) throw ApiError.badRequest("Unknown role");
+    await prisma.roleCapability.deleteMany({ where: { role } });
+    await audit({
+      restaurantId: req.auth!.restaurantId,
+      userId: req.auth!.userId,
+      action: "ROLE_MATRIX_RESET",
+      entityType: "RoleCapability",
+      entityId: role,
+    });
+    res.json({ role, granted: ROLE_CAPABILITIES[role] });
+  }),
+);
+
+adminRouter.put(
+  "/approval-limits",
+  requirePermission("settings.manage"),
+  validate({
+    body: z.object({
+      limits: z.array(
+        z.object({
+          role: z.enum(["OWNER", "ADMIN", "MANAGER", "CASHIER", "WAITER", "KITCHEN"]),
+          action: z.enum(["DISCOUNT", "VOID", "REFUND", "COMP", "PRIORITY"]),
+          maxAmount: z.number().nonnegative().nullable(),
+        }),
+      ),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const { limits } = req.body as { limits: { role: string; action: string; maxAmount: number | null }[] };
+    await prisma.$transaction(
+      limits.map((l) =>
+        prisma.approvalLimit.upsert({
+          where: { role_action: { role: l.role as never, action: l.action } },
+          create: { role: l.role as never, action: l.action, maxAmount: l.maxAmount },
+          update: { maxAmount: l.maxAmount },
+        }),
+      ),
+    );
+    res.json({ limits });
   }),
 );
 

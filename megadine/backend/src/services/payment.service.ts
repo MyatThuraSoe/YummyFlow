@@ -290,8 +290,6 @@ export async function refundOrder(input: RefundInput) {
   });
   if (!order) throw ApiError.notFound("Order not found");
 
-  const manager = await verifyManagerPin(order.restaurantId, input.managerPin, input.actorId);
-
   const activeLines = order.lines.filter((l) => !l.isVoided);
   const priorRefunds = order.payments.flatMap((p) => p.refunds);
   const priorByLine = priorRefundedQtyByLine(priorRefunds.map((r) => r.refundedLines));
@@ -311,6 +309,17 @@ export async function refundOrder(input: RefundInput) {
     requested = toCents(input.amount ?? 0);
   }
   if (requested <= 0) throw ApiError.badRequest("Refund amount must be positive");
+
+  // Approve only after the real amount is known, so the approver's role limit
+  // is checked against what is actually being refunded.
+  const manager = await verifyManagerPin(
+    order.restaurantId,
+    input.managerPin,
+    input.actorId,
+    null,
+    "REFUND",
+    requested / 100,
+  );
 
   const paid = order.payments.reduce((s, p) => s + toCents(p.amount), 0);
   const refundedSoFar = priorRefunds.reduce((s, r) => s + toCents(r.amount), 0);

@@ -4,7 +4,7 @@ import { computeOrderTotals, lineTotalCents, toDb } from "../lib/calculations.js
 import { fromCents, toCents } from "../lib/money.js";
 import { businessDateFor } from "../lib/businessDay.js";
 import { audit } from "../lib/audit.js";
-import { verifyManagerPin } from "../lib/approval.js";
+import { assertWithinApprovalLimit, verifyManagerPin } from "../lib/approval.js";
 import { EVENTS, emitToWorkspace, emitToRole } from "../lib/socket.js";
 import { buildKitchenTicketText } from "../lib/printers.js";
 import { queuePrint } from "../lib/printQueue.js";
@@ -314,12 +314,18 @@ export async function voidOrderLine(
   if (line.isVoided) throw ApiError.conflict("Line already voided");
 
   let approvedBy: string | null = null;
-  // A line already sent to the kitchen is a sensitive void → approver required
-  // unless the actor's role carries `approve.override`.
+  // A line already sent to the kitchen is a sensitive void -> approver required
+  // unless the actor's role carries `approve.override`. Either way the money
+  // limit of the approver's role is enforced.
   const sent = await prisma.kitchenTicketLine.findFirst({ where: { orderLineId: lineId } });
-  if (sent && !can(actorRole as Role, "approve.override")) {
-    const manager = await verifyManagerPin(line.order.restaurantId, managerPin ?? "", actorId);
-    approvedBy = manager.id;
+  const voidAmount = Number(line.lineTotal);
+  if (sent) {
+    if (can(actorRole as Role, "approve.override")) {
+      await assertWithinApprovalLimit(actorRole as Role, "VOID", voidAmount);
+    } else {
+      const manager = await verifyManagerPin(line.order.restaurantId, managerPin ?? "", actorId, null, "VOID", voidAmount);
+      approvedBy = manager.id;
+    }
   }
 
   await prisma.orderLine.update({
@@ -365,9 +371,12 @@ export async function applyDiscount(
 
   let approvedBy: string | null = null;
   const isApprover = can(actorRole as Role, "approve.override");
+  const discountAmount = amount / 100; // approval limits are stored in major units
   if (!isApprover && pct > DISCOUNT_THRESHOLD) {
-    const manager = await verifyManagerPin(order.restaurantId, input.managerPin ?? "", actorId);
+    const manager = await verifyManagerPin(order.restaurantId, input.managerPin ?? "", actorId, null, "DISCOUNT", discountAmount);
     approvedBy = manager.id;
+  } else if (isApprover) {
+    await assertWithinApprovalLimit(actorRole as Role, "DISCOUNT", discountAmount);
   }
 
   const totals = computeOrderTotals(active.map((l) => toCents(l.lineTotal)), amount, {
@@ -677,8 +686,10 @@ export async function setOrderPriority(
   let approvedBy: string | null = null;
   const isApprover = can(actorRole as Role, "approve.override");
   if (!isApprover && priority !== "NORMAL") {
-    const manager = await verifyManagerPin(order.restaurantId, managerPin ?? "", actorId);
+    const manager = await verifyManagerPin(order.restaurantId, managerPin ?? "", actorId, null, "PRIORITY", null);
     approvedBy = manager.id;
+  } else if (isApprover && priority !== "NORMAL") {
+    await assertWithinApprovalLimit(actorRole as Role, "PRIORITY", null);
   }
 
   const updated = await prisma.order.update({ where: { id: orderId }, data: { priority } });
@@ -712,9 +723,15 @@ export async function cancelOrder(
 
   let approvedBy: string | null = null;
   const sent = await prisma.kitchenTicket.count({ where: { orderId } });
-  if ((sent > 0 || order.payments.length > 0) && !can(actorRole as Role, "approve.override")) {
-    const manager = await verifyManagerPin(order.restaurantId, managerPin ?? "", actorId);
-    approvedBy = manager.id;
+  const needsApproval = sent > 0 || order.payments.length > 0;
+  const voidAmount = Number(order.total);
+  if (needsApproval) {
+    if (can(actorRole as Role, "approve.override")) {
+      await assertWithinApprovalLimit(actorRole as Role, "VOID", voidAmount);
+    } else {
+      const manager = await verifyManagerPin(order.restaurantId, managerPin ?? "", actorId, null, "VOID", voidAmount);
+      approvedBy = manager.id;
+    }
   }
 
   const updated = await prisma.$transaction(async (tx) => {

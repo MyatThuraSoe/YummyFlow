@@ -146,6 +146,7 @@ model Restaurant {
   cashShifts     CashShift[]
   dayCloses      BusinessDayClose[]
   receiptConfig  ReceiptConfig?
+  approvalRequests ApprovalRequest[]
 }
 
 model ReceiptConfig {
@@ -227,6 +228,8 @@ model User {
   sessions Session[]
   capabilityOverrides UserCapabilityOverride[]
   employee Employee?
+  approvalRequestsMade    ApprovalRequest[] @relation("ApprovalRequester")
+  approvalRequestsDecided ApprovalRequest[] @relation("ApprovalApprover")
 
   @@unique([restaurantId, pinLookup])
   @@index([restaurantId, role])
@@ -274,6 +277,51 @@ model Employee {
   updatedAt    DateTime  @default(now()) @updatedAt
 
   @@index([restaurantId, status])
+}
+
+// Owner-editable role matrix. When a role has rows here they replace the
+// hard-coded defaults in permissions.ts; deleting them restores the defaults.
+model RoleCapability {
+  id         String   @id @default(uuid())
+  role       Role
+  capability String
+  granted    Boolean  @default(true)
+  updatedAt  DateTime @default(now()) @updatedAt
+
+  @@unique([role, capability])
+}
+
+// Per-role money limits for approvals (roles redesign §"Approvals").
+model ApprovalLimit {
+  id        String   @id @default(uuid())
+  role      Role
+  action    String // DISCOUNT | VOID | REFUND | COMP | PRIORITY
+  maxAmount Decimal? @db.Decimal(12, 2)
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@unique([role, action])
+}
+
+// "Ask manager" queue: a requested override waits for an approver on another
+// device instead of a PIN being carried across the floor.
+model ApprovalRequest {
+  id           String    @id @default(uuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  requesterId  String
+  requester    User      @relation("ApprovalRequester", fields: [requesterId], references: [id])
+  action       String // DISCOUNT | VOID | REFUND | COMP | PRIORITY
+  payload      Json?
+  amount       Decimal?  @db.Decimal(12, 2)
+  reason       String?
+  status       String    @default("PENDING") // PENDING | APPROVED | REFUSED | EXPIRED
+  approverId   String?
+  approver     User?     @relation("ApprovalApprover", fields: [approverId], references: [id])
+  decidedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  expiresAt    DateTime?
+
+  @@index([restaurantId, status, createdAt])
 }
 
 model Terminal {

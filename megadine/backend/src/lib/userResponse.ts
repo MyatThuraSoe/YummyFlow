@@ -15,6 +15,7 @@ export interface UserLike {
   preferredLanguage: string;
   isActive: boolean;
   lastLoginAt: Date | null;
+  mustChangeCredential?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -35,6 +36,7 @@ export interface UserResponse {
   createdAt: Date;
   updatedAt: Date;
   capabilities: Capability[];
+  mustChangeCredential: boolean;
 }
 
 /** Canonical user payload used by all auth/user endpoints (PRD §4.5). */
@@ -55,5 +57,6 @@ export function toUserResponse(u: UserLike, capabilities?: Capability[]): UserRe
     createdAt: u.createdAt,
     updatedAt: u.updatedAt,
     capabilities: capabilities ?? (ROLE_CAPABILITIES[u.role] ?? []),
+    mustChangeCredential: u.mustChangeCredential ?? false,
   };
 }
