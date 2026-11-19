@@ -108,8 +108,8 @@
   "pay_due": "Amount due",
   "pay_amount_placeholder": "Amount",
   "pay_cash_received": "Cash received",
-  "pay_reference": "Reference",
-  "pay_reference_placeholder": "Auth code (optional)",
+  "pay_reference": "Wallet / note",
+  "pay_reference_placeholder": "e.g. KBZPay transfer — name or last 4 digits",
   "pay_split": "+ Split payment",
   "pay_remaining": "Remaining {{amount}}",
   "pay_fully_tendered": "Fully tendered",
@@ -281,5 +281,5 @@
   "status_offline_hint": "Orders will queue and send automatically",
   "pos_removed_line": "Removed",
   "pos_undo": "Undo",
-  "other_transfer": "Other (transfer)"
+  "other_transfer": "Other (transfer shown on phone)"
 }
