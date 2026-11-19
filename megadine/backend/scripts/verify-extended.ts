@@ -439,7 +439,7 @@ async function main() {
     });
     assert.equal(badLogin.status, 401);
     assert.equal(badLogin.data.error.code, "auth.login.failed");
-    const ownerLogin = await api<{ user: { id: string; username: string; role: string }; token: string }>("/auth/login", {
+    const ownerLogin = await api<{ user: { id: string; username: string; role: string; restaurantId: string }; token: string }>("/auth/login", {
       method: "POST",
       body: { username: "owner", password: ownerPassword },
     });
@@ -448,6 +448,7 @@ async function main() {
     assert.equal(ownerLogin.data.user.role, "OWNER");
     const ownerToken = ownerLogin.data.token;
     const ownerId = ownerLogin.data.user.id;
+    const ownerRestaurantId = ownerLogin.data.user.restaurantId;
     const emailLogin = await api<{ user: { username: string } }>("/auth/login", {
       method: "POST",
       body: { email: "Owner@MegaDine.Local", password: ownerPassword },
@@ -1554,6 +1555,37 @@ async function main() {
     await prisma.employeeNote.deleteMany({ where: { employeeId: payEmployeeId } });
     await prisma.tipEntry.deleteMany({ where: { businessDate: payDay } });
     if (createdPayEmployee) await prisma.employee.delete({ where: { id: payEmployeeId } });
+
+    // ── Audit tamper evidence: hash chain verifies and detects edits ─────────
+    const nonOwnerIntegrity = await api("/reports/audit-integrity", { token: cashier.token });
+    assert.equal(nonOwnerIntegrity.status, 403, "audit integrity is owner/auditor only");
+    ok("reports: audit integrity check is gated to auditors");
+
+    const integrity = await api<{ intact: boolean; count: number; firstBrokenSeq: number | null }>("/reports/audit-integrity", { token: ownerToken });
+    assert.equal(integrity.status, 200, JSON.stringify(integrity.data));
+    assert.equal(integrity.data.intact, true, "the audit chain must be intact during normal operation");
+    assert.ok(integrity.data.count > 0, "the audit chain must cover recorded entries");
+    ok("reports: audit hash chain verifies as intact");
+
+    // Tamper with one chained row's content (without touching its stored hash),
+    // confirm the check flags it, then restore the exact original value.
+    const chainRow = await prisma.auditLog.findFirst({
+      where: { restaurantId: ownerRestaurantId, hash: { not: null }, seq: { not: null } },
+      orderBy: { seq: "desc" },
+      select: { id: true, reason: true },
+    });
+    if (chainRow) {
+      const originalReason = chainRow.reason;
+      await prisma.auditLog.update({ where: { id: chainRow.id }, data: { reason: "verify-tampered" } });
+      try {
+        const tampered = await api<{ intact: boolean; firstBrokenSeq: number | null }>("/reports/audit-integrity", { token: ownerToken });
+        assert.equal(tampered.status, 200, JSON.stringify(tampered.data));
+        assert.equal(tampered.data.intact, false, "an edited audit row must break the chain");
+        ok("reports: audit hash chain detects a tampered row");
+      } finally {
+        await prisma.auditLog.update({ where: { id: chainRow.id }, data: { reason: originalReason } });
+      }
+    }
 
     // ── Phase 4: dashboard alerts, sales trend, floor timeline ───────────────
     const ingLowName = `Verify Low ${Date.now()}`;

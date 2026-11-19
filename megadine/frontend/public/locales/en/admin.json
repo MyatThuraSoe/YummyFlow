@@ -455,5 +455,8 @@
   "pay_rule_points": "By points",
   "pay_count": "Meals",
   "pay_cost": "Cost",
-  "pay_note": "Note"
+  "pay_note": "Note",
+  "audit_check_pending": "Checking audit log integrity…",
+  "audit_intact": "Log intact · {{count}} entries verified",
+  "audit_broken": "Audit log altered at entry {{seq}} — review the audit trail"
 }

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { apiGet } from "../../lib/api";
 import { formatMoney } from "../../lib/format";
+import { useAuth } from "../../store/auth";
 
 interface Dash { todaySales: number; todayOrders: number; openShifts: number; lowStockCount: number; activeOrders: number; activeTables: number }
 interface Daily {
@@ -30,11 +31,19 @@ interface TrendDay { date: string; orders: number; sales: number }
 export default function Dashboard() {
   const { t } = useTranslation(["admin", "common"]);
   const nav = useNavigate();
+  const { can } = useAuth();
+  const showAudit = can("audit.view");
   const { data: dash } = useQuery({ queryKey: ["dashboard"], queryFn: () => apiGet<Dash>("/reports/dashboard"), refetchInterval: 15000 });
   const { data: daily } = useQuery({ queryKey: ["daily"], queryFn: () => apiGet<Daily>("/reports/daily"), refetchInterval: 30000 });
   const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: () => apiGet<Settings>("/admin/settings") });
   const { data: alertsData } = useQuery({ queryKey: ["admin-alerts"], queryFn: () => apiGet<{ alerts: AlertItem[] }>("/reports/alerts"), refetchInterval: 30000 });
   const { data: trendData } = useQuery({ queryKey: ["trend", 7], queryFn: () => apiGet<{ days: TrendDay[] }>("/reports/trend", { days: "7" }), refetchInterval: 60000 });
+  const { data: auditIntegrity } = useQuery({
+    queryKey: ["audit-integrity"],
+    queryFn: () => apiGet<{ intact: boolean; count: number; firstBrokenSeq: number | null }>("/reports/audit-integrity"),
+    enabled: showAudit,
+    refetchInterval: 60000,
+  });
   const { data: menuData } = useQuery({ queryKey: ["menu"], queryFn: () => apiGet<{ categories: { items: unknown[] }[] }>("/menu"), staleTime: 60_000 });
   const { data: tablesData } = useQuery({ queryKey: ["tables"], queryFn: () => apiGet<{ tables: unknown[] }>("/tables"), staleTime: 60_000 });
   const menuCount = (menuData?.categories ?? []).reduce((s, c) => s + (c.items?.length ?? 0), 0);
@@ -107,6 +116,25 @@ export default function Dashboard() {
               );
             })}
           </div>
+        </div>
+      )}
+
+      {showAudit && (
+        <div
+          className="audit-integrity"
+          style={{
+            display: "flex", alignItems: "center", gap: 8, marginBottom: 12,
+            padding: "8px 12px", borderRadius: 8, fontSize: 13,
+            border: `1px solid ${auditIntegrity && !auditIntegrity.intact ? "var(--danger)" : "var(--ok, #16a34a)"}`,
+            color: auditIntegrity && !auditIntegrity.intact ? "var(--danger)" : "inherit",
+          }}
+        >
+          <span aria-hidden>{auditIntegrity && !auditIntegrity.intact ? "⚠" : "✓"}</span>
+          {auditIntegrity == null
+            ? t("admin:audit_check_pending")
+            : auditIntegrity.intact
+              ? t("admin:audit_intact", { count: auditIntegrity.count })
+              : t("admin:audit_broken", { seq: auditIntegrity.firstBrokenSeq })}
         </div>
       )}
 

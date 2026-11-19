@@ -10,6 +10,7 @@ import { prisma } from "../lib/prisma.js";
 import { fromCents, toCents } from "../lib/money.js";
 import { toCsv } from "../lib/csv.js";
 import { businessDateFor } from "../lib/businessDay.js";
+import { verifyAuditChain } from "../lib/audit.js";
 
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth, requirePermission("report.view"));
@@ -32,6 +33,15 @@ reportsRouter.get(
   asyncHandler(async (req, res) => {
     const data = await dashboard(req.auth!.restaurantId);
     res.json(data);
+  }),
+);
+
+/** Owner's tamper-evidence check: re-walk the audit hash chain. */
+reportsRouter.get(
+  "/audit-integrity",
+  requirePermission("audit.view"),
+  asyncHandler(async (req, res) => {
+    res.json(await verifyAuditChain(req.auth!.restaurantId));
   }),
 );
 

@@ -1088,7 +1088,15 @@ model AuditLog {
   ipAddress    String?
   createdAt    DateTime   @default(now())
 
+  // Tamper-evidence hash chain. `seq` is the per-restaurant position,
+  // `prevHash` links to the preceding row and `hash` covers this row's content.
+  // Nullable so pre-chain rows remain valid.
+  seq          Int?
+  prevHash     String?
+  hash         String?
+
   @@index([restaurantId, createdAt])
+  @@index([restaurantId, seq])
   @@index([userId, action])
   @@index([entityType, entityId])
 }
