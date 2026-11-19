@@ -1448,6 +1448,113 @@ async function main() {
     assert.ok(exceptions.data.rows.every((r) => r.person && r.day && r.hour >= 0 && r.hour <= 23), "exceptions must be grouped by person, day and hour");
     ok("reports: exceptions report aggregates sensitive actions by person, day and hour");
 
+    // ── Employee pay area: access, roster, attendance, pay records ────────────
+    const payDate = "2020-01-01";
+    const payDay = new Date(`${payDate}T00:00:00.000Z`);
+    const adminPay = await api("/payroll/summary", { token: admin.token });
+    assert.equal(adminPay.status, 403, "admins must not see any employee pay data");
+    const cashierPay = await api("/payroll/roster", { token: cashier.token });
+    assert.equal(cashierPay.status, 403, "cashiers must not see the employee pay area");
+    ok("payroll: admins and cashiers are blocked from the pay area");
+
+    const me = await api<{ user: { id: string } }>("/auth/me", { token: cashier.token });
+    assert.equal(me.status, 200, JSON.stringify(me.data));
+    const cashierUserId = me.data.user.id;
+    // Link the test employee to a known PIN login so clock-in resolves. Reuse
+    // any employee already linked to the cashier (userId is unique) so this
+    // check stays repeatable.
+    let payEmployee = await prisma.employee.findUnique({ where: { userId: cashierUserId } });
+    let createdPayEmployee = false;
+    if (!payEmployee) {
+      const created = await api<{ data: { employee: { id: string } } }>("/employees", {
+        method: "POST",
+        token: ownerToken,
+        body: {
+          firstName: `PayVerify${Date.now()}`, lastName: "Tester", position: "Tester",
+          status: "ACTIVE", payType: "MONTHLY", payRate: 1000, userId: cashierUserId,
+        },
+      });
+      assert.equal(created.status, 201, JSON.stringify(created.data));
+      payEmployee = await prisma.employee.findUniqueOrThrow({ where: { id: created.data.data.employee.id } });
+      createdPayEmployee = true;
+    }
+    const payEmployeeId = payEmployee.id;
+    await prisma.employee.update({
+      where: { id: payEmployeeId },
+      data: { status: "ACTIVE", payType: "MONTHLY", payRate: 1000 },
+    });
+
+    const rosterAdd = await api("/payroll/roster", {
+      method: "POST", token: ownerToken,
+      body: { employeeId: payEmployeeId, dayOfWeek: 1, shift: "MORNING" },
+    });
+    assert.equal(rosterAdd.status, 201, JSON.stringify(rosterAdd.data));
+    const rosterList = await api<{ rows: { employeeId: string; dayOfWeek: number; shift: string }[] }>("/payroll/roster", { token: ownerToken });
+    assert.equal(rosterList.status, 200, JSON.stringify(rosterList.data));
+    assert.ok(
+      rosterList.data.rows.some((r) => r.employeeId === payEmployeeId && r.dayOfWeek === 1 && r.shift === "MORNING"),
+      "roster row must be listed",
+    );
+    const rosterCopy = await api("/payroll/roster/copy", { method: "POST", token: ownerToken });
+    assert.equal(rosterCopy.status, 200, JSON.stringify(rosterCopy.data));
+    ok("payroll: roster shift can be added, copied and listed");
+
+    // Clear any attendance left by an aborted run before clocking in again.
+    await prisma.attendance.deleteMany({ where: { employeeId: payEmployeeId } });
+    const clockIn = await api("/payroll/attendance/clock-in", { method: "POST", token: ownerToken, body: { pin: PIN_CASHIER } });
+    assert.equal(clockIn.status, 201, JSON.stringify(clockIn.data));
+    const attendanceNow = new Date().toISOString().slice(0, 10);
+    const attendanceList = await api<{ rows: { employeeId: string; clockIn: string; clockOut: string | null }[] }>(
+      `/payroll/attendance?from=${payDate}&to=${attendanceNow}`, { token: ownerToken },
+    );
+    assert.equal(attendanceList.status, 200, JSON.stringify(attendanceList.data));
+    assert.ok(
+      attendanceList.data.rows.some((a) => a.employeeId === payEmployeeId && a.clockIn && !a.clockOut),
+      "clock-in must be recorded and open",
+    );
+    const clockOut = await api("/payroll/attendance/clock-out", { method: "POST", token: ownerToken, body: { pin: PIN_CASHIER } });
+    assert.equal(clockOut.status, 200, JSON.stringify(clockOut.data));
+    ok("payroll: PIN clock-in and clock-out are recorded");
+
+    const adv = await api("/payroll/advances", { method: "POST", token: ownerToken, body: { employeeId: payEmployeeId, date: payDate, amount: 25, reason: "verify advance" } });
+    assert.equal(adv.status, 201, JSON.stringify(adv.data));
+    const ded = await api("/payroll/deductions", { method: "POST", token: ownerToken, body: { employeeId: payEmployeeId, date: payDate, amount: 5, reason: "verify shortage" } });
+    assert.equal(ded.status, 201, JSON.stringify(ded.data));
+    const meal = await api("/payroll/meals", { method: "POST", token: ownerToken, body: { employeeId: payEmployeeId, date: payDate, count: 2, cost: 6 } });
+    assert.equal(meal.status, 201, JSON.stringify(meal.data));
+    const note = await api("/payroll/notes", { method: "POST", token: ownerToken, body: { employeeId: payEmployeeId, note: "verify personnel note" } });
+    assert.equal(note.status, 201, JSON.stringify(note.data));
+    const tip = await api<{ row: { allocations: { employeeId: string; amount: number }[] } }>("/payroll/tips", {
+      method: "POST", token: ownerToken,
+      body: { date: payDate, tipAmount: 260, serviceCharge: 0, rule: "EQUAL" },
+    });
+    assert.equal(tip.status, 201, JSON.stringify(tip.data));
+    assert.ok(tip.data.row.allocations.some((a) => a.employeeId === payEmployeeId), "tip split must allocate to the employee");
+    ok("payroll: advances, deductions, meals, notes and tip splits are stored");
+
+    const summary = await api<{
+      employeeId: string; daysWorked: number; advance: number; deduction: number; mealCost: number; tip: number; totalOwed: number;
+    }[]>(`/payroll/summary?from=${payDate}&to=${payDate}`, { token: ownerToken });
+    assert.equal(summary.status, 200, JSON.stringify(summary.data));
+    const mine = summary.data.find((s) => s.employeeId === payEmployeeId);
+    assert.ok(mine, "pay summary must include the test employee");
+    assert.equal(mine!.advance, 25, "advance must appear on the pay summary");
+    assert.equal(mine!.deduction, 5, "deduction must appear on the pay summary");
+    assert.equal(mine!.mealCost, 6, "staff meal cost must appear on the pay summary");
+    assert.ok(mine!.tip > 0, "tip allocation must appear on the pay summary");
+    ok("payroll: pay summary aggregates base, tips, advances and deductions");
+
+    // Cleanup: remove all records created for this employee. Tip entries are
+    // keyed only by date (not employee) so remove those explicitly as well.
+    await prisma.rosterShift.deleteMany({ where: { employeeId: payEmployeeId } });
+    await prisma.attendance.deleteMany({ where: { employeeId: payEmployeeId } });
+    await prisma.staffAdvance.deleteMany({ where: { employeeId: payEmployeeId } });
+    await prisma.staffDeduction.deleteMany({ where: { employeeId: payEmployeeId } });
+    await prisma.staffMeal.deleteMany({ where: { employeeId: payEmployeeId } });
+    await prisma.employeeNote.deleteMany({ where: { employeeId: payEmployeeId } });
+    await prisma.tipEntry.deleteMany({ where: { businessDate: payDay } });
+    if (createdPayEmployee) await prisma.employee.delete({ where: { id: payEmployeeId } });
+
     // ── Phase 4: dashboard alerts, sales trend, floor timeline ───────────────
     const ingLowName = `Verify Low ${Date.now()}`;
     const ingLowRes = await api<{ ingredient: { id: string } }>("/inventory/ingredients", {

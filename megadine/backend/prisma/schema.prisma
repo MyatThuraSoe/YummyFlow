@@ -148,6 +148,13 @@ model Restaurant {
   receiptConfig  ReceiptConfig?
   approvalRequests ApprovalRequest[]
   handoverNotes  HandoverNote[]
+  rosterShifts    RosterShift[]
+  attendance      Attendance[]
+  staffAdvances   StaffAdvance[]
+  staffDeductions StaffDeduction[]
+  tipEntries      TipEntry[]
+  staffMeals      StaffMeal[]
+  employeeNotes   EmployeeNote[]
 }
 
 model ReceiptConfig {
@@ -278,6 +285,13 @@ model Employee {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @default(now()) @updatedAt
 
+  rosterShifts    RosterShift[]
+  attendance      Attendance[]
+  advances        StaffAdvance[]
+  deductions      StaffDeduction[]
+  meals           StaffMeal[]
+  notesHistory    EmployeeNote[]
+
   @@index([restaurantId, status])
 }
 
@@ -302,6 +316,131 @@ model HandoverNote {
 
   @@index([restaurantId, businessDate])
   @@index([shiftId])
+}
+
+// ── Employee pay area ───────────────────────────────────────────────────────
+// Pay data is separate from login access: the owner (or payroll.view) sees it,
+// managers see roster and attendance, admins see none of it.
+
+/// Weekly recurring schedule. dayOfWeek uses JS convention (0 = Sunday).
+model RosterShift {
+  id           String     @id @default(uuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  employeeId   String
+  employee     Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  dayOfWeek    Int
+  shift        String     @default("MORNING") // MORNING | EVENING | NIGHT
+  position     String?
+  createdAt    DateTime   @default(now())
+
+  @@unique([restaurantId, employeeId, dayOfWeek, shift])
+  @@index([restaurantId, dayOfWeek])
+}
+
+/// One day's clock record per employee. PIN clock-in reduces buddy punching;
+/// a manager correction keeps the reason and the editor.
+model Attendance {
+  id           String     @id @default(uuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  employeeId   String
+  employee     Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  businessDate DateTime
+  clockIn      DateTime
+  clockOut     DateTime?
+  breakMinutes Int        @default(0)
+  lateMinutes  Int        @default(0)
+  earlyMinutes Int        @default(0)
+  method       String     @default("PIN") // PIN | MANUAL
+  terminalId   String?
+  editedById   String?
+  editReason   String?
+  createdAt    DateTime   @default(now())
+
+  @@unique([employeeId, businessDate])
+  @@index([restaurantId, businessDate])
+}
+
+model StaffAdvance {
+  id            String     @id @default(uuid())
+  restaurantId  String
+  restaurant    Restaurant @relation(fields: [restaurantId], references: [id])
+  employeeId    String
+  employee      Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  businessDate  DateTime
+  amount        Decimal    @db.Decimal(12, 2)
+  reason        String?
+  repaymentDate DateTime?
+  acknowledged  Boolean    @default(false)
+  createdAt     DateTime   @default(now())
+
+  @@index([restaurantId, businessDate])
+  @@index([employeeId])
+}
+
+model StaffDeduction {
+  id           String     @id @default(uuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  employeeId   String
+  employee     Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  businessDate DateTime
+  amount       Decimal    @db.Decimal(12, 2)
+  reason       String?
+  acknowledged Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+
+  @@index([restaurantId, businessDate])
+  @@index([employeeId])
+}
+
+/// A day's tips/service charge stored once, with the per-person split kept as
+/// JSON so the rule can change without rewriting history.
+model TipEntry {
+  id            String     @id @default(uuid())
+  restaurantId  String
+  restaurant    Restaurant @relation(fields: [restaurantId], references: [id])
+  businessDate  DateTime
+  tipAmount     Decimal    @db.Decimal(12, 2)
+  serviceCharge Decimal   @db.Decimal(12, 2) @default(0)
+  rule          String     @default("EQUAL") // EQUAL | HOURS | POINTS
+  /** [{ employeeId, amount: number (major units) }, ...] */
+  allocations   Json?
+  enteredById   String
+  createdAt     DateTime   @default(now())
+
+  @@unique([restaurantId, businessDate])
+  @@index([restaurantId, businessDate])
+}
+
+model StaffMeal {
+  id           String     @id @default(uuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  employeeId   String
+  employee     Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  businessDate DateTime
+  count        Int        @default(1)
+  cost         Decimal?   @db.Decimal(12, 2)
+  note         String?
+  createdAt    DateTime   @default(now())
+
+  @@index([restaurantId, businessDate])
+  @@index([employeeId])
+}
+
+model EmployeeNote {
+  id           String     @id @default(uuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  employeeId   String
+  employee     Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  note         String
+  authorId     String
+  createdAt    DateTime   @default(now())
+
+  @@index([employeeId, createdAt])
 }
 
 // Owner-editable role matrix. When a role has rows here they replace the

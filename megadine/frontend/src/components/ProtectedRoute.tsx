@@ -2,13 +2,14 @@ import { Navigate, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
 import { useAuth } from "../store/auth";
 
-export function ProtectedRoute({ children, capability }: { children: ReactNode; capability?: string }) {
+export function ProtectedRoute({ children, capability }: { children: ReactNode; capability?: string | string[] }) {
   const { user, ready, can } = useAuth();
   const location = useLocation();
 
   if (!ready) return <div className="content">Loading…</div>;
   if (!user) return <Navigate to="/login" state={{ from: location.pathname }} replace />;
-  if (capability && !can(capability)) return <Navigate to="/" replace />;
+  const allowed = capability == null || (Array.isArray(capability) ? capability.some(can) : can(capability));
+  if (!allowed) return <Navigate to="/" replace />;
   if (user.mustChangeCredential && location.pathname !== "/change-credential") {
     return <Navigate to="/change-credential" replace />;
   }

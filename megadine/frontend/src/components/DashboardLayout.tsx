@@ -95,7 +95,7 @@ function idleMsFor(role?: string | null): number {
 interface NavItem {
   to: string;
   labelKey: string;
-  cap: string | null;
+  cap: string | string[] | null;
   icon: ReactNode;
   iconColor: string;
   exact?: boolean;
@@ -144,6 +144,7 @@ const GROUPS: NavGroup[] = [
     items: [
       { to: "/admin/users", labelKey: "users", cap: "user.view", icon: <PeopleIcon />, iconColor: "#DB2777" },
       { to: "/admin/employees", labelKey: "employees", cap: "employee.view", icon: <BadgeIcon />, iconColor: "#BE185D" },
+      { to: "/admin/employee-pay", labelKey: "employee_pay", cap: ["attendance.edit", "payroll.view"], icon: <PaymentsIcon />, iconColor: "#0F766E" },
       { to: "/admin/settings/roles", labelKey: "roles", cap: "settings.manage", icon: <RolesIcon />, iconColor: "#4338CA" },
       {
         to: "/admin/receipt-customization",
@@ -413,7 +414,9 @@ export default function DashboardLayout() {
       <Divider />
       <List sx={{ flex: 1, px: 1, overflowY: "auto", overflowX: "hidden" }}>
         {GROUPS.map((group) => {
-          const items = group.items.filter((item) => item.cap === null || can(item.cap));
+          const items = group.items.filter((item) =>
+            item.cap === null || (Array.isArray(item.cap) ? item.cap.some(can) : can(item.cap)),
+          );
           if (items.length === 0) return null;
           const groupCollapsed = collapsed && !isMobile;
           return (

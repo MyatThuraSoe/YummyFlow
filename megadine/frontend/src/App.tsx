@@ -33,6 +33,7 @@ const Activate = lazy(() => import("./pages/admin/Activate"));
 const About = lazy(() => import("./pages/admin/About"));
 const ChangeCredential = lazy(() => import("./pages/ChangeCredential"));
 const EmployeesAdmin = lazy(() => import("./pages/admin/EmployeesAdmin"));
+const EmployeePayAdmin = lazy(() => import("./pages/admin/EmployeePayAdmin"));
 const RolesAdmin = lazy(() => import("./pages/admin/RolesAdmin"));
 const ApprovalsAdmin = lazy(() => import("./pages/admin/ApprovalsAdmin"));
 
@@ -125,6 +126,7 @@ export default function App() {
             <Route path="users/new" element={<AdminGuard capability="user.create"><Lazy page={<UserFormAdmin />} /></AdminGuard>} />
             <Route path="users/:id" element={<AdminGuard capability="user.edit"><Lazy page={<UserFormAdmin />} /></AdminGuard>} />
             <Route path="employees" element={<AdminGuard capability="employee.view"><Lazy page={<EmployeesAdmin />} /></AdminGuard>} />
+            <Route path="employee-pay" element={<AdminGuard capability={["attendance.edit", "payroll.view"]}><Lazy page={<EmployeePayAdmin />} /></AdminGuard>} />
             <Route path="approvals" element={<AdminGuard capability="approve.override"><Lazy page={<ApprovalsAdmin />} /></AdminGuard>} />
             <Route path="settings" element={<AdminGuard capability="settings.manage"><Lazy page={<SettingsHub />} /></AdminGuard>} />
             <Route path="settings/roles" element={<AdminGuard capability="settings.manage"><Lazy page={<RolesAdmin />} /></AdminGuard>} />
@@ -147,7 +149,7 @@ export default function App() {
   );
 }
 
-function AdminGuard({ capability, children }: { capability: string; children: React.ReactNode }) {
+function AdminGuard({ capability, children }: { capability: string | string[]; children: React.ReactNode }) {
   return <ProtectedRoute capability={capability}>{children}</ProtectedRoute>;
 }
 
